@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 
 from .handoff import build_plan, peer_parameters, render_peer_markdown
-from .profile import ProfileError, load_profile
+from .profile import ProfileError, backup_readiness, load_profile
 
 DEFAULT_PROFILES = Path("/etc/ipsecvpn/profiles")
 
@@ -119,7 +119,11 @@ def _run(args):
             raise ProfileError("Select a profile explicitly with -c or IPSECVPN_CONFIG.")
     profile = load_profile(config)
     if args.command == "validate":
-        return {"status": "PASS", "detail": "Profile schema and topology validated."}
+        return {
+            "status": "PASS",
+            "detail": "Profile schema and topology validated.",
+            "backup": backup_readiness(profile),
+        }
     if args.command == "plan":
         return build_plan(profile)
     return peer_parameters(profile, args.site, args.template)
@@ -127,6 +131,11 @@ def _run(args):
 
 def _print_text(result):
     print(result["status"], result.get("detail", ""))
+    backup = result.get("backup", {})
+    if backup.get("enabled"):
+        print(f"{backup['status']}/{backup['readiness']} external backup handoff inputs")
+        for site_id, fields in backup.get("missing", {}).items():
+            print(f"{site_id} missing {', '.join(fields)}")
     for check in result.get("checks", []):
         print(f"{check['status']} {check['id']} — {check['detail']}")
     if "active_profile" in result:

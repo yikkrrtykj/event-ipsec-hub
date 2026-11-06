@@ -32,6 +32,20 @@ jobs:
         run: shellcheck scripts/validate-examples.sh
       - name: Validate example and fixture profiles using the installed CLI
         run: bash scripts/validate-examples.sh
+      - name: Smoke-test the wheel outside the checkout
+        shell: bash
+        run: |
+          work="$(mktemp -d "${RUNNER_TEMP}/wheel-smoke.XXXXXX")"
+          python -m pip wheel --no-deps --wheel-dir "$work" .
+          cp config/event.example.yaml "$work/profile.yaml"
+          cd "$work"
+          unset PYTHONPATH
+          python -m venv venv
+          venv/bin/python -m pip install ./ipsecvpn-*.whl
+          venv/bin/ipsecvpn validate -c profile.yaml
+          site_id="$(venv/bin/python -c 'import yaml; print(yaml.safe_load(open("profile.yaml"))["sites"][0]["id"])')"
+          venv/bin/ipsecvpn export-peer -c profile.yaml --site "$site_id" --format json > handoff.json
+          venv/bin/python -c 'import json; assert json.load(open("handoff.json"))["status"] == "PASS"'
       - name: Scan reachable commits for secrets
         shell: bash
         run: |

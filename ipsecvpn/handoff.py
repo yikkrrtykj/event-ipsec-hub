@@ -2,7 +2,7 @@
 
 from html import escape
 
-from .profile import ProfileError, authorized_lans
+from .profile import ProfileError, authorized_lans, backup_readiness
 
 PSK_PLACEHOLDER = "<SEND_SEPARATELY>"
 
@@ -73,10 +73,12 @@ def _connections(profile):
 
 def _backup(profile, site_id=None):
     backup = profile["backup"]
-    if not backup["enabled"]:
-        return {"enabled": False}
+    readiness = backup_readiness(profile)
+    if not readiness["enabled"] or readiness["status"] == "SKIP":
+        return readiness
     return {
         **backup,
+        **readiness,
         "links": [
             link
             for link in backup.get("links", [])
@@ -95,8 +97,9 @@ def _backup(profile, site_id=None):
 def build_plan(profile):
     first, second = _connections(profile)
     connections = [first, second]
+    backup = _backup(profile)
     return {
-        "status": "PASS",
+        "status": backup.get("status", "PASS"),
         "schema_version": profile["schema_version"],
         "event": profile["event"],
         "hub": profile["hub"],
@@ -125,7 +128,7 @@ def build_plan(profile):
             for source, target in ((first, second), (second, first))
         ],
         "source_nat": False,
-        "backup": _backup(profile),
+        "backup": backup,
         "monitoring": {
             "configured": profile.get("monitoring", {}).get("enabled", False),
             "status": "SKIP",
@@ -134,10 +137,18 @@ def build_plan(profile):
 
 
 def peer_parameters(profile, site_id, template="auto"):
-    connection = next((conn for conn in _connections(profile) if conn["site_id"] == site_id), None)
-    if connection is None:
+    site = next((site for site in profile["sites"] if site["id"] == site_id), None)
+    if site is None:
         raise ProfileError("The requested site ID does not exist in the selected profile.")
-    site = next(site for site in profile["sites"] if site["id"] == site_id)
+    backup = _backup(profile, site_id)
+    if backup.get("status") == "SKIP":
+        return {
+            "status": "SKIP",
+            "detail": "Handoff withheld until both sites have complete backup parameters.",
+            "backup": backup,
+            "acceptance": {"status": "SKIP"},
+        }
+    connection = next(conn for conn in _connections(profile) if conn["site_id"] == site_id)
     if template == "auto":
         vendor = site["firewall"]["vendor"].casefold()
         template = "hillstone" if vendor == "hillstone" else "generic"
@@ -178,7 +189,7 @@ def peer_parameters(profile, site_id, template="auto"):
                 "Permit IKE UDP 500/4500 for the Hub and ESP protocol 50 when required.",
             ],
         },
-        "backup": _backup(profile, site_id),
+        "backup": backup,
         "monitoring": {
             "configured": profile.get("monitoring", {}).get("enabled", False),
             "status": "SKIP",
@@ -220,12 +231,26 @@ def _table(title, rows):
 
 
 def render_peer_markdown(data):
+    if data["status"] == "SKIP":
+        lines = [
+            "# 外部备网关交接暂停",
+            "",
+            "**SKIP/INCOMPLETE**。补齐以下双站资料后再导出对接参数单。",
+            "",
+            *(
+                f"- {_value(site_id)} 缺少 {_value(fields)}"
+                for site_id, fields in data["backup"]["missing"].items()
+            ),
+            "",
+        ]
+        return "\n".join(lines)
+
     hillstone = data["template"] == "hillstone"
     name = "山石 Hillstone / StoneOS" if hillstone else "厂商中立"
     lines = [
         f"# {name} IPsec 对接参数单",
         "",
-        "PASS 表示参数单已生成。现场验收为 SKIP。",
+        "PASS 表示离线参数单已生成。现场验收为 SKIP。",
         "",
         "参数以接收方站点视角编制。双方应核对 IKE ID 类型与值、算法、计时器和选择器。",
         "",
@@ -313,20 +338,22 @@ def render_peer_markdown(data):
     ]
     backup = data["backup"]
     if backup["enabled"]:
-        link = next(iter(backup["links"]), {})
+        (link,) = backup["links"]
         lines += _table(
             "外部备网关（人工交接）",
             [
                 ("供应商", backup.get("provider_label")),
-                ("备网关公网地址", link.get("public_endpoint")),
-                ("备隧道名称", link.get("tunnel_name")),
+                ("备网关公网地址", link["public_endpoint"]),
+                ("备隧道名称", link["tunnel_name"]),
                 ("本端备用运营商出口 ID", link.get("local_uplink_id")),
-                ("备路由网段", link.get("remote_cidrs")),
-                ("备路由优先级", link.get("route_priority")),
-                ("Track 目标", link.get("track_target")),
+                ("备路由网段", link["remote_cidrs"]),
+                ("备路由优先级", link["route_priority"]),
+                ("Track 目标", link["track_target"]),
             ],
         )
         lines += [
+            "PASS/COMPLETE 表示两站备用交接字段齐全。现场验收为 SKIP。",
+            "",
             "核对主备独立外层路由和隧道。Track 探测分别固定到各自路径。"
             "保持源 IP 并避免逐包 ECMP。验证单侧故障和恢复回切，"
             "双端无法可靠收敛时由两端协调人工切换。",

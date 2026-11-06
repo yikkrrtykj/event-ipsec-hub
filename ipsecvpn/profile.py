@@ -21,6 +21,13 @@ NON_UNICAST_LANS = tuple(
     IPv4Network(cidr)
     for cidr in ("0.0.0.0/8", "127.0.0.0/8", "169.254.0.0/16", "224.0.0.0/4", "240.0.0.0/4")
 )
+BACKUP_HANDOFF_FIELDS = (
+    "public_endpoint",
+    "tunnel_name",
+    "remote_cidrs",
+    "route_priority",
+    "track_target",
+)
 
 
 class ProfileError(ValueError):
@@ -161,7 +168,11 @@ def _validate_topology(profile):
             raise ProfileError("A site's primary public endpoint must be in its listed uplinks.")
         endpoints.update(uplink_endpoints)
     if profile["backup"]["enabled"]:
-        endpoints.update(link["public_endpoint"] for link in profile["backup"].get("links", []))
+        endpoints.update(
+            link["public_endpoint"]
+            for link in profile["backup"].get("links", [])
+            if "public_endpoint" in link
+        )
     if any(not _is_public_endpoint(endpoint) for endpoint in endpoints):
         raise ProfileError("Public endpoints must be unicast public or RFC 5737 IPv4 addresses.")
 
@@ -184,6 +195,32 @@ def authorized_lans(profile):
     return {pair[side]: pair.get(f"{side}_cidrs", site_lans[pair[side]]) for side in ("a", "b")}
 
 
+def backup_readiness(profile):
+    """Report offline handoff completeness for an already validated profile."""
+    backup = profile["backup"]
+    if not backup["enabled"]:
+        return {"enabled": False}
+
+    backup_links = {link["site_id"]: link for link in backup.get("links", [])}
+    missing = {}
+    for primary in profile["site_links"]:
+        site_id = primary["site_id"]
+        link = backup_links.get(site_id)
+        fields = (
+            ["backup.links"]
+            if link is None
+            else [f"backup.links.{field}" for field in BACKUP_HANDOFF_FIELDS if field not in link]
+        )
+        if "route_priority" not in primary:
+            fields.append("site_links.route_priority")
+        if fields:
+            missing[site_id] = fields
+
+    if missing:
+        return {"enabled": True, "status": "SKIP", "readiness": "INCOMPLETE", "missing": missing}
+    return {"enabled": True, "status": "PASS", "readiness": "COMPLETE"}
+
+
 def _validate_optional_paths(profile):
     sites = {site["id"]: site for site in profile["sites"]}
     backup = profile["backup"]
@@ -201,8 +238,12 @@ def _validate_optional_paths(profile):
             site_id = link["site_id"]
             if site_id not in sites:
                 raise ProfileError("A backup link references an unknown site.")
-            if link["public_endpoint"] in primary_endpoints:
+            if link.get("public_endpoint") in primary_endpoints:
                 raise ProfileError("Backup endpoints must differ from primary endpoints.")
+            if "track_target" in link and any(
+                IPv4Address(link["track_target"]) in network for network in NON_UNICAST_LANS
+            ):
+                raise ProfileError("Backup Track targets must be unicast IPv4 addresses.")
             uplink_ids = {uplink["id"] for uplink in sites[site_id].get("uplinks", [])}
             if "local_uplink_id" in link and link["local_uplink_id"] not in uplink_ids:
                 raise ProfileError("A backup link references an unknown local uplink.")

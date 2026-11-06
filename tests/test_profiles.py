@@ -101,12 +101,21 @@ def test_invalid_profile(path, value, message):
         ("local_uplink_id", "missing-isp", "unknown local uplink"),
         ("remote_cidrs", ["10.62.100.0/24"], "exceed the authorized"),
         ("route_priority", 10, "less preferred"),
+        ("track_target", "0.0.0.0", "Track targets must be unicast"),
     ],
 )
 def test_invalid_backup_link(key, value, message):
     profile = load_profile(FIXTURES / "studio-vlan.yaml")
     profile["backup"]["links"][0][key] = value
     with pytest.raises(ProfileError, match=message):
+        validate_profile(profile)
+
+
+def test_duplicate_backup_site_is_invalid():
+    profile = load_profile(FIXTURES / "studio-vlan.yaml")
+    links = profile["backup"]["links"]
+    links[1]["site_id"] = links[0]["site_id"]
+    with pytest.raises(ProfileError, match="Backup link site IDs must be unique"):
         validate_profile(profile)
 
 

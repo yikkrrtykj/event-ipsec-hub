@@ -33,6 +33,8 @@ ipsecvpn export-peer -c config/event.example.yaml --site stage-b --format json
 
 `profiles list`、`validate` 和 `check` 支持 `--json`。退出码 `0` 表示命令完成，结果可含 `PASS` 或 `SKIP`。退出码 `1` 表示发现错误或检查失败，`2` 表示命令行用法有误。请同时查看退出码和各检查项。
 
+启用外部备网关时，离线交接要求两站各有唯一备链路，并填写备 Peer 公网地址、隧道名、授权备路由、主备路由优先级和 Track 目标。资料缺失时，`validate` 可对配置格式和拓扑返回 `PASS`，同时报告备用交接 `SKIP/INCOMPLETE`。此时 `plan` 保留主链路计划，`export-peer` 仅输出缺项诊断，两者状态均为 `SKIP`。备用资料齐全时显示 `PASS/COMPLETE`，现场验收仍为 `SKIP`。
+
 ## 配置与验证
 
 - [通用架构和配置约束](docs/architecture.md)

@@ -232,7 +232,7 @@
     "backup_link": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["site_id", "public_endpoint", "tunnel_name"],
+      "required": ["site_id"],
       "properties": {
         "site_id": {"$ref": "#/$defs/id"},
         "public_endpoint": {"$ref": "#/$defs/ipv4"},
