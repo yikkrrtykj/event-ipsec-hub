@@ -13,7 +13,7 @@ import yaml
 
 from ipsecvpn.host import UNIT, Host
 from ipsecvpn.installer import install_files
-from ipsecvpn.profile import load_profile
+from ipsecvpn.profile import load_profile, validate_profile
 from ipsecvpn.renderer import DeploymentManifest, build_manifest, swanctl_config
 from ipsecvpn.secureio import read_keys
 
@@ -37,8 +37,14 @@ def command(*args, allowed=(0,), timeout=55, input=None):
 
 
 def cli(*args, expect=0):
-    proc = command(str(CLI), *args, "--json", allowed=(expect,))
-    return json.loads(proc.stdout)
+    proc = command(str(CLI), *args, "--json", allowed=(0, 1))
+    report = json.loads(proc.stdout)
+    if proc.returncode != expect:
+        raise RuntimeError(
+            f"{args[0]} returned {proc.returncode}: {report.get('detail', '')} "
+            f"{report.get('reason_code', '')}".rstrip()
+        )
+    return report
 
 
 def ip(*args, ns=None, allowed=(0,)):
@@ -98,7 +104,9 @@ def create_profile():
         pair[f"{side}_cidrs"] = fixture["lans"]
         if "extra_lan" in fixture:
             site["lan_cidrs"].append(fixture["extra_lan"])
-        link["outer_path"] = {"interface": TOPO["wan"]}
+        link["outer_path"]["interface"] = TOPO["wan"]
+    validate_profile(profile)
+    for link in profile["site_links"]:
         path = Path(link["secret_ref"][5:])
         with path.open("xb") as stream:
             stream.write(os.urandom(32).hex().encode("ascii") + b"\n")
@@ -237,7 +245,9 @@ WantedBy=multi-user.target
         encoding="ascii",
     )
     command("systemctl", "daemon-reload")
-    command("systemctl", "enable", "--now", TOPOLOGY_UNIT)
+    command("systemctl", "enable", TOPOLOGY_UNIT)
+    command("systemctl", "start", TOPOLOGY_UNIT)
+    command("systemctl", "is-active", TOPOLOGY_UNIT)
 
 
 if __name__ == "__main__":

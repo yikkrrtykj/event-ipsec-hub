@@ -265,9 +265,9 @@ def exchange(
         stop_process(server)
 
 
-def begin_captures(model):
+def begin_captures(model, *, wan_only=False):
     points = [("hub", TOPO["wan"], None, "ip")]
-    for link, site in zip(model.links, TOPO["sites"], strict=True):
+    for link, site in zip(model.links, TOPO["sites"], strict=True) if not wan_only else ():
         points.extend(
             (
                 ("hub", link.name, None, "ip"),
@@ -519,7 +519,7 @@ def verify_rekeys(model):
 
 
 def capture_fail_closed(model, start):
-    captures = begin_captures(model)
+    captures = begin_captures(model, wan_only=True)
     try:
         rows = pair("udp", start, expected_failure=True, count=1)
     finally:
@@ -737,7 +737,138 @@ def verify_maintenance(model):
                 "flows": pair("udp", 94 + 2 * kill),
             },
         )
+        if kill:
+            emit("F10", "Interrupted transaction has no WAN private plaintext.", proof)
     assert read_record(ACTIVE)["profile"] == load_profile(PROFILE)
+
+
+def verify_isolation_failures(model):
+    extra = TOPO["sites"][0]["extra_lan"]
+    failures = [
+        exchange(
+            0,
+            "udp",
+            extra,
+            TOPO["sites"][1]["lans"][0],
+            sport=PORT + 100,
+            count=1,
+            expected_failure=True,
+        ),
+        exchange(
+            1,
+            "udp",
+            TOPO["sites"][1]["lans"][0],
+            extra,
+            sport=PORT + 101,
+            count=1,
+            expected_failure=True,
+        ),
+    ]
+    emit("F07", "Declared but unauthorized LAN is refused in both directions.", failures)
+    link = model.links[0]
+    install = read_record(INSTALLED)
+    resources = Resources(HOST, install["token"], (model,))
+    ip("link", "del", "dev", link.name)
+    try:
+        report = cli("status", expect=1)
+        assert report["data_path"]["status"] == "SKIP"
+        lookup = ip("-4", "route", "get", addr(link.remote_ts[0], 11), allowed=(2,))
+        assert lookup.returncode == 2
+        proof = capture_fail_closed(model, 102)
+        emit(
+            "F08 F09",
+            "Missing XFRM leaves the protected route blocked and business unverified.",
+            {"diagnostics": report["status"], "business": report["data_path"], **proof},
+        )
+    finally:
+        ip("link", "add", "name", link.name, "type", "xfrm", "if_id", str(link.if_id))
+        ip("link", "set", "dev", link.name, "alias", resources.alias, "up")
+        for spec in sorted(resources.routes):
+            if spec[2] == link.name:
+                resources.route("add", spec)
+    assert cli("status")["status"] == "PASS"
+    command(
+        "nft",
+        "-f",
+        "-",
+        input=(
+            "table ip pr3_foreign {\n"
+            "    chain filter {\n"
+            "        type filter hook forward priority 15; policy drop;\n"
+            "    }\n"
+            "}\n"
+        ),
+    )
+    try:
+        outside = command("nft", "list", "table", "ip", "pr3_foreign").stdout
+        assert_write_stop(model)
+        assert command("nft", "list", "table", "ip", "pr3_foreign").stdout == outside
+    finally:
+        command("nft", "delete", "table", "ip", "pr3_foreign")
+    emit("F11", "An external nft DROP stops active writes and is preserved.", "STOP")
+    ip("-4", "route", "add", "blackhole", "default", "metric", "49152")
+    try:
+        assert_write_stop(model)
+    finally:
+        ip("-4", "route", "del", "blackhole", "default", "metric", "49152")
+    emit("F12", "Recorded route baseline drift stops changes.", "STOP")
+    assert (
+        cli("rollback", "--to", "0" * 32, "--maintenance", "--confirm", expect=1)["decision"]
+        == "STOP"
+    )
+    profile = load_profile(PROFILE)
+    key = Path(profile["site_links"][0]["secret_ref"][5:])
+    original = key.read_bytes()
+    try:
+        key.write_bytes(os.urandom(32).hex().encode() + b"\n")
+        assert cli("apply", "-c", str(PROFILE), "--confirm", expect=1)["decision"] == "STOP"
+    finally:
+        key.write_bytes(original)
+    emit("F15", "Invalid backup and unexpected PSK drift block changes.", "STOP")
+
+
+def verify_dpd(model):
+    link, other = model.links
+    site = TOPO["sites"][0]
+    start = time.monotonic()
+    ip("link", "set", "wan", "down", ns=site["router"])
+    try:
+        proof = capture_fail_closed(model, 108)
+        remaining = stable(
+            model,
+            lambda snap: (
+                not snap.get(link.name) and snap.get(other.name) and snap.get(other.name).child
+            ),
+            seconds=190,
+        )
+        assert remaining.get(other.name).child
+    finally:
+        ip("link", "set", "wan", "up", ns=site["router"])
+    detected = time.monotonic() - start
+    report = cli("initiate", "--site", link.site_id, "--confirm")
+    emit(
+        "S05 S06",
+        "One peer loses WAN, DPD removes only its SA, then targeted reconnect restores traffic.",
+        {
+            "detection_and_isolation_seconds": round(detected, 3),
+            "guard": proof,
+            "reconnect_journal": report["journal"],
+            "flows": pair("udp", 110),
+        },
+    )
+
+
+def verify_daemon_restart(model):
+    old_pid = HOST.service(UNIT, "MainPID")
+    command("systemctl", "restart", UNIT, timeout=90)
+    stable(model, lambda snap: len(snap.ikes) == 2 and all(ike.child for ike in snap.ikes))
+    assert HOST.service(UNIT, "MainPID") != old_pid
+    emit(
+        "T13",
+        "Restarting the owned daemon restores verified SAs and both business directions.",
+        {"flows": pair("udp", 114)},
+        action="systemctl restart strongswan",
+    )
 
 
 def before_reboot():
@@ -759,6 +890,9 @@ def before_reboot():
     verify_foreign_policy(model)
     verify_maintenance(model)
     verify_mtu(model)
+    verify_isolation_failures(model)
+    verify_dpd(model)
+    verify_daemon_restart(model)
     assert baseline_for(model) == json.loads(BASELINE.read_text(encoding="utf-8"))
 
 
@@ -776,6 +910,15 @@ def after_reboot():
         "VM reboot restores guard, routes, owned SAs and real bidirectional LAN traffic.",
         {"baseline": baseline, "flows": receipts},
         action="actual VM reboot; verify new SSH session, restored services and UDP/TCP",
+    )
+    removed = cli("uninstall", "--maintenance", "--confirm")
+    assert not HOST.command("Empty SAD", "ip", "xfrm", "state", "list", "nokeys").strip()
+    assert not HOST.command("Empty SPD", "ip", "xfrm", "policy", "list", "nosock").strip()
+    assert Resources(HOST, "uninstalled", ()).baseline() == baseline
+    emit(
+        "S09",
+        "Live maintenance uninstall drains only owned SAs and restores the foreign baseline.",
+        {"journal": removed["backup_id"], "empty_sad_spd": True, "baseline": baseline},
     )
     if any(json.loads(line)["status"] == "FAIL" for line in SUMMARY.read_text().splitlines()):
         raise RuntimeError("One or more executed data-plane observations failed.")
