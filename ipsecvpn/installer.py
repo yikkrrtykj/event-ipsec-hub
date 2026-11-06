@@ -2,6 +2,7 @@
 
 import os
 import re
+import stat
 import sys
 from pathlib import Path
 
@@ -87,6 +88,10 @@ def trusted_python():
         )
     for directory in (module.parent, Path(python).parent, Path(python).resolve().parent):
         os.close(trusted_dir(directory))
+    for path in (module, Path(python).resolve()):
+        info = path.stat()
+        if info.st_uid != 0 or info.st_mode & 0o022 or not stat.S_ISREG(info.st_mode):
+            raise Stop("The systemd entry point is not safely owned.")
     return python
 
 

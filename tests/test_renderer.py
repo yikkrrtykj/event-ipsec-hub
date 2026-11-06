@@ -46,6 +46,14 @@ def test_render_is_repeatable_and_matches_original_plan(path, capsys, monkeypatc
         assert link["secret_ref"] not in original
         assert Path(link["secret_ref"]).name not in original
     assert len(manifest["forward_acl"]) == 2
+    expected_acl = {
+        (tuple(rule["source_cidrs"]), tuple(rule["destination_cidrs"]))
+        for rule in build_plan(profile)["forward_acl"]
+    }
+    assert {
+        (tuple(rule["source_cidrs"]), tuple(rule["destination_cidrs"]))
+        for rule in manifest["forward_acl"]
+    } == expected_acl
     assert manifest["source_nat"] is False
     assert document["backup"]["enabled"] == profile["backup"]["enabled"]
 
@@ -83,3 +91,25 @@ def test_unprivileged_or_non_linux_install_stops(capsys, monkeypatch):
     assert cli.main(["install", "--confirm", "--json"]) == 1
     result = json.loads(capsys.readouterr().out)
     assert (result["status"], result["decision"]) == ("FAIL", "STOP")
+
+
+def test_vici_inventory_does_not_ignore_legacy_connections():
+    class TestHost(Host):
+        def vici(self, *_args):
+            return "foreign: IKEv1, no reauthentication\n  local:  192.0.2.10\n"
+
+    assert TestHost().vici_names() == {"foreign"}
+
+
+def test_ownership_marker_rejects_foreign_table():
+    from ipsecvpn.resources import Resources
+
+    class TestHost(Host):
+        def routing(self):
+            return [], [], []
+
+        def nft(self):
+            return [{"table": {"family": "ip", "name": "ipsecvpn"}}]
+
+    with pytest.raises(Stop, match="not owned"):
+        Resources(TestHost(), "new", ()).network()

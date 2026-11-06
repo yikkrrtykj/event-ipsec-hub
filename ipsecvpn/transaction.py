@@ -120,6 +120,9 @@ class Deployment:
         write_record(JOURNAL, self.record)
 
     def begin(self, action, active, target, install, baseline):
+        make_directory(STATE)
+        make_directory(BACKUPS)
+        make_directory(HISTORY)
         identifier = uuid.uuid4().hex
         self.record = {
             "id": identifier,
@@ -325,6 +328,7 @@ class Deployment:
         resources.verify(manifest, baseline, active.get("nft_sha256") if active else None)
         if not confirmed:
             return {"status": "PASS", "detail": "Dry-run; no snapshot written."}
+        keys_for(active)
         identifier = uuid.uuid4().hex
         write_record(
             BACKUPS / f"{identifier}.json",
@@ -342,9 +346,6 @@ class Deployment:
         if not confirmed:
             return self._dispatch(action, False, config, identifier)
         with locked():
-            make_directory(STATE)
-            make_directory(BACKUPS)
-            make_directory(HISTORY)
             return self._dispatch(action, True, config, identifier)
 
     def _dispatch(self, action, confirmed, config, identifier):

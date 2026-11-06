@@ -24,7 +24,8 @@ sudo apt-get -qq install -y --no-install-recommends qemu-system-x86 qemu-utils c
 mkdir -p "$work/payload/apt" "$work/payload/wheels" "$work/apt-archives"
 sudo apt-get -qq -y --download-only --no-install-recommends \
     -o Dir::State::status=/dev/null -o "Dir::Cache::archives=$work/apt-archives" \
-    install charon-systemd strongswan-swanctl nftables iproute2 python3-venv iptables ufw
+    install charon-systemd strongswan-swanctl libstrongswan-standard-plugins \
+    nftables iproute2 python3-venv iptables ufw
 cp "$work"/apt-archives/*.deb "$work/payload/apt/"
 (cd "$work/payload/apt" && dpkg-scanpackages -m . /dev/null > Packages)
 python -m pip wheel --wheel-dir "$work/payload/wheels" "$root"
@@ -78,7 +79,7 @@ guest 'cloud-init status --wait'
 scp "${ssh_options[@]}" -P 2222 -r "$work/payload" ubuntu@127.0.0.1:lab
 guest 'sudo bash /home/ubuntu/lab/guest.sh'
 before="$(guest 'cat /proc/sys/kernel/random/boot_id')"
-guest 'sudo systemctl reboot --no-block'
+guest 'sudo systemctl reboot --no-block' || true
 for _ in {1..100}; do
     after="$(guest 'cat /proc/sys/kernel/random/boot_id' 2>/dev/null || true)"
     if [[ -n "$after" && "$before" != "$after" ]]; then break; fi

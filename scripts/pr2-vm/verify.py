@@ -67,7 +67,9 @@ def emit(ids, verdict, expected, observed):
                 "system_touched": "isolated VM only",
                 "driver": "scripts/pr2-vm/verify.py",
             }
-            stream.write(json.dumps(row, sort_keys=True) + "\n")
+            line = json.dumps(row, sort_keys=True)
+            stream.write(line + "\n")
+            print(line, flush=True)
 
 
 def profile_write(path, profile):
@@ -318,6 +320,7 @@ def before_reboot():
         "Occupied UDP/500 yields STOP with original owner alive.",
         "Unrelated listener remained.",
     )
+    assert not STATE.exists(), "A refused install created persistent deployment state."
 
     packages = HOST.packages()
     state_before = sorted(path.name for path in STATE.iterdir()) if STATE.exists() else []
@@ -431,14 +434,16 @@ def before_reboot():
         "V18", "PASS", "Corrupt/missing backups block writes.", "Both blocked; pre-state verified."
     )
 
-    link = manifest.links[0]
-    protected = link.remote_ts[0].split("/")[0]
     command("systemctl", "stop", UNIT)
-    assert HOST.ip("-4", "route", "get", protected)[0]["dev"] == link.name
-    command("ip", "link", "del", "dev", link.name)
-    lookup = command("ip", "-4", "route", "get", protected, allowed=(2,))
-    assert "Invalid argument" in lookup.stderr or "Network is unreachable" in lookup.stderr
-    assert "blackhole" in command("ip", "-4", "route", "show", "exact", link.remote_ts[0]).stdout
+    for link in manifest.links:
+        for cidr in link.remote_ts:
+            protected = cidr.split("/")[0]
+            assert HOST.ip("-4", "route", "get", protected)[0]["dev"] == link.name
+        command("ip", "link", "del", "dev", link.name)
+    for cidr in manifest.networks:
+        lookup = command("ip", "-4", "route", "get", cidr.split("/")[0], allowed=(2,))
+        assert "Invalid argument" in lookup.stderr or "Network is unreachable" in lookup.stderr
+        assert "blackhole" in command("ip", "-4", "route", "show", "exact", cidr).stdout
     command("systemctl", "start", UNIT)
     boot("restore")
     resources(manifest).verify(manifest, baseline, state["nft_sha256"])

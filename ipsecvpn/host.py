@@ -16,7 +16,7 @@ PATH = "/usr/sbin:/usr/bin:/sbin:/bin"
 UNIT = "strongswan.service"
 DROPIN = Path("/etc/systemd/system/strongswan.service.d/99-ipsecvpn.conf")
 SOCKET = "unix:///run/charon.vici"
-PACKAGES = ("charon-systemd", "strongswan-swanctl")
+PACKAGES = ("charon-systemd", "strongswan-swanctl", "libstrongswan-standard-plugins")
 LAB_MARKER = Path("/etc/ipsecvpn/lab-authorized")
 HOST_TOOLS = ("ip", "nft", "ss", "systemctl", "sysctl", "modprobe", "dpkg-query", "apt-get")
 

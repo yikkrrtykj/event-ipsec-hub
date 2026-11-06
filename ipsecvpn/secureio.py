@@ -47,10 +47,21 @@ def sync_dir(path):
 def make_directory(path, mode=0o700):
     fd = trusted_dir(path.parent)
     try:
+        created = False
         try:
             os.mkdir(path.name, mode, dir_fd=fd)
+            created = True
         except FileExistsError:
             pass
+        if created:
+            child = os.open(path.name, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            try:
+                if os.fstat(child).st_uid != 0:
+                    raise Stop("A newly created protected directory has unexpected ownership.")
+                os.fchmod(child, mode)
+                os.fsync(child)
+            finally:
+                os.close(child)
         os.fsync(fd)
     finally:
         os.close(fd)
