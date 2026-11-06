@@ -1,0 +1,459 @@
+"""Real three-node acceptance, executed only inside the disposable QEMU guest."""
+
+import hashlib
+import json
+import os
+import re
+import secrets
+import select
+import subprocess
+import sys
+import time
+from dataclasses import replace
+from datetime import UTC, datetime
+from pathlib import Path
+
+from topology import (
+    HERE,
+    HOST,
+    PEER_ROOT,
+    PROFILE,
+    TOPO,
+    addr,
+    cli,
+    command,
+    create_profile,
+    in_ns,
+    install_topology_unit,
+    ip,
+    require_lab,
+)
+
+from ipsecvpn.host import SOCKET, UNIT
+from ipsecvpn.profile import load_profile
+from ipsecvpn.renderer import DeploymentManifest, build_manifest
+from ipsecvpn.resources import Resources
+from ipsecvpn.sa import correlate, inventory, kernel_policies, kernel_states, parse_vici, session
+from ipsecvpn.secureio import read_record
+from ipsecvpn.transaction import INSTALLED
+
+SUMMARY = Path("/var/tmp/ipsecvpn-pr3-acceptance.jsonl")
+BASELINE = HERE / "baseline.json"
+PORT = TOPO["traffic_port"]
+ENV = {}
+HEAD = (HERE / "head-sha").read_text(encoding="ascii").strip()
+
+
+def emit(cases, expected, observed, *, status="PASS", action="inspect real nodes"):
+    for case in cases.split():
+        receipt = {
+            "case": case,
+            "time_utc": datetime.now(UTC).isoformat(),
+            "head_sha": HEAD,
+            "environment": ENV,
+            "action": action,
+            "expected": expected,
+            "observed": observed,
+            "status": status,
+            "proof_refs": [SUMMARY.name],
+        }
+        line = json.dumps(receipt, sort_keys=True)
+        with SUMMARY.open("a", encoding="utf-8") as stream:
+            stream.write(line + "\n")
+        print(line, flush=True)
+
+
+def environment():
+    packages = HOST.packages()
+    ENV.update(
+        HOST.probe(),
+        strongswan=packages["charon-systemd"],
+        iproute2=packages["iproute2"],
+        nft=command("nft", "--version").stdout.strip(),
+    )
+
+
+def manifest():
+    return build_manifest(load_profile(PROFILE))
+
+
+def baseline_for(model):
+    owner = read_record(INSTALLED)["token"]
+    return Resources(HOST, owner, (model,)).baseline()
+
+
+def peer_pid(site):
+    return int((PEER_ROOT / site["router"] / "pid").read_text(encoding="ascii"))
+
+
+def prove_topology():
+    pids = {
+        "hub": int(HOST.service(UNIT, "MainPID")),
+        **{site["router"]: peer_pid(site) for site in TOPO["sites"]},
+    }
+    namespaces = {node: os.readlink(f"/proc/{pid}/ns/net") for node, pid in pids.items()}
+    assert len(set(pids.values())) == len(set(namespaces.values())) == 3
+    for site in TOPO["sites"]:
+        assert not ip("-4", "route", "show", "default", ns=site["router"]).stdout
+        assert (PEER_ROOT / site["router"] / "charon.vici").is_socket()
+    assert not ip("-4", "route", "show", "default", "dev", TOPO["wan"]).stdout
+    emit(
+        "T01",
+        "Three isolated IKE nodes, two LAN stacks, no default route on the test WAN.",
+        {
+            "pids": pids,
+            "network_namespaces": namespaces,
+            "peer_vici": {s["router"]: s["router"] + "/charon.vici" for s in TOPO["sites"]},
+            "lan_nodes": [s["host"] for s in TOPO["sites"]],
+            "qemu": "restrict=on with loopback-only SSH management",
+        },
+    )
+
+
+def verify_sas(model):
+    pid = HOST.assert_daemon({link.name for link in model.links})
+    live = inventory(HOST, model, pid)
+    assert len(live.ikes) == 2 and all(ike.child for ike in live.ikes)
+    for idx, (site, link) in enumerate(zip(TOPO["sites"], model.links, strict=True)):
+        reverse = replace(
+            link,
+            source=link.peer,
+            peer=link.source,
+            local_id=link.remote_id,
+            remote_id=link.local_id,
+            local_ts=link.remote_ts,
+            remote_ts=link.local_ts,
+        )
+        peer = DeploymentManifest(model.event_id, (reverse,))
+        with session(peer_pid(site), PEER_ROOT / site["router"] / "charon.vici") as ctl:
+            observed = parse_vici(ctl.list_sas(), peer)
+        states = kernel_states(
+            ip("-o", "xfrm", "state", "list", "nokeys", ns=site["router"]).stdout
+        )
+        policies = kernel_policies(
+            ip("-o", "xfrm", "policy", "list", "nosock", ns=site["router"]).stdout
+        )
+        correlate(observed, peer, states, policies)
+        hub_child = live.get(link.name).child
+        peer_child = observed.get(link.name).child
+        assert hub_child.outbound.spi == peer_child.inbound.spi
+        assert hub_child.inbound.spi == peer_child.outbound.spi
+        emit(
+            f"T0{idx + 2}",
+            "Both ends installed the same negotiated tunnel.",
+            {
+                "peer_node": site["router"],
+                "hub_interface": link.name,
+                "peer_interface": "tunnel",
+                "ike": "ESTABLISHED",
+                "child": "INSTALLED",
+                "if_id": link.if_id,
+                "hub_reqid": hub_child.inbound.reqid,
+                "peer_reqid": peer_child.inbound.reqid,
+                "local_ts": link.local_ts,
+                "remote_ts": link.remote_ts,
+                "peer_policy_count": len(policies),
+                "opposite_spis_match": True,
+            },
+        )
+    emit(
+        "T04",
+        "Every Hub CHILD maps to both SPIs and all global ESP policies.",
+        {
+            "interfaces": [link.name for link in model.links],
+            "ikes": len(live.ikes),
+            "kernel_state_count": 2 * len(live.ikes),
+        },
+    )
+    return live
+
+
+def start_traffic(args):
+    proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+    ready, _, _ = select.select([proc.stdout], [], [], 5)
+    if not ready or proc.stdout.readline().strip() != "READY":
+        stop_process(proc)
+        raise RuntimeError("The LAN receiver did not start.")
+    return proc
+
+
+def stop_process(proc):
+    if proc.poll() is None:
+        proc.terminate()
+        try:
+            proc.wait(timeout=4)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=4)
+
+
+def exchange(
+    side,
+    protocol,
+    source_net,
+    destination_net,
+    *,
+    sport,
+    count=3,
+    size=96,
+    pmtu="default",
+    mss=0,
+    expected_failure=False,
+):
+    source = addr(source_net, 11)
+    destination = addr(destination_net, 11)
+    sender, receiver = TOPO["sites"][side]["host"], TOPO["sites"][1 - side]["host"]
+    program = (sys.executable, str(HERE / "traffic.py"))
+    server = start_traffic(
+        in_ns(receiver, *program, "server", protocol, destination, str(PORT), str(count))
+    )
+    try:
+        nonce = secrets.token_hex(8)
+        proc = command(
+            *in_ns(
+                sender,
+                *program,
+                "client",
+                protocol,
+                source,
+                str(sport),
+                destination,
+                str(PORT),
+                str(count),
+                str(size),
+                nonce,
+                pmtu,
+                str(mss),
+            ),
+            allowed=(0, 1),
+            timeout=12,
+        )
+        receipt = json.loads(proc.stdout)
+        if expected_failure:
+            assert proc.returncode == 1 and isinstance(receipt, dict)
+            return {
+                "sender": sender,
+                "receiver": receiver,
+                "source": source,
+                "destination": destination,
+                "bytes": size,
+                **receipt,
+            }
+        assert proc.returncode == 0, receipt
+        remote = json.loads(server.communicate(timeout=8)[0])
+        assert server.returncode == 0 and remote == receipt and len(remote) == count
+        assert all(row["source"] == [source, sport] and row["bytes"] == size for row in remote)
+        return {
+            "sender": sender,
+            "receiver": receiver,
+            "source": source,
+            "destination": destination,
+            "protocol": protocol,
+            "source_port": sport,
+            "destination_port": PORT,
+            "received": count,
+            "bytes_each": size,
+            "mss": mss,
+            "sha256": [row["sha256"] for row in remote],
+        }
+    finally:
+        stop_process(server)
+
+
+def begin_captures(model):
+    points = [("hub", TOPO["wan"], None, "ip")]
+    for link, site in zip(model.links, TOPO["sites"], strict=True):
+        points.extend(
+            (
+                ("hub", link.name, None, "ip"),
+                (site["router"], "wan", site["router"], "ip"),
+                (site["host"], "eth0", site["host"], "ip"),
+            )
+        )
+    captures = []
+    try:
+        for node, interface, ns, capture_filter in points:
+            path = HERE / f"{node}-{interface}.pcap"
+            args = (
+                "tcpdump",
+                "-nn",
+                "-Z",
+                "root",
+                "-U",
+                "-i",
+                interface,
+                "-s",
+                "96",
+                "-w",
+                str(path),
+                capture_filter,
+            )
+            proc = subprocess.Popen(
+                in_ns(ns, *args) if ns else args,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            captures.append((node, interface, path, proc))
+            ready, _, _ = select.select([proc.stderr], [], [], 6)
+            if not ready or "listening on" not in proc.stderr.readline():
+                raise RuntimeError(f"Capture failed to start at {node}/{interface}.")
+    except BaseException:
+        for _, _, _, proc in captures:
+            stop_process(proc)
+        raise
+    return captures
+
+
+def finish_captures(captures):
+    rows = {}
+    for node, interface, path, proc in captures:
+        stop_process(proc)
+        if not path.exists():
+            continue
+        lines = command("tcpdump", "-nn", "-tt", "-r", str(path)).stdout.splitlines()
+        path.unlink()
+        rows[f"{node}/{interface}"] = [
+            re.sub(r"spi=0x[0-9a-f]+", "spi=<redacted>", line) for line in lines
+        ]
+    return rows
+
+
+def verify_traffic(model, first):
+    baseline = {
+        site["site_id"]: (site["rx_packets"], site["tx_packets"]) for site in cli("status")["sites"]
+    }
+    captures = begin_captures(model)
+    all_rows = []
+    try:
+        for side in (0, 1):
+            src, dst = TOPO["sites"][side]["lans"], TOPO["sites"][1 - side]["lans"]
+            for proto in ("udp", "tcp"):
+                receipt = exchange(
+                    side, proto, src[0], dst[0], sport=PORT + 1 + 2 * side + (proto == "tcp")
+                )
+                all_rows.append(receipt)
+            for index in range(1, 4):
+                all_rows.append(
+                    exchange(
+                        side,
+                        "udp",
+                        src[index // 2],
+                        dst[index % 2],
+                        sport=PORT + 10 + 4 * side + index,
+                    )
+                )
+        time.sleep(0.2)
+    finally:
+        observed = finish_captures(captures)
+    current = cli("status")
+    assert current["status"] == "PASS" and current["data_path"]["status"] == "SKIP", current
+    for site in current["sites"]:
+        before = baseline[site["site_id"]]
+        assert site["rx_packets"] > before[0] and site["tx_packets"] > before[1]
+    wan = observed[f"hub/{TOPO['wan']}"]
+    assert all(not any(row["source"] in line for row in all_rows) for line in wan)
+    for link in model.links:
+        assert any(link.peer in line and "ESP" in line for line in wan), wan[:5]
+    for row in all_rows:
+        needle = f"{row['source']}.{row['source_port']} > {row['destination']}.{PORT}:"
+        for key in [f"hub/{link.name}" for link in model.links] + [
+            f"{row['sender']}/eth0",
+            f"{row['receiver']}/eth0",
+        ]:
+            assert any(needle in line for line in observed[key]), (key, needle)
+        if row["protocol"] == "tcp":
+            path = observed[f"{row['sender']}/eth0"]
+            assert any(needle in line and "Flags [S]" in line for line in path)
+            assert any(needle in line and "Flags [F" in line for line in path)
+    if first:
+        for case, row in zip(
+            ("T05", "T07", "T06", "T08"),
+            [all_rows[0], all_rows[1], all_rows[5], all_rows[6]],
+            strict=True,
+        ):
+            emit(case, "LAN hosts verify nonce, sequence and original source.", row)
+        emit("T09", "Every pair in the multi-CIDR matrix reaches the opposite LAN host.", all_rows)
+        emit(
+            "T10 T11",
+            "LAN and XFRM tuples match. WAN only carries encrypted test traffic.",
+            {
+                key: {
+                    "packets": len(lines),
+                    "sha256": hashlib.sha256("\n".join(lines).encode()).hexdigest(),
+                    "samples": lines[:4],
+                }
+                for key, lines in observed.items()
+            },
+        )
+    return all_rows
+
+
+def verify_routes(model):
+    paths = {}
+    for site, link in zip(TOPO["sites"], model.links, strict=True):
+        destination = addr(link.local_ts[0], 11)
+        site_lookup = ip("-j", "route", "get", destination, ns=site["router"])
+        assert json.loads(site_lookup.stdout)[0]["dev"] == "tunnel"
+        inner = json.loads(ip("-j", "route", "get", addr(link.remote_ts[0], 11)).stdout)[0]
+        outer = json.loads(ip("-j", "route", "get", link.peer, "from", link.source).stdout)[0]
+        assert inner["dev"] == link.name and outer["dev"] == TOPO["wan"]
+        paths[site["router"]] = {
+            "peer_xfrm": "tunnel",
+            "hub_xfrm": inner["dev"],
+            "hub_peer_route": outer["dev"],
+        }
+    emit(
+        "T12",
+        "Reciprocal private routes use XFRM, while outer peers remain on the isolated WAN.",
+        paths,
+    )
+
+
+def connect(model):
+    for link in model.links:
+        command(
+            "swanctl",
+            "--initiate",
+            "--child",
+            link.child,
+            "--timeout",
+            "10",
+            "--uri",
+            SOCKET,
+            timeout=15,
+        )
+
+
+def before_reboot():
+    assert cli("install", "--confirm")["status"] == "PASS"
+    environment()
+    create_profile()
+    install_topology_unit()
+    model = manifest()
+    prove_topology()
+    BASELINE.write_text(json.dumps(baseline_for(model)), encoding="utf-8")
+    assert cli("apply", "-c", str(PROFILE), "--confirm")["status"] == "PASS"
+    connect(model)
+    verify_sas(model)
+    verify_routes(model)
+    verify_traffic(model, first=True)
+    assert baseline_for(model) == json.loads(BASELINE.read_text(encoding="utf-8"))
+
+
+def after_reboot():
+    environment()
+    model = manifest()
+    connect(model)
+    assert cli("status")["status"] == "PASS"
+    verify_traffic(model, first=False)
+    assert baseline_for(model) == json.loads(BASELINE.read_text(encoding="utf-8"))
+
+
+if __name__ == "__main__":
+    require_lab()
+    try:
+        {"before-reboot": before_reboot, "after-reboot": after_reboot}[sys.argv[1]]()
+    except (RuntimeError, OSError, AssertionError, ValueError, KeyError) as exc:
+        emit("LAB", "Executed three-node assertions pass.", str(exc), status="FAIL")
+        raise
