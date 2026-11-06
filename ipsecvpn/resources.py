@@ -252,6 +252,10 @@ class Resources:
                 lookup = self.host.ip("-4", "route", "get", spec[0].split("/")[0])
                 if len(lookup) != 1 or lookup[0].get("dev") != spec[2]:
                     raise Stop("The kernel did not resolve a protected network through its XFRM.")
-        if self.baseline() != baseline:
-            raise Stop("A protected non-project host baseline changed.")
+        current = self.baseline()
+        if current != baseline:
+            changed = ", ".join(
+                sorted(name for name in current if current[name] != baseline.get(name))
+            )
+            raise Stop(f"A protected non-project host baseline changed ({changed}).")
         return fingerprint(table) if table else None

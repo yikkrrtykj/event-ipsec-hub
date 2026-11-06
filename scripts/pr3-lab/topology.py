@@ -125,21 +125,26 @@ def bootstrap_network():
     profile = load_profile(PROFILE)
     manifest = build_manifest(profile)
     keys = read_keys(profile)
-    bridge = TOPO["wan"]
-    ip("link", "add", bridge, "type", "bridge")
-    ip("link", "set", bridge, "address", "02:00:00:30:00:10")
-    ip("addr", "add", TOPO["hub"], "dev", bridge)
-    ip("link", "set", bridge, "up")
+    wan = TOPO["wan"]
+    switch = "wan-switch"
+    ip("netns", "add", switch)
+    ip("link", "add", "bridge", "type", "bridge", ns=switch)
+    ip("link", "set", "bridge", "up", ns=switch)
+    ip("link", "add", wan, "type", "veth", "peer", "name", "hubport", "netns", switch)
+    ip("link", "set", "hubport", "master", "bridge", ns=switch)
+    ip("link", "set", "hubport", "up", ns=switch)
+    ip("link", "set", wan, "address", "02:00:00:30:00:10")
+    ip("addr", "add", TOPO["hub"], "dev", wan)
+    ip("link", "set", wan, "up")
     for index, (site, link) in enumerate(zip(TOPO["sites"], manifest.links, strict=True)):
         router, host = site["router"], site["host"]
         for name in (router, host):
             ip("netns", "add", name)
             ip("link", "set", "lo", "up", ns=name)
         mesh = f"mesh{index}"
-        ip("link", "add", mesh, "type", "veth", "peer", "name", "wan", "netns", router)
-        ip("link", "set", mesh, "address", f"02:00:00:30:00:{index + 21:02x}")
-        ip("link", "set", mesh, "master", bridge)
-        ip("link", "set", mesh, "up")
+        ip("link", "add", mesh, "type", "veth", "peer", "name", "wan", "netns", router, ns=switch)
+        ip("link", "set", mesh, "master", "bridge", ns=switch)
+        ip("link", "set", mesh, "up", ns=switch)
         ip("addr", "add", site["endpoint"], "dev", "wan", ns=router)
         ip("link", "set", "wan", "up", ns=router)
         ip(
