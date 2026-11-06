@@ -13,7 +13,7 @@ from pathlib import Path
 
 import yaml
 
-from ipsecvpn.host import UNIT, Host, fingerprint
+from ipsecvpn.host import UNIT, VICI_PATH, Host, fingerprint
 from ipsecvpn.installer import GUARD, RESTORE, STATE
 from ipsecvpn.profile import load_profile
 from ipsecvpn.renderer import build_manifest
@@ -274,7 +274,8 @@ def check_install_failure(partial, baseline, services):
     identifier = journal["id"]
     evidence = journal["install_failure_packages"]
     assert journal["action"] == "install" and journal["phase"] == "STOP_FOR_MANUAL"
-    assert journal["protected_baseline_unchanged"] and read_record(INSTALLED) is None
+    assert journal.get("protected_baseline_unchanged"), journal.get("recovery_failure")
+    assert read_record(INSTALLED) is None
     after = HOST.package_state()
     assert before == journal["install"]["before_package_state"]
     assert evidence["delta"] and set(evidence["delta"]) == after.keys() - before.keys()
@@ -294,7 +295,8 @@ def check_install_failure(partial, baseline, services):
         assert ["Start owned daemon", "DONE"] not in steps
         assert set(evidence["delta"]) == set(journal["install"]["packages"])
         assert all(after[name]["status"] == "ii " for name in evidence["delta"])
-    assert not HOST.ike_ports() and resources().baseline() == baseline
+    assert not HOST.ike_ports() and not VICI_PATH.exists()
+    assert resources().baseline() == baseline
     assert foreign_services() == services
     assert "Unfinished" in cli("install", "--confirm", ok=False)["detail"]
     blocked = cli("rollback", "--to", identifier, "--confirm", ok=False)
@@ -751,6 +753,14 @@ def check_reinstall(baseline, services, old_owner, package_state, uninstall_id):
         assert HOST.service(UNIT, "MainPID") == pid and HOST.ike_ports()
     finally:
         command("systemctl", "stop", UNIT)
+    if VICI_PATH.exists():
+        try:
+            assert "unowned" in cli("install", "--confirm", ok=False)["detail"]
+            assert VICI_PATH.is_socket()
+        finally:
+            # The test created this socket by starting the stock daemon.
+            assert not HOST.vici_listeners()
+            VICI_PATH.unlink()
     assert HOST.package_state() == package_state and (STATE / "journal.json").read_bytes() == before
     assert resources().baseline() == baseline and foreign_services() == services
     emit(
@@ -854,6 +864,10 @@ if __name__ == "__main__":
                     {
                         "phase": journal["phase"],
                         "failure": journal.get("failure"),
+                        "recovery_failure": journal.get("recovery_failure"),
+                        "package_recovery": journal.get("package_recovery"),
+                        "strongswan_state": HOST.service(UNIT, "ActiveState"),
+                        "vici_path_present": VICI_PATH.exists(),
                         "steps": journal["steps"],
                     },
                 )

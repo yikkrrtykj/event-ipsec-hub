@@ -16,7 +16,8 @@ PATH = "/usr/sbin:/usr/bin:/sbin:/bin"
 UNIT = "strongswan.service"
 DROPIN = Path("/etc/systemd/system/strongswan.service.d/99-ipsecvpn.conf")
 PRIVATE_CONF = Path("/etc/strongswan.d/ipsecvpn-private.conf")
-SOCKET = "unix:///run/charon.vici"
+VICI_PATH = Path("/run/charon.vici")
+SOCKET = f"unix://{VICI_PATH}"
 PACKAGES = ("charon-systemd", "strongswan-swanctl", "libstrongswan-standard-plugins")
 VENDOR_UNITS = {
     "/usr/lib/systemd/system/strongswan.service",
@@ -179,6 +180,10 @@ class Host:
             "IKE socket probe", "ss", "-H", "-ulnp", "( sport = :500 or sport = :4500 )"
         ).strip()
 
+    def vici_listeners(self):
+        listeners = self.command("VICI listener probe", "ss", "-H", "-xlpn")
+        return [line for line in listeners.splitlines() if str(VICI_PATH) in line.split()]
+
     def assert_no_other_ike(self):
         if self.service("strongswan-starter.service", "ActiveState") not in {"inactive", "failed"}:
             raise Stop("A legacy strongSwan starter unit is active.")
@@ -191,14 +196,7 @@ class Host:
             self.service(UNIT, "ActiveState") != "inactive"
             or self.ike_ports()
             or any(
-                path.exists() or path.is_symlink()
-                for path in map(
-                    Path,
-                    (
-                        "/run/charon.vici",
-                        "/run/charon.ctl",
-                    ),
-                )
+                path.exists() or path.is_symlink() for path in (VICI_PATH, Path("/run/charon.ctl"))
             )
         ):
             raise Stop("An existing IKE listener or strongSwan service is unowned.")

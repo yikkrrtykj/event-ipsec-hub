@@ -6,7 +6,7 @@ import stat
 import sys
 from pathlib import Path
 
-from .host import DROPIN, PACKAGES, PRIVATE_CONF, SOCKET, UNIT, VENDOR_UNITS
+from .host import DROPIN, PACKAGES, PRIVATE_CONF, SOCKET, UNIT, VENDOR_UNITS, VICI_PATH
 from .renderer import digest
 from .secureio import (
     Stop,
@@ -209,6 +209,16 @@ def activate(host, record):
     host.command("Start owned daemon", "systemctl", "start", UNIT, mutate=True)
 
 
+def vici_socket_identity():
+    try:
+        info = VICI_PATH.lstat()
+    except FileNotFoundError:
+        return None
+    if not stat.S_ISSOCK(info.st_mode) or info.st_uid != 0 or info.st_nlink != 1:
+        raise Stop("The VICI socket path has unsafe type or ownership.")
+    return info.st_dev, info.st_ino
+
+
 def deactivate(host, record):
     assert_files(record, missing_ok=True)
     owned_files = {path for path in UNIT_FILES if path.exists()}
@@ -218,9 +228,23 @@ def deactivate(host, record):
             if host.service(UNIT, "FragmentPath") not in VENDOR_UNITS:
                 raise Stop("The strongSwan unit cannot be proven owned for cleanup.")
             pid = host.service(UNIT, "MainPID")
+            socket = vici_socket_identity()
             if pid != "0":
                 host.assert_private_daemon(pid)
+            if socket is not None:
+                listeners = host.vici_listeners()
+                if (
+                    pid == "0"
+                    or not listeners
+                    or any(set(re.findall(r"pid=(\d+),", line)) != {pid} for line in listeners)
+                ):
+                    raise Stop("VICI socket ownership cannot be proven for cleanup.")
             host.command("Stop owned daemon", "systemctl", "stop", UNIT, mutate=True)
+            remaining = vici_socket_identity()
+            if remaining is not None:
+                if remaining != socket or host.vici_listeners():
+                    raise Stop("The VICI socket changed or still has a listener after stop.")
+                remove_file(VICI_PATH)
             host.command("Disable owned daemon", "systemctl", "disable", UNIT, mutate=True)
         elif (
             dropins
