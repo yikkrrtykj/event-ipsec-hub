@@ -39,7 +39,7 @@ def command(*args, allowed=(0,), timeout=55, input=None):
 def cli(*args, expect=0):
     proc = command(str(CLI), *args, "--json", allowed=(0, 1))
     report = json.loads(proc.stdout)
-    if proc.returncode != expect:
+    if expect is not None and proc.returncode != expect:
         raise RuntimeError(
             f"{args[0]} returned {proc.returncode}: {report.get('detail', '')} "
             f"{report.get('reason_code', '')}".rstrip()

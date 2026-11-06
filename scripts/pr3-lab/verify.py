@@ -10,9 +10,11 @@ import signal
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
+from threading import Barrier
 
 from topology import (
     HERE,
@@ -34,10 +36,10 @@ from topology import (
 
 from ipsecvpn.host import UNIT, Host
 from ipsecvpn.profile import load_profile
-from ipsecvpn.renderer import DeploymentManifest, build_manifest
+from ipsecvpn.renderer import DeploymentManifest, build_manifest, connection_settings
 from ipsecvpn.resources import Resources
 from ipsecvpn.sa import correlate, inventory, kernel_policies, kernel_states, parse_vici, session
-from ipsecvpn.secureio import Stop, read_record
+from ipsecvpn.secureio import Stop, read_keys, read_record
 from ipsecvpn.transaction import ACTIVE, INSTALLED, JOURNAL, Deployment
 
 SUMMARY = Path("/var/tmp/ipsecvpn-pr3-acceptance.jsonl")
@@ -276,9 +278,11 @@ def begin_captures(model, *, wan_only=False):
             )
         )
     captures = []
+    capture_root = PEER_ROOT / "captures"
+    capture_root.mkdir(mode=0o700, exist_ok=True)
     try:
         for node, interface, ns, capture_filter in points:
-            path = HERE / f"{node}-{interface}.pcap"
+            path = capture_root / f"{node}-{interface}.pcap"
             args = (
                 "tcpdump",
                 "-nn",
@@ -325,6 +329,15 @@ def finish_captures(captures):
 
 
 def verify_traffic(model, first):
+    def link_stats():
+        result = {}
+        for link in model.links:
+            raw = json.loads(ip("-s", "-j", "link", "show", "dev", link.name).stdout)[0]
+            stats = raw.get("stats64") or raw["stats"]
+            result[link.name] = [stats[direction]["packets"] for direction in ("rx", "tx")]
+        return result
+
+    initial_stats = link_stats()
     baseline = {
         site["site_id"]: (site["rx_packets"], site["tx_packets"]) for site in cli("status")["sites"]
     }
@@ -356,6 +369,11 @@ def verify_traffic(model, first):
     for site in current["sites"]:
         before = baseline[site["site_id"]]
         assert site["rx_packets"] > before[0] and site["tx_packets"] > before[1]
+    final_stats = link_stats()
+    assert all(
+        all(new > old for old, new in zip(initial_stats[name], final_stats[name], strict=True))
+        for name in final_stats
+    )
     wan = observed[f"hub/{TOPO['wan']}"]
     assert all(not any(row["source"] in line for row in all_rows) for line in wan)
     for link in model.links:
@@ -387,12 +405,15 @@ def verify_traffic(model, first):
             "T10 T11",
             "LAN and XFRM tuples match. WAN only carries encrypted test traffic.",
             {
-                key: {
-                    "packets": len(lines),
-                    "sha256": hashlib.sha256("\n".join(lines).encode()).hexdigest(),
-                    "samples": lines[:4],
-                }
-                for key, lines in observed.items()
+                "hub_xfrm_packets": {"before": initial_stats, "after": final_stats},
+                "capture_points": {
+                    key: {
+                        "packets": len(lines),
+                        "sha256": hashlib.sha256("\n".join(lines).encode()).hexdigest(),
+                        "samples": lines[:4],
+                    }
+                    for key, lines in observed.items()
+                },
             },
         )
     return all_rows
@@ -516,6 +537,60 @@ def verify_rekeys(model):
         {"peer": node["router"], "hub_generations": changes, "flows": pair("udp", 50)},
         action="peer swanctl --rekey for each SA type",
     )
+    for kind in ("child", "ike"):
+        old = inventory(HOST, model, pid).get(link.name)
+        gate = Barrier(2, timeout=5)
+
+        def trigger(leader):
+            socket_path = PEER_ROOT / node["router"] / "charon.vici"
+            control = session(pid) if leader else session(peer_pid(node), socket_path)
+            with control as client:
+                gate.wait()
+                start = time.monotonic()
+                reply = client.request(
+                    "rekey",
+                    {
+                        kind: link.child if kind == "child" else link.name,
+                    },
+                )
+                assert reply.get("matches") == b"1"
+                return start
+
+        with ThreadPoolExecutor(2) as pool:
+            sent = tuple(pool.map(trigger, (True, False)))
+        original_journal = JOURNAL.read_bytes()
+        contender = cli("apply", "-c", str(PROFILE), "--confirm", expect=None)
+        if contender["status"] == "PASS":
+            assert "NOOP" in contender["detail"]
+        else:
+            assert contender["decision"] == "STOP"
+        assert JOURNAL.read_bytes() == original_journal
+        old_id = old.child.unique_id if kind == "child" else old.unique_id
+
+        def advanced(snap):
+            item = snap.get(link.name)
+            return (
+                item
+                and item.child
+                and (item.child.unique_id if kind == "child" else item.unique_id) != old_id
+            )
+
+        stable(model, advanced, seconds=18)
+        assert abs(sent[0] - sent[1]) < 1
+        emit(
+            "S04",
+            "Both real endpoints request rekey within the same bounded window.",
+            {
+                "kind": kind,
+                "request_skew_ms": round(abs(sent[0] - sent[1]) * 1000, 3),
+                "flows": pair("udp", 52 if kind == "child" else 54),
+            },
+        )
+        emit(
+            "F14",
+            "A concurrent same-profile apply either sees stable NOOP or refuses ambiguity.",
+            {"kind": kind, "apply": contender["detail"], "journal_unchanged": True},
+        )
 
 
 def capture_fail_closed(model, start):
@@ -637,6 +712,144 @@ def assert_write_stop(model):
     ):
         assert cli(*args, expect=1)["decision"] == "STOP"
     assert JOURNAL.read_bytes() == recorded
+
+
+def reversed_link(link):
+    return replace(
+        link,
+        source=link.peer,
+        peer=link.source,
+        local_id=link.remote_id,
+        remote_id=link.local_id,
+        local_ts=link.remote_ts,
+        remote_ts=link.local_ts,
+    )
+
+
+def set_link(client, link, key):
+    client.request(
+        "load-shared",
+        {
+            "id": f"ike-{link.name}",
+            "type": "IKE",
+            "data": key,
+            "owners": [link.local_id, link.remote_id],
+        },
+    )
+    client.request("load-conn", {link.name: connection_settings(link)})
+
+
+def ike_id(client, name):
+    matches = [int(event[name]["uniqueid"]) for event in client.list_sas() if name in event]
+    if len(matches) > 1:
+        raise RuntimeError("Multiple generations in the isolated fault fixture.")
+    return matches[0] if matches else None
+
+
+def remove_fixture_sa(client, name):
+    identifier = ike_id(client, name)
+    if identifier is not None:
+        client.request("terminate", {"ike-id": str(identifier), "force": "yes", "timeout": "2500"})
+
+
+def verify_bad_negotiation(model):
+    link = model.links[0]
+    node = TOPO["sites"][0]
+    path = PEER_ROOT / node["router"] / "charon.vici"
+    reverse = reversed_link(link)
+    key = read_keys(load_profile(PROFILE))[link.site_id]
+    pid = HOST.assert_daemon({item.name for item in model.links})
+    with session(pid) as hub:
+        remove_fixture_sa(hub, link.name)
+    with session(peer_pid(node), path) as peer:
+        remove_fixture_sa(peer, link.name)
+    stable(model, lambda snapshot: not snapshot.get(link.name))
+    variants = [
+        ("F01", "wrong PSK", reverse, os.urandom(32), "IKE_AUTHENTICATION"),
+        (
+            "F01",
+            "wrong IKE ID",
+            replace(reverse, local_id="@pr3-incorrect-id"),
+            key,
+            "IKE_AUTHENTICATION",
+        ),
+        (
+            "F02",
+            "wrong ESP proposal",
+            replace(reverse, esp_proposal="aes128-sha256-modp2048"),
+            key,
+            "PROPOSAL_REJECTED",
+        ),
+        (
+            "F03",
+            "disjoint selectors",
+            replace(reverse, local_ts=("10.192.0.0/24",)),
+            key,
+            "CHILD_SELECTORS",
+        ),
+    ]
+    for case, action, variant, proposed_key, expected_reason in variants:
+        with session(peer_pid(node), path) as peer:
+            set_link(peer, variant, proposed_key)
+        try:
+            report = cli("initiate", "--site", link.site_id, "--confirm", expect=1)
+            assert report["decision"] == "STOP"
+            states = kernel_states(
+                HOST.command("Fixture SAD", "ip", "-o", "xfrm", "state", "list", "nokeys")
+            )
+            assert all(state.if_id != link.if_id for state in states)
+            emit(
+                case,
+                "Negotiation fails without installing a CHILD or exposing credentials.",
+                {"decision": "STOP", "reason_code": report.get("reason_code")},
+                status="PASS" if report.get("reason_code") == expected_reason else "FAIL",
+                action=action,
+            )
+        finally:
+            with session(pid) as hub:
+                remove_fixture_sa(hub, link.name)
+            with session(peer_pid(node), path) as peer:
+                remove_fixture_sa(peer, link.name)
+                set_link(peer, reverse, key)
+    cli("initiate", "--site", link.site_id, "--confirm")
+
+
+def verify_foreign_ike(model):
+    original = model.links[0]
+    foreign = replace(
+        original,
+        if_id=65213,
+        local_id="@pr3-foreign-hub",
+        remote_id="@pr3-foreign-site",
+        local_ts=("10.193.0.0/24",),
+        remote_ts=("10.194.0.0/24",),
+    )
+    key = os.urandom(32)
+    node = TOPO["sites"][0]
+    path = PEER_ROOT / node["router"] / "charon.vici"
+    pid = HOST.assert_daemon({item.name for item in model.links})
+    with session(pid) as hub, session(peer_pid(node), path) as peer:
+        set_link(hub, foreign, key)
+        set_link(peer, reversed_link(foreign), key)
+        try:
+            peer.request(
+                "initiate", {"ike": foreign.name, "child": foreign.child, "timeout": "5000"}
+            )
+            identifier = ike_id(hub, foreign.name)
+            assert identifier
+            assert_write_stop(model)
+            assert ike_id(hub, foreign.name) == identifier
+            assert cli("status", expect=1)["decision"] == "STOP"
+        finally:
+            for client in (hub, peer):
+                remove_fixture_sa(client, foreign.name)
+                client.request("unload-conn", {"name": foreign.name})
+                client.request("unload-shared", {"id": f"ike-{foreign.name}"})
+    emit(
+        "F04",
+        "An independently authenticated foreign IKE/CHILD stays intact while writes STOP.",
+        {"decision": "STOP", "foreign_if_id": foreign.if_id},
+    )
 
 
 def verify_foreign_policy(model):
@@ -765,6 +978,12 @@ def verify_isolation_failures(model):
         ),
     ]
     emit("F07", "Declared but unauthorized LAN is refused in both directions.", failures)
+    assert all(row["timeout"] or row["errno"] is not None for row in failures)
+    emit(
+        "F16",
+        "Bounded negative probes report failure and their servers are stopped.",
+        {"probe_outcomes": failures, "network_cleanup": "disposable guest lifecycle"},
+    )
     link = model.links[0]
     install = read_record(INSTALLED)
     resources = Resources(HOST, install["token"], (model,))
@@ -864,7 +1083,7 @@ def verify_daemon_restart(model):
     stable(model, lambda snap: len(snap.ikes) == 2 and all(ike.child for ike in snap.ikes))
     assert HOST.service(UNIT, "MainPID") != old_pid
     emit(
-        "T13",
+        "T13_DAEMON",
         "Restarting the owned daemon restores verified SAs and both business directions.",
         {"flows": pair("udp", 114)},
         action="systemctl restart strongswan",
@@ -887,6 +1106,8 @@ def before_reboot():
     verify_traffic(model, first=True)
     verify_noop(model)
     verify_rekeys(model)
+    verify_bad_negotiation(model)
+    verify_foreign_ike(model)
     verify_foreign_policy(model)
     verify_maintenance(model)
     verify_mtu(model)
