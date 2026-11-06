@@ -6,7 +6,8 @@ work="$(mktemp -d)"
 pidfile="$work/qemu.pid"
 known_hosts="$work/known_hosts"
 ssh_options=(-i "$work/key" -o "UserKnownHostsFile=$known_hosts" -o StrictHostKeyChecking=accept-new
-             -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=5)
+             -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=5
+             -o ServerAliveInterval=10 -o ServerAliveCountMax=3)
 
 guest() { ssh "${ssh_options[@]}" -p 2222 ubuntu@127.0.0.1 "$@"; }
 cleanup() {
@@ -34,8 +35,10 @@ cp "$root/config/event.example.yaml" "$work/payload/example.yaml"
 
 image=noble-server-cloudimg-amd64.img
 origin=https://cloud-images.ubuntu.com/noble/current
-curl --fail --silent --show-error --location --retry 3 "$origin/$image" -o "$work/$image"
-curl --fail --silent --show-error --location --retry 3 "$origin/SHA256SUMS" -o "$work/SHA256SUMS"
+curl --fail --silent --show-error --location --connect-timeout 15 --max-time 180 \
+    --retry 2 --retry-max-time 360 "$origin/$image" -o "$work/$image"
+curl --fail --silent --show-error --location --connect-timeout 15 --max-time 60 \
+    --retry 2 --retry-max-time 120 "$origin/SHA256SUMS" -o "$work/SHA256SUMS"
 (cd "$work" && awk -v name="$image" '$2 == "*" name || $2 == name {print}' SHA256SUMS | sha256sum -c -)
 qemu-img resize "$work/$image" 10G
 ssh-keygen -q -t ed25519 -N '' -f "$work/key"

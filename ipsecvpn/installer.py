@@ -26,6 +26,8 @@ def install_files(python):
     daemon = f"""charon-systemd {{
     load_modular = yes
     install_routes = no
+    routing_table = 0
+    install_virtual_ip = no
     plugins {{
         include /etc/strongswan.d/charon/*.conf
         kernel-netlink {{

@@ -1,0 +1,24 @@
+# PR #2 验收记录
+
+基线及 merge-base 均为 `5f6ac250043c37d97cc375dae2250c89257b7ca2`。本记录逐项使用 [验收矩阵](PR2_ACCEPTANCE.md) 的定义。所有写入测试的目标均为独立 QEMU 客户机 `ipsecvpn-pr2-lab`。宿主 runner 只负责取得 Ubuntu 镜像、准备离线软件包和启动客户机，管理通道是回环地址上的 SSH 转发。
+
+## 已完成的离线验证
+
+| 用例 | 结果 | 证据 |
+| --- | --- | --- |
+| C01 | PASS | 71 项 pytest，包括 PR #1 的 62 项回归。 |
+| C02 | PASS | Ruff、ShellCheck、四份公开配置校验、Gitleaks，以及渲染输出脱敏断言。 |
+| C03 | PASS | 仓库外创建独立 venv，安装构建的 wheel，并执行 validate、plan、export-peer 和 render。 |
+| C04–C06 | PASS | 三个虚构赛事渲染、方向与选择器一致性、重复渲染和非法拓扑回归。 |
+| C07–C10 | PASS | 离线占位 WAN 停止、外部备用与主 Hub 隔离、只读渲染及非目标平台写入停止。 |
+
+离线证据对应提交 `55e1e075c8e8dc4c7f6682b1dd0f975d7d6c08fe`。 [GitHub 离线 CI](https://github.com/yikkrrtykj/ipsecVPN/actions/runs/42215661460)
+
+## VM 执行记录
+
+- 首轮启动了独立客户机，测试因客户机缺少预期默认路由停止。后续用 NoCloud 为客户机提供固定实验 WAN 和默认路由。 [首轮 VM 日志](https://github.com/yikkrrtykj/ipsecVPN/actions/runs/42212880283/job/127875583443)
+- 第二轮在 Ubuntu 24.04、Linux `6.8.0-147-generic`、nftables `1.0.9` 上执行。V01 和 V02 为 PASS，确认了目标平台、XFRM/nft 探测及 dry-run 前后的包清单和基线摘要相同。F01 和 F08 为 PASS，UDP 500 被占用或已有 swanctl 配置时，程序正确停止并保留原对象。V03 的真实 `install --confirm` 退出 1，判为 FAIL。该轮 V04–V20、F02–F07 和 F09–F14 未执行。 [第二轮 VM 日志与 JSONL 分项证据](https://github.com/yikkrrtykj/ipsecVPN/actions/runs/42213926644)
+- `55e1e07` 复测再次得到 V01、V02、F01 和 F08 PASS。V03 在 APT 和 daemon 启动后发现 IPv4 策略规则变化而返回 FAIL，停止 daemon 后基线验证通过，事务记录为 `RESTORED`。本轮 V04–V20 的正式用例及剩余 F 项尚未执行。 [失败与恢复的 VM 记录](https://github.com/yikkrrtykj/ipsecVPN/actions/runs/42215661430)
+- 依据 strongSwan 5.9.13 内核插件代码，非零路由表配置会在 daemon 初始化时注册策略路由，即使禁用自动路由安装。修复将项目 daemon 的 `routing_table` 置零，保留策略路由守恒检查。 [strongSwan 5.9.13 内核插件](https://github.com/strongswan/strongswan/blob/5.9.13/src/libcharon/plugins/kernel_netlink/kernel_netlink_net.c)
+
+真实双端 IKE/CHILD SA、UDP/TCP、MTU、现场防火墙和外部备用切换属于后续 PR，标记为 SKIP。PR 保持 Draft，所有部署操作限于实验客户机。

@@ -2,7 +2,7 @@
 
 | 对象 | 管理边界 |
 | --- | --- |
-| strongSwan | 使用 Ubuntu 的 `charon-systemd` 服务及发行版 VICI socket。项目私有配置和一个专用 systemd drop-in 将 daemon 限制在独占运行边界。 |
+| strongSwan | 使用 Ubuntu 的 `charon-systemd` 服务及发行版 VICI socket。项目私有配置和一个专用 systemd drop-in 将 daemon 限制在独占运行边界。设置 `routing_table=0`，避免 daemon 启动时新增策略路由规则。 |
 | XFRM | 接口名从 `if_id` 派生，另带安装标记。创建、验证和删除均核对名称、类型、ID 与所有权。 |
 | IPv4 内层路由 | 每个授权 LAN 有一条精确 XFRM 路由和同前缀、更高 metric 的 blackhole。路由以协议编号 242 及完整属性登记。 |
 | IPv4 外层路由 | 读取实际内核 Peer 查找结果，校验接口、源地址和可选下一跳。保留原有 WAN 路径。 |
