@@ -185,10 +185,12 @@ class Deployment:
                 write_record(ACTIVE, before)
                 write_record(INSTALLED, install)
             self.phase("RESTORED")
-        except (Stop, OSError, ValueError, KeyError):
+        except (Stop, OSError, ValueError, KeyError) as exc:
+            reason = str(exc) if isinstance(exc, Stop) else "protected recovery state operation"
+            self.record["recovery_failure"] = reason
             self.phase("STOP_FOR_MANUAL")
             raise Stop(
-                f"STOP_FOR_MANUAL: recovery could not be proven for {self.record['id']}."
+                f"STOP_FOR_MANUAL: recovery could not be proven for {self.record['id']}. {reason}"
             ) from None
         finally:
             self.host.step = None

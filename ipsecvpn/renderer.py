@@ -177,7 +177,8 @@ def nft_config(manifest, token, guarded=(), interfaces=()):
     networks = sorted(set(guarded) | {cidr for link in links for cidr in link.remote_ts})
     lines = [
         f"table ip {TABLE} {{",
-        f"    chain owner_{token} {{ }}",
+        f"    chain owner_{token} {{",
+        "    }",
         "    chain forward {",
         "        type filter hook forward priority -5; policy accept;",
     ]

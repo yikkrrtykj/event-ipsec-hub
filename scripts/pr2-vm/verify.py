@@ -561,6 +561,20 @@ if __name__ == "__main__":
         except (AssertionError, OSError, RuntimeError, ValueError, KeyError, IndexError) as exc:
             emit("VM", "FAIL", "All executed acceptance assertions pass.", str(exc))
             journal = read_record(JOURNAL)
+            if journal and journal["action"] != "install" and journal["phase"] != "COMMITTED":
+                emit(
+                    "TRANSACTION",
+                    "FAIL",
+                    "Apply or recovery preserves the baseline.",
+                    {
+                        "phase": journal["phase"],
+                        "failure": journal.get("failure"),
+                        "recovery_failure": journal.get("recovery_failure"),
+                        "steps": [
+                            step["label"] + " " + step["result"] for step in journal["steps"]
+                        ],
+                    },
+                )
             if journal and journal["action"] == "install" and journal["phase"] != "COMMITTED":
                 emit(
                     "V03",
