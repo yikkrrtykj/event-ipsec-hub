@@ -1,0 +1,43 @@
+# 文档地址示例。实际赛事请复制到 Git 之外再填写。
+schema_version: "2.0"
+event: {id: demo-event, name: 示例赛事, purpose: 场馆与制作互通}
+hub:
+  id: demo-hub
+  platform: ubuntu-24.04
+  public_endpoint: 203.0.113.10
+  provider_label: Example VPS
+  location_label: Example Region
+sites:
+  - id: production-a
+    display_name: 制作站
+    role: production
+    country: 日本
+    public_endpoint: 192.0.2.10
+    ike_identity: 192.0.2.10
+    firewall: {vendor: hillstone, model: example-device, os_version: unknown}
+    lan_cidrs: [10.43.10.0/24, 10.43.11.0/24]
+  - id: stage-b
+    display_name: 场馆站
+    role: venue
+    country: 波兰
+    public_endpoint: 198.51.100.10
+    ike_identity: 198.51.100.10
+    firewall: {vendor: generic}
+    lan_cidrs: [10.76.12.0/24]
+site_links:
+  - site_id: production-a
+    if_id: 101
+    outer_path: {interface: auto, isp_label: Example ISP A}
+    secret_ref: file:/etc/ipsecvpn/secrets/production-a.psk
+  - site_id: stage-b
+    if_id: 102
+    outer_path: {interface: auto, isp_label: Example ISP B}
+    secret_ref: file:/etc/ipsecvpn/secrets/stage-b.psk
+security:
+  ike_proposal: aes256-sha256-prfsha256-modp2048
+  esp_proposal: aes256-sha256-modp2048
+traffic_policy:
+  allowed_site_pairs:
+    - {a: production-a, b: stage-b}
+backup: {enabled: false}
+monitoring: {enabled: false}

@@ -1,0 +1,45 @@
+schema_version: "2.0"
+event: {id: signal-mock, name: Signal Lab Cup, purpose: Replay transfer}
+hub:
+  id: node-cobalt
+  platform: ubuntu-24.04
+  public_endpoint: 198.51.100.63
+  ike_identity: node-cobalt.example
+  provider_label: Fictional Compute B
+  location_label: Atlantic lab
+sites:
+  - id: replay_02
+    display_name: Replay Workshop
+    role: postproduction
+    country: 加拿大
+    public_endpoint: 192.0.2.91
+    ike_identity: 192.0.2.91
+    firewall: {vendor: Example Firewall B, model: Example B}
+    lan_cidrs: [10.46.70.0/25]
+  - id: floor8
+    display_name: Cup Arena
+    role: venue
+    country: 西班牙
+    public_endpoint: 203.0.113.89
+    ike_identity: floor8.example
+    firewall: {vendor: hillstone}
+    lan_cidrs: [172.27.65.0/26]
+site_links:
+  - site_id: replay_02
+    if_id: 41
+    outer_path: {interface: eth2, isp_label: Fictional Transit 3, source_ip: 10.52.1.2}
+    secret_ref: file:/etc/ipsecvpn/secrets/replay_02.psk
+    ike_proposal: aes256gcm16-prfsha384-ecp384
+    esp_proposal: aes256gcm16-ecp384
+  - site_id: floor8
+    if_id: 72
+    outer_path: {interface: eth3, isp_label: Fictional Transit 4, gateway: 10.52.2.1}
+    secret_ref: file:/etc/ipsecvpn/secrets/floor8.psk
+security:
+  ike_lifetime_seconds: 14400
+  child_lifetime_seconds: 1800
+  dpd_delay_seconds: 20
+traffic_policy:
+  allowed_site_pairs:
+    - {a: floor8, b: replay_02}
+backup: {enabled: false}

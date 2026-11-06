@@ -1,0 +1,31 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ipsecvpn"
+version = "0.1.0"
+description = "Read-only tooling for reusable event IPsec Hub profiles"
+requires-python = ">=3.11"
+dependencies = ["PyYAML>=6,<7", "jsonschema>=4.23,<5"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<10", "ruff>=0.11,<1"]
+
+[project.scripts]
+ipsecvpn = "ipsecvpn.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["ipsecvpn"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"config/schema.json" = "ipsecvpn/schema.json"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
