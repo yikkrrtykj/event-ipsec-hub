@@ -8,6 +8,7 @@ import signal
 import subprocess
 import sys
 from datetime import UTC, datetime
+from ipaddress import collapse_addresses, ip_network
 from pathlib import Path
 
 import yaml
@@ -29,6 +30,8 @@ CLI = Path(sys.executable).with_name("ipsecvpn")
 HOST = Host()
 ENV = {}
 KEYS = []
+UNAUTHORIZED_LAN = "10.77.90.0/24"
+FOREIGN_SERVICES = ("nftables.service", "systemd-networkd.service", "systemd-journald.service")
 CASE_COMMANDS = {
     "V01": "systemd-detect-virt --vm; modprobe -nq xfrm_interface; ip xfrm policy list",
     "V02": "ipsecvpn install --dry-run --json",
@@ -130,6 +133,47 @@ def current_manifest():
     return build_manifest(read_record(ACTIVE)["profile"])
 
 
+def foreign_services():
+    return {
+        unit: {key: HOST.service(unit, key) for key in ("ActiveState", "FragmentPath", "MainPID")}
+        for unit in FOREIGN_SERVICES
+    }
+
+
+def verify_forward_acl(manifest):
+    def normalized_cidrs(text):
+        return tuple(collapse_addresses(ip_network(cidr) for cidr in text))
+
+    nft_text = command("nft", "list", "table", "ip", "ipsecvpn").stdout
+    assert "masquerade" not in nft_text and "snat" not in nft_text
+    lines = [line.strip() for line in nft_text.splitlines()]
+    directions = []
+    for source, target in (manifest.links, tuple(reversed(manifest.links))):
+        prefix = f'iifname "{source.name}" oifname "{target.name}" ip saddr '
+        matches = [line for line in lines if line.startswith(prefix) and line.endswith(" accept")]
+        assert len(matches) == 1
+        actual_src, actual_dst = (
+            matches[0].removeprefix(prefix).removesuffix(" accept").split(" ip daddr ", 1)
+        )
+        assert normalized_cidrs(
+            actual_src.strip("{} ").replace(",", " ").split()
+        ) == normalized_cidrs(source.remote_ts)
+        assert normalized_cidrs(
+            actual_dst.strip("{} ").replace(",", " ").split()
+        ) == normalized_cidrs(target.remote_ts)
+        assert lines.index(matches[0]) < lines.index(f'iifname "{source.name}" drop')
+        assert lines.index(matches[0]) < lines.index(f'oifname "{target.name}" drop')
+        directions.append({"from": source.name, "to": target.name, "rule": matches[0]})
+    assert UNAUTHORIZED_LAN not in nft_text
+    assert not HOST.ip("-4", "route", "show", "exact", UNAUTHORIZED_LAN)
+    emit(
+        "V07",
+        "PASS",
+        "Exactly scoped bidirectional ACL with per-interface drops and no NAT or extra LAN route.",
+        directions,
+    )
+
+
 def bootstrap_profiles():
     profile = load_profile(HERE / "example.yaml")
     routes = HOST.ip("-4", "route", "show", "default")
@@ -144,11 +188,17 @@ def bootstrap_profiles():
         KEYS.append(key)
         path.write_bytes(key + b"\n")
         path.chmod(0o600)
+    profile["traffic_policy"]["allowed_site_pairs"][0].update(
+        a_cidrs=profile["sites"][0]["lan_cidrs"].copy(),
+        b_cidrs=profile["sites"][1]["lan_cidrs"].copy(),
+    )
+    profile["sites"][0]["lan_cidrs"].append(UNAUTHORIZED_LAN)
     profile["backup"] = {"enabled": True, "type": "external_managed"}
     profile_write(PROFILE, profile)
     update = copy.deepcopy(profile)
     update["site_links"][1]["if_id"] += 100
     update["sites"][1]["lan_cidrs"] = ["10.77.12.0/24"]
+    update["traffic_policy"]["allowed_site_pairs"][0]["b_cidrs"] = ["10.77.12.0/24"]
     update["sites"][1]["public_endpoint"] = "198.51.100.77"
     profile_write(UPDATE, update)
     return profile
@@ -330,7 +380,9 @@ def before_reboot():
     profile = bootstrap_profiles()
     manifest = build_manifest(profile)
     baseline = resources().baseline()
-    BASELINE.write_text(json.dumps(baseline), encoding="utf-8")
+    services = foreign_services()
+    assert all(row["ActiveState"] == "active" for row in services.values())
+    BASELINE.write_text(json.dumps({"network": baseline, "services": services}), encoding="utf-8")
     emit(
         "V01",
         "PASS",
@@ -406,12 +458,9 @@ def before_reboot():
     state = read_record(ACTIVE)
     nft = resources(manifest).verify(manifest, baseline, state["nft_sha256"])
     assert not HOST.vici("--list-sas").strip()
-    nft_text = command("nft", "list", "table", "ip", "ipsecvpn").stdout
-    assert (
-        nft_text.count("ip saddr") >= 4 and "masquerade" not in nft_text and "snat" not in nft_text
-    )
+    verify_forward_acl(manifest)
     emit(
-        "V04 V05 V06 V07 V09 F14",
+        "V04 V05 V06 V09 F14",
         "PASS",
         "Two idle VICI connections and XFRM links, exact routes, dual ACL, committed state.",
         {
@@ -445,7 +494,7 @@ def before_reboot():
     for label in ("nft atomic update", "IPv4 unicast route del", "VICI load"):
         check_failure(label, manifest, baseline)
         emit(
-            "V13 F11",
+            "V13 F11" if label == "IPv4 unicast route del" else "V13",
             "PASS",
             "Injected real command error, then verified pre-state.",
             label + " → RESTORED",
@@ -505,11 +554,12 @@ def before_reboot():
         "Stopped daemon and deleted XFRM; kernel lookup blocks protected CIDR.",
         "Actual blackhole selected, default WAN not returned.",
     )
+    assert foreign_services() == services
     emit(
         "V20",
         "PASS",
         "Preserve baseline across install, apply, update, faults and rollback.",
-        baseline,
+        {**baseline, "foreign_service_units": sorted(services), "foreign_service_pids_equal": True},
     )
     check_secret_evidence(profile)
 
@@ -547,10 +597,16 @@ def after_reboot():
         iproute2=packages["iproute2"],
         strongswan=packages["charon-systemd"],
     )
-    baseline = json.loads(BASELINE.read_text(encoding="utf-8"))
+    saved = json.loads(BASELINE.read_text(encoding="utf-8"))
+    baseline = saved["network"]
     command("systemctl", "is-active", GUARD, RESTORE, UNIT)
     manifest = current_manifest()
     resources(manifest).verify(manifest, baseline, read_record(ACTIVE)["nft_sha256"])
+    services = foreign_services()
+    for unit, row in services.items():
+        assert all(
+            row[key] == saved["services"][unit][key] for key in ("ActiveState", "FragmentPath")
+        )
     emit(
         "V17 V20",
         "PASS",
@@ -559,6 +615,7 @@ def after_reboot():
     )
     cli("uninstall", "--confirm")
     assert resources().baseline() == baseline
+    assert foreign_services() == services
     assert read_record(ACTIVE) is None and HOST.packages()["charon-systemd"]
     assert not HOST.ike_ports()
     emit(
