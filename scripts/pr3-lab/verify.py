@@ -6,6 +6,7 @@ import os
 import re
 import secrets
 import select
+import signal
 import subprocess
 import sys
 import time
@@ -26,20 +27,23 @@ from topology import (
     in_ns,
     install_topology_unit,
     ip,
+    peerctl,
     require_lab,
+    write_profile,
 )
 
-from ipsecvpn.host import UNIT
+from ipsecvpn.host import UNIT, Host
 from ipsecvpn.profile import load_profile
 from ipsecvpn.renderer import DeploymentManifest, build_manifest
 from ipsecvpn.resources import Resources
 from ipsecvpn.sa import correlate, inventory, kernel_policies, kernel_states, parse_vici, session
-from ipsecvpn.secureio import read_record
-from ipsecvpn.transaction import INSTALLED, JOURNAL
+from ipsecvpn.secureio import Stop, read_record
+from ipsecvpn.transaction import ACTIVE, INSTALLED, JOURNAL, Deployment
 
 SUMMARY = Path("/var/tmp/ipsecvpn-pr3-acceptance.jsonl")
 BASELINE = HERE / "baseline.json"
 PORT = TOPO["traffic_port"]
+UPDATE = PROFILE.with_name("pr3-update.yaml")
 ENV = {}
 HEAD = (HERE / "head-sha").read_text(encoding="ascii").strip()
 
@@ -229,8 +233,8 @@ def exchange(
             timeout=12,
         )
         receipt = json.loads(proc.stdout)
-        if expected_failure:
-            assert proc.returncode == 1 and isinstance(receipt, dict)
+        if proc.returncode == 1 and expected_failure is not False:
+            assert isinstance(receipt, dict)
             return {
                 "sender": sender,
                 "receiver": receiver,
@@ -239,6 +243,7 @@ def exchange(
                 "bytes": size,
                 **receipt,
             }
+        assert expected_failure is not True
         assert proc.returncode == 0, receipt
         remote = json.loads(server.communicate(timeout=8)[0])
         assert server.returncode == 0 and remote == receipt and len(remote) == count
@@ -355,6 +360,10 @@ def verify_traffic(model, first):
     assert all(not any(row["source"] in line for row in all_rows) for line in wan)
     for link in model.links:
         assert any(link.peer in line and "ESP" in line for line in wan), wan[:5]
+    for site in TOPO["sites"]:
+        edge = observed[f"{site['router']}/wan"]
+        assert any("ESP" in line for line in edge)
+        assert all(not any(row["source"] in line for row in all_rows) for line in edge)
     for row in all_rows:
         needle = f"{row['source']}.{row['source_port']} > {row['destination']}.{PORT}:"
         for key in [f"hub/{link.name}" for link in model.links] + [
@@ -435,6 +444,302 @@ def verify_noop(model):
     )
 
 
+def pair(protocol, start, **kwargs):
+    return [
+        exchange(
+            side,
+            protocol,
+            TOPO["sites"][side]["lans"][0],
+            TOPO["sites"][1 - side]["lans"][0],
+            sport=PORT + start + side,
+            **kwargs,
+        )
+        for side in (0, 1)
+    ]
+
+
+def stable(model, predicate, seconds=12):
+    end = time.monotonic() + seconds
+    pid = HOST.assert_daemon({link.name for link in model.links})
+    while time.monotonic() < end:
+        try:
+            observed = inventory(HOST, model, pid)
+            if predicate(observed):
+                return observed
+        except Stop:
+            pass
+        time.sleep(0.35)
+    raise RuntimeError("The isolated Hub did not reach the expected verified SA state.")
+
+
+def verify_rekeys(model):
+    link = model.links[0]
+    node = TOPO["sites"][0]
+    pid = HOST.assert_daemon({item.name for item in model.links})
+    for idx, (case, kind) in enumerate((("S01", "ike"), ("S02", "child"))):
+        before = inventory(HOST, model, pid).get(link.name)
+        report = cli("rekey", "--site", link.site_id, f"--{kind}", "--confirm")
+        after = inventory(HOST, model, pid).get(link.name)
+        old = before.unique_id if kind == "ike" else before.child.unique_id
+        new = after.unique_id if kind == "ike" else after.child.unique_id
+        assert old != new
+        emit(
+            case,
+            "Targeted rekey correlates VICI old/new and retains real bidirectional traffic.",
+            {
+                "journal": report["journal"],
+                "old": old,
+                "new": new,
+                "flows": pair("udp", 45 + idx * 2),
+            },
+            action=f"rekey --{kind} --confirm",
+        )
+    changes = {}
+    for kind in ("child", "ike"):
+        before = inventory(HOST, model, pid).get(link.name)
+        old = before.child.unique_id if kind == "child" else before.unique_id
+        peerctl(node, "--rekey", f"--{kind}", link.child if kind == "child" else link.name)
+
+        def changed(snap):
+            current = snap.get(link.name)
+            return (
+                current
+                and current.child
+                and (current.child.unique_id if kind == "child" else current.unique_id) != old
+            )
+
+        current = stable(model, changed).get(link.name)
+        changes[kind] = [old, current.child.unique_id if kind == "child" else current.unique_id]
+    emit(
+        "S03",
+        "The real peer initiates CHILD and IKE rekey.",
+        {"peer": node["router"], "hub_generations": changes, "flows": pair("udp", 50)},
+        action="peer swanctl --rekey for each SA type",
+    )
+
+
+def capture_fail_closed(model, start):
+    captures = begin_captures(model)
+    try:
+        rows = pair("udp", start, expected_failure=True, count=1)
+    finally:
+        observed = finish_captures(captures)
+    wan = observed[f"hub/{TOPO['wan']}"]
+    assert all(not any(row["source"] in line for row in rows) for line in wan)
+    return {"unreachable_flows": rows, "wan_packets": len(wan), "wan_plaintext": 0}
+
+
+def verify_mtu(model):
+    def stats(node):
+        command_args = ("cat", "/proc/net/xfrm_stat")
+        if node:
+            command_args = in_ns(node, *command_args)
+        return {
+            name: int(value)
+            for name, value in (line.split() for line in command(*command_args).stdout.splitlines())
+        }
+
+    node = TOPO["sites"][0]["router"]
+    nodes = [None, node, TOPO["sites"][1]["router"]]
+    before = {ns or "hub": stats(ns) for ns in nodes}
+    small = pair("udp", 60, count=5, size=96, pmtu="df")
+    emit(
+        "N01",
+        "Five small DF UDP payloads received in both directions.",
+        {"flows": small, "lost": 0},
+    )
+    captures = begin_captures(model)
+    try:
+        bounds = [
+            exchange(
+                0,
+                "udp",
+                TOPO["sites"][0]["lans"][0],
+                TOPO["sites"][1]["lans"][0],
+                sport=PORT + 64 + i,
+                count=1,
+                size=size,
+                pmtu="df",
+                expected_failure=None,
+            )
+            for i, size in enumerate((1200, 1300, 1380, 1420, 1460, 1472))
+        ]
+        fragments = pair("udp", 72, count=2, size=2048, pmtu="fragment", expected_failure=None)
+        streams = pair("tcp", 74, count=2, size=8192, mss=512) + pair(
+            "tcp", 76, count=2, size=8192, mss=1024
+        )
+    finally:
+        observed = finish_captures(captures)
+    devices = {
+        f"hub/{link.name}": json.loads(ip("-j", "link", "show", "dev", link.name).stdout)[0]["mtu"]
+        for link in model.links
+    }
+    for site in TOPO["sites"]:
+        for device in ("wan", "tunnel"):
+            key = f"{site['router']}/{device}"
+            devices[key] = json.loads(
+                ip("-j", "link", "show", "dev", device, ns=site["router"]).stdout
+            )[0]["mtu"]
+    icmp = {
+        key: [line for line in lines if "need to frag" in line.lower()]
+        for key, lines in observed.items()
+    }
+    emit(
+        "N02",
+        "Real DF size sweep with measured link MTUs.",
+        {"mtus": devices, "sweep": bounds, "outer": "UDP encapsulated ESP"},
+    )
+    has_feedback = any(icmp.values()) or any(row.get("errno") == 90 for row in bounds)
+    emit(
+        "N03",
+        "Oversize DF receives ICMP fragmentation-needed or EMSGSIZE.",
+        {"icmp": icmp, "results": bounds},
+        status="PASS" if has_feedback else "FAIL",
+    )
+    fragment_evidence = {
+        key: [line for line in lines if "ip-proto-17" in line.lower() or "frag" in line.lower()][:8]
+        for key, lines in observed.items()
+    }
+    fragments_ok = all(row.get("received") == 2 for row in fragments) and any(
+        fragment_evidence.values()
+    )
+    emit(
+        "N04",
+        "Fragmented datagrams are reassembled with verified payloads.",
+        {"flows": fragments, "fragments": fragment_evidence},
+        status="PASS" if fragments_ok else "FAIL",
+    )
+    emit("N05", "Bidirectional TCP transfers verify payloads at two bounded MSS settings.", streams)
+    after = {ns or "hub": stats(ns) for ns in nodes}
+    counters = {
+        node: {
+            key: value - before[node][key]
+            for key, value in fields.items()
+            if value != before[node][key]
+        }
+        for node, fields in after.items()
+    }
+    emit(
+        "N06",
+        "Collect actual per-node XFRM counters and XFRM traffic stats without sysctl edits.",
+        {"errors": counters, "hub_links": cli("status")["sites"]},
+    )
+
+
+def assert_write_stop(model):
+    site = model.links[0].site_id
+    recorded = JOURNAL.read_bytes()
+    for args in (
+        ("apply", "-c", str(PROFILE), "--maintenance", "--confirm"),
+        ("initiate", "--site", site, "--confirm"),
+        ("rekey", "--site", site, "--child", "--confirm"),
+        ("uninstall", "--maintenance", "--confirm"),
+    ):
+        assert cli(*args, expect=1)["decision"] == "STOP"
+    assert JOURNAL.read_bytes() == recorded
+
+
+def verify_foreign_policy(model):
+    policy = (
+        "src",
+        "192.0.2.211/32",
+        "dst",
+        "192.0.2.212/32",
+        "dir",
+        "out",
+        "if_id",
+        str(model.links[0].if_id),
+    )
+    ip("xfrm", "policy", "add", *policy, "action", "block", "priority", "470000")
+    try:
+        before = ip("-o", "xfrm", "policy", "list", "nosock").stdout
+        assert_write_stop(model)
+        assert cli("status", expect=1)["decision"] == "STOP"
+        assert ip("-o", "xfrm", "policy", "list", "nosock").stdout == before
+    finally:
+        ip("xfrm", "policy", "delete", *policy)
+    emit(
+        "F05 F06",
+        "Unowned kernel policy using a genuine if_id blocks writes.",
+        {"decision": "STOP", "original_policy_retained_until_fixture_cleanup": True},
+    )
+
+
+class RouteFault(Host):
+    def __init__(self, kill=False):
+        super().__init__()
+        self.kill = kill
+        self.triggered = False
+
+    def command(self, label, *args, **kwargs):
+        if label == "IPv4 unicast route del" and kwargs.get("mutate") and not self.triggered:
+            self.triggered = True
+            if self.kill:
+                super().command(label, *args, **kwargs)
+                os.kill(os.getpid(), signal.SIGKILL)
+            return super().command(
+                label, "setpriv", "--bounding-set=-net_admin", *args, mutate=True
+            )
+        return super().command(label, *args, **kwargs)
+
+
+def verify_maintenance(model):
+    profile = load_profile(PROFILE)
+    profile["site_links"][0]["if_id"] += 256
+    write_profile(profile, UPDATE)
+    blocked = cli("apply", "-c", str(UPDATE), "--confirm", expect=1)
+    assert "maintenance" in blocked["detail"]
+    emit(
+        "F13",
+        "Unconfirmed active config change preserves the old business path.",
+        {"decision": "STOP", "flows": pair("udp", 80)},
+    )
+    saved = cli("backup", "--confirm")["backup_id"]
+    changed = cli("apply", "-c", str(UPDATE), "--maintenance", "--confirm")
+    assert changed["maintenance"]["required_for_changes"]
+    emit(
+        "S07",
+        "Explicit maintenance changes Hub XFRM ID, restores both CHILDs and actual LAN traffic.",
+        {"journal": changed["backup_id"], "flows": pair("udp", 84) + pair("tcp", 86)},
+    )
+    returned = cli("rollback", "--to", saved, "--maintenance", "--confirm")
+    assert returned["configuration_restored"] and returned["data_path_restored"]["status"] == "SKIP"
+    assert cli("status")["status"] == "PASS"
+    for kill, case in ((False, "S10"), (True, "S08")):
+        if kill:
+            child = subprocess.run((sys.executable, __file__, "crash"), check=False, timeout=30)
+            assert child.returncode == -signal.SIGKILL
+        else:
+            faulty = RouteFault()
+            try:
+                Deployment(faulty).dispatch("apply", True, UPDATE, maintenance=True)
+            except Stop:
+                assert faulty.triggered
+            else:
+                raise AssertionError("Live maintenance unexpectedly accepted the route fault.")
+        journal = read_record(JOURNAL)
+        assert journal["phase"] in {"STOP_FOR_MANUAL", "APPLYING"}
+        assert not journal.get("configuration_restored")
+        proof = capture_fail_closed(model, 90 + 2 * kill)
+        recovered = cli("rollback", "--to", journal["id"], "--maintenance", "--confirm")
+        assert (
+            recovered["configuration_restored"]
+            and recovered["data_path_restored"]["status"] == "SKIP"
+        )
+        emit(
+            case,
+            "Fault stays guarded until explicit maintenance recovery and real traffic proof.",
+            {
+                "journal": journal["id"],
+                "failed_phase": journal["phase"],
+                "guard": proof,
+                "restored_phase": read_record(JOURNAL)["phase"],
+                "flows": pair("udp", 94 + 2 * kill),
+            },
+        )
+    assert read_record(ACTIVE)["profile"] == load_profile(PROFILE)
+
+
 def before_reboot():
     assert cli("install", "--confirm")["status"] == "PASS"
     environment()
@@ -444,11 +749,16 @@ def before_reboot():
     prove_topology()
     BASELINE.write_text(json.dumps(baseline_for(model)), encoding="utf-8")
     assert cli("apply", "-c", str(PROFILE), "--confirm")["status"] == "PASS"
+    command("systemctl", "start", "ipsecvpn-restore.service")
     connect(model)
     verify_sas(model)
     verify_routes(model)
     verify_traffic(model, first=True)
     verify_noop(model)
+    verify_rekeys(model)
+    verify_foreign_policy(model)
+    verify_maintenance(model)
+    verify_mtu(model)
     assert baseline_for(model) == json.loads(BASELINE.read_text(encoding="utf-8"))
 
 
@@ -467,10 +777,15 @@ def after_reboot():
         {"baseline": baseline, "flows": receipts},
         action="actual VM reboot; verify new SSH session, restored services and UDP/TCP",
     )
+    if any(json.loads(line)["status"] == "FAIL" for line in SUMMARY.read_text().splitlines()):
+        raise RuntimeError("One or more executed data-plane observations failed.")
 
 
 if __name__ == "__main__":
     require_lab()
+    if sys.argv[1] == "crash":
+        Deployment(RouteFault(kill=True)).dispatch("apply", True, UPDATE, maintenance=True)
+        sys.exit(2)
     try:
         {"before-reboot": before_reboot, "after-reboot": after_reboot}[sys.argv[1]]()
     except (RuntimeError, OSError, AssertionError, ValueError, KeyError) as exc:
