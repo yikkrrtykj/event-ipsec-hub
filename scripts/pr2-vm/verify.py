@@ -36,7 +36,10 @@ def command(*args, allowed=(0,), data=None):
         args, input=data, text=True, capture_output=True, check=False, timeout=120
     )
     if proc.returncode not in allowed:
-        raise RuntimeError(f"{Path(args[0]).name} exit={proc.returncode}")
+        message = proc.stderr.encode()
+        safe = not any(key in message or key.hex().encode() in message for key in KEYS)
+        detail = proc.stderr.strip()[:400] if safe else "redacted stderr"
+        raise RuntimeError(f"{Path(args[0]).name} exit={proc.returncode}: {detail}")
     return proc
 
 
@@ -190,8 +193,11 @@ def negative_cases(profile, manifest, baseline):
         "-f",
         "-",
         data=(
-            "table ip lab_block { chain forward { "
-            "type filter hook forward priority 0; policy drop; } }\n"
+            "table ip lab_block {\n"
+            "    chain forward {\n"
+            "        type filter hook forward priority 0; policy drop;\n"
+            "    }\n"
+            "}\n"
         ),
     )
     try:
@@ -555,7 +561,7 @@ if __name__ == "__main__":
         except (AssertionError, OSError, RuntimeError, ValueError, KeyError, IndexError) as exc:
             emit("VM", "FAIL", "All executed acceptance assertions pass.", str(exc))
             journal = read_record(JOURNAL)
-            if journal and journal["action"] == "install":
+            if journal and journal["action"] == "install" and journal["phase"] != "COMMITTED":
                 emit(
                     "V03",
                     "FAIL",

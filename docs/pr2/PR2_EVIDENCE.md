@@ -20,5 +20,6 @@
 - 第二轮在 Ubuntu 24.04、Linux `6.8.0-147-generic`、nftables `1.0.9` 上执行。V01 和 V02 为 PASS，确认了目标平台、XFRM/nft 探测及 dry-run 前后的包清单和基线摘要相同。F01 和 F08 为 PASS，UDP 500 被占用或已有 swanctl 配置时，程序正确停止并保留原对象。V03 的真实 `install --confirm` 退出 1，判为 FAIL。该轮 V04–V20、F02–F07 和 F09–F14 未执行。 [第二轮 VM 日志与 JSONL 分项证据](https://github.com/yikkrrtykj/ipsecVPN/actions/runs/42213926644)
 - `55e1e07` 复测再次得到 V01、V02、F01 和 F08 PASS。V03 在 APT 和 daemon 启动后发现 IPv4 策略规则变化而返回 FAIL，停止 daemon 后基线验证通过，事务记录为 `RESTORED`。本轮 V04–V20 的正式用例及剩余 F 项尚未执行。 [失败与恢复的 VM 记录](https://github.com/yikkrrtykj/ipsecVPN/actions/runs/42215661430)
 - 依据 strongSwan 5.9.13 内核插件代码，非零路由表配置会在 daemon 初始化时注册策略路由，即使禁用自动路由安装。修复将项目 daemon 的 `routing_table` 置零，保留策略路由守恒检查。 [strongSwan 5.9.13 内核插件](https://github.com/strongswan/strongswan/blob/5.9.13/src/libcharon/plugins/kernel_netlink/kernel_netlink_net.c)
+- `ebad8ba` 实测 V01–V03 为 PASS，安装事务 `COMMITTED`，strongSwan 软件包为 `5.9.13-2ubuntu4.24.04.5`，默认路由、策略规则、SSH 和非项目防火墙摘要与安装前一致。F01–F04、F08 和 F12 也通过。该轮在 F05 的外部阻断规则测试夹具创建阶段失败，未执行 F05 断言或后续事务用例。日志末尾的额外 V03 FAIL 行来自错误归类，实际安装状态仍为 `COMMITTED`。已修正夹具语法和归类。 [安装成功与夹具失败日志](https://github.com/yikkrrtykj/ipsecVPN/actions/runs/42216693304)
 
 真实双端 IKE/CHILD SA、UDP/TCP、MTU、现场防火墙和外部备用切换属于后续 PR，标记为 SKIP。PR 保持 Draft，所有部署操作限于实验客户机。
