@@ -13,7 +13,12 @@ guest() { ssh "${ssh_options[@]}" -p 2222 ubuntu@127.0.0.1 "$@"; }
 cleanup() {
     code=$?
     trap - EXIT
-    guest 'sudo cat /var/tmp/ipsecvpn-acceptance.jsonl' 2>/dev/null || true
+    if guest 'sudo cat /var/tmp/ipsecvpn-acceptance.jsonl' > "$work/acceptance.jsonl" 2>/dev/null; then
+        cat "$work/acceptance.jsonl"
+        if [[ -n "${IPSECVPN_EVIDENCE_FILE:-}" ]]; then
+            cp "$work/acceptance.jsonl" "$IPSECVPN_EVIDENCE_FILE" || +                printf '%s\n' 'Could not save the JSONL artifact. Evidence remains in the job log.' >&2
+        fi
+    fi
     if [[ -s "$pidfile" ]]; then kill -- "$(cat "$pidfile")" 2>/dev/null || true; fi
     rm -rf -- "$work"
     exit "$code"

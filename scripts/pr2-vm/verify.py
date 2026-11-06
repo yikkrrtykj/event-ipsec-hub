@@ -29,6 +29,43 @@ CLI = Path(sys.executable).with_name("ipsecvpn")
 HOST = Host()
 ENV = {}
 KEYS = []
+CASE_COMMANDS = {
+    "V01": "systemd-detect-virt --vm; modprobe -nq xfrm_interface; ip xfrm policy list",
+    "V02": "ipsecvpn install --dry-run --json",
+    "V03": "ipsecvpn install --confirm --json; dpkg-query -W; swanctl --list-conns",
+    "V04": "ipsecvpn apply -c <profile> --confirm --json; swanctl --list-conns; swanctl --list-sas",
+    "V05": "ip -j -d link show",
+    "V06": "ip -4 route get <protected-address>",
+    "V07": "nft list table ip ipsecvpn",
+    "V08": "ipsecvpn apply -c <profile> --dry-run --json",
+    "V09": "ipsecvpn apply -c <profile> --confirm --json",
+    "V10": "ipsecvpn apply -c <profile> --confirm --json",
+    "V11": "ipsecvpn backup --confirm --json; ipsecvpn apply -c <update> --confirm --json",
+    "V12": "ipsecvpn rollback --to <id> --confirm --json",
+    "V13": "apply with injected nft, ip or swanctl failure; verify RESTORED journal",
+    "V14": "apply, SIGKILL after route mutation, ipsecvpn rollback --to <id> --confirm --json",
+    "V15": "ipsecvpn apply -c <profile> --confirm --json while holding the deployment lock",
+    "V16": "ipsecvpn uninstall --confirm --json; dpkg-query -W; ss -H -ulnp",
+    "V17": "systemctl reboot --no-block; cat /proc/sys/kernel/random/boot_id; systemctl is-active",
+    "V18": "ipsecvpn rollback --to <corrupt-or-missing-id> --confirm --json",
+    "V19": "journalctl --no-pager -u strongswan.service -o cat; scan project state and JSONL",
+    "V20": "ip -j -N -4 route show table all; ip -j -N -4 rule show; nft -j list ruleset",
+    "F01": "ipsecvpn install --confirm --json with isolated UDP/500 listener",
+    "F02": "ip link add <conflict>; ipsecvpn apply -c <profile> --confirm --json",
+    "F03": "ip route add blackhole <conflict>; ipsecvpn apply -c <profile> --confirm --json",
+    "F04": "ipsecvpn apply -c <wrong-wan-profile> --confirm --json",
+    "F05": "nft -f -; ipsecvpn apply -c <profile> --confirm --json",
+    "F06": "ipsecvpn render -c <invalid-profile>",
+    "F07": "ipsecvpn apply -c <profile> --confirm --json with invalid credential fixture",
+    "F08": "ipsecvpn install --confirm --json with foreign swanctl fixture",
+    "F09": "ipsecvpn install --confirm via unprivileged user or isolated mount namespace",
+    "F10": "systemctl stop strongswan.service; ip link del <xfrm>; ip -4 route get <address>",
+    "F11": "setpriv --bounding-set=-net_admin ip -4 route del <owned-route>",
+    "F12": "ip route add blackhole <host-route> / ip rule add <policy>; apply preflight",
+    "F13": "ipsecvpn render -c <invalid-profile>",
+    "F14": "ipsecvpn apply -c <incomplete-backup-profile> --confirm --json",
+}
+READ_ONLY_CASES = {"V01", "V02", "V08", "V19", "F04", "F06", "F09", "F13"}
 
 
 def command(*args, allowed=(0,), data=None):
@@ -55,7 +92,7 @@ def cli(*args, ok=True):
     return report
 
 
-def emit(ids, verdict, expected, observed):
+def emit(ids, verdict, expected, observed, audit_command=None):
     with SUMMARY.open("a", encoding="utf-8") as stream:
         for case in ids.split():
             row = {
@@ -64,13 +101,17 @@ def emit(ids, verdict, expected, observed):
                 "result": verdict,
                 "vm": "ipsecvpn-pr2-lab",
                 "versions": ENV,
+                "command": audit_command
+                or CASE_COMMANDS.get(case, "python scripts/pr2-vm/verify.py <phase>"),
                 "expected": expected,
                 "observed": observed,
-                "evidence": "GitHub job log / ipsecvpn-acceptance.jsonl",
-                "system_touched": "isolated VM only",
+                "evidence": SUMMARY.name,
+                "system_touched": case not in READ_ONLY_CASES,
                 "driver": "scripts/pr2-vm/verify.py",
             }
             line = json.dumps(row, sort_keys=True)
+            encoded = line.encode()
+            assert all(key not in encoded and key.hex().encode() not in encoded for key in KEYS)
             stream.write(line + "\n")
             print(line, flush=True)
 
@@ -280,7 +321,12 @@ def negative_cases(profile, manifest, baseline):
 
 
 def before_reboot():
-    ENV.update(HOST.probe(), nft=command("nft", "--version").stdout.strip())
+    ENV.update(
+        HOST.probe(),
+        nft=command("nft", "--version").stdout.strip(),
+        iproute2=HOST.packages()["iproute2"],
+        strongswan="not installed",
+    )
     profile = bootstrap_profiles()
     manifest = build_manifest(profile)
     baseline = resources().baseline()
@@ -494,10 +540,12 @@ def check_secret_evidence(profile):
 
 
 def after_reboot():
+    packages = HOST.packages()
     ENV.update(
         HOST.probe(),
         nft=command("nft", "--version").stdout.strip(),
-        strongswan=HOST.packages()["charon-systemd"],
+        iproute2=packages["iproute2"],
+        strongswan=packages["charon-systemd"],
     )
     baseline = json.loads(BASELINE.read_text(encoding="utf-8"))
     command("systemctl", "is-active", GUARD, RESTORE, UNIT)
@@ -526,18 +574,18 @@ def test_firewall_frontends():
     # These disposable guest rules are fixtures, after the project has been removed.
     command("iptables", "-w", "-I", "FORWARD", "-j", "DROP")
     try:
-        assert_foreign_firewall_stops("iptables FORWARD DROP")
+        assert_foreign_firewall_stops("iptables FORWARD DROP", "iptables -w -I FORWARD -j DROP")
     finally:
         command("iptables", "-w", "-D", "FORWARD", "-j", "DROP")
     command("ufw", "allow", "22/tcp")
     command("ufw", "--force", "enable")
     try:
-        assert_foreign_firewall_stops("UFW default routed policy")
+        assert_foreign_firewall_stops("UFW default routed policy", "ufw --force enable")
     finally:
         command("ufw", "--force", "disable")
 
 
-def assert_foreign_firewall_stops(label):
+def assert_foreign_firewall_stops(label, fixture_command):
     rules = HOST.nft()
     try:
         HOST.check_firewall(rules)
@@ -546,7 +594,13 @@ def assert_foreign_firewall_stops(label):
     else:
         raise AssertionError("Foreign firewall fixture did not stop preflight.")
     assert fingerprint(rules) == fingerprint(HOST.nft())
-    emit("F05", "PASS", "Foreign frontend policy stops preflight with no rule changes.", label)
+    emit(
+        "F05",
+        "PASS",
+        "Foreign frontend policy stops preflight with no rule changes.",
+        label,
+        audit_command=fixture_command + "; nft -j list ruleset; firewall preflight",
+    )
 
 
 if __name__ == "__main__":

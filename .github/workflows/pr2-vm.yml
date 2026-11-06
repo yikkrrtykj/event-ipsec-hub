@@ -27,4 +27,12 @@ jobs:
       - name: ShellCheck the VM harness
         run: shellcheck scripts/pr2-vm/*.sh
       - name: Verify inside a disposable isolated guest
+        env:
+          IPSECVPN_EVIDENCE_FILE: ${{ runner.temp }}/ipsecvpn-acceptance.jsonl
         run: bash scripts/pr2-vm/run.sh
+      - name: Save sanitized acceptance evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ipsecvpn-pr2-vm-evidence
+          path: ${{ runner.temp }}/ipsecvpn-acceptance.jsonl
