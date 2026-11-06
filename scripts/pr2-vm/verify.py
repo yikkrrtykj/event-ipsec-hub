@@ -28,6 +28,7 @@ BASELINE = Path("/var/tmp/ipsecvpn-lab-baseline.json")
 CLI = Path(sys.executable).with_name("ipsecvpn")
 HOST = Host()
 ENV = {}
+KEYS = []
 
 
 def command(*args, allowed=(0,), data=None):
@@ -41,6 +42,8 @@ def command(*args, allowed=(0,), data=None):
 
 def cli(*args, ok=True):
     proc = command(str(CLI), *args, "--json", allowed=(0,) if ok else (1,))
+    output = (proc.stdout + proc.stderr).encode()
+    assert all(key not in output and key.hex().encode() not in output for key in KEYS)
     report = json.loads(proc.stdout)
     assert report["status"] == ("PASS" if ok else "FAIL"), report.get("detail")
     if not ok:
@@ -61,6 +64,7 @@ def emit(ids, verdict, expected, observed):
                 "observed": observed,
                 "evidence": "GitHub job log / ipsecvpn-acceptance.jsonl",
                 "system_touched": "isolated VM only",
+                "driver": "scripts/pr2-vm/verify.py",
             }
             stream.write(json.dumps(row, sort_keys=True) + "\n")
 
@@ -81,13 +85,17 @@ def current_manifest():
 
 def bootstrap_profiles():
     profile = load_profile(HERE / "example.yaml")
-    default = HOST.ip("-4", "route", "show", "default")[0]
+    routes = HOST.ip("-4", "route", "show", "default")
+    assert routes, "Isolated VM baseline is missing its synthetic default route."
+    default = routes[0]
     wan = default["dev"]
     addr = HOST.ip("-4", "addr", "show", "dev", wan)[0]["addr_info"][0]["local"]
     for link in profile["site_links"]:
         link["outer_path"].update(interface=wan, source_ip=addr, gateway=default["gateway"])
         path = Path(link["secret_ref"][5:])
-        path.write_text(secrets.token_hex(32) + "\n", encoding="ascii")
+        key = secrets.token_hex(32).encode("ascii")
+        KEYS.append(key)
+        path.write_bytes(key + b"\n")
         path.chmod(0o600)
     profile["backup"] = {"enabled": True, "type": "external_managed"}
     profile_write(PROFILE, profile)
@@ -425,6 +433,10 @@ def check_secret_evidence(profile):
                 for value in secret_values
             )
     assert not Path("/run/ipsecvpn/swanctl.conf").exists()
+    daemon = command("journalctl", "--no-pager", "-u", UNIT, "-o", "cat").stdout.encode()
+    assert all(
+        value not in daemon and value.hex().encode() not in daemon for value in secret_values
+    )
     emit(
         "V19",
         "PASS",
@@ -470,6 +482,6 @@ if __name__ == "__main__":
     else:
         try:
             {"before-reboot": before_reboot, "after-reboot": after_reboot}[action]()
-        except (AssertionError, OSError, RuntimeError, ValueError) as exc:
+        except (AssertionError, OSError, RuntimeError, ValueError, KeyError, IndexError) as exc:
             emit("VM", "FAIL", "All executed acceptance assertions pass.", str(exc))
             raise

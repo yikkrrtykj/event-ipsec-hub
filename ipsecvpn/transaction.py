@@ -16,6 +16,7 @@ from .installer import (
     deactivate,
     install_packages,
     trusted_python,
+    vendor_plugins,
 )
 from .profile import MAX_PROFILE_BYTES, load_profile, parse_profile
 from .renderer import build_manifest, canonical, digest, external_backup, resource_diff
@@ -80,6 +81,8 @@ def installed_record():
     if not record:
         raise Stop("Run install on a clean authorized VM before applying a profile.")
     assert_files(record)
+    if record["vendor_plugins"] != vendor_plugins():
+        raise Stop("Distribution strongSwan plugin configuration changed.")
     return record
 
 
@@ -220,11 +223,14 @@ class Deployment:
             self.phase("VERIFIED")
             write_record(INSTALLED, install)
             self.phase("COMMITTED")
-        except (Stop, OSError, ValueError):
+        except (Stop, OSError, ValueError) as exc:
+            reason = str(exc) if isinstance(exc, Stop) else "protected install state operation"
+            self.record["failure"] = reason
             self.phase("FAILED")
             self.recover()
             raise Stop(
-                f"Install failed and protected state was restored. Journal {self.record['id']}."
+                "Install failed and protected state was restored. "
+                f"{reason} Journal {self.record['id']}."
             ) from None
         finally:
             self.host.step = None
@@ -291,11 +297,13 @@ class Deployment:
                 write_record(INSTALLED, None)
             self.phase("VERIFIED")
             self.phase("COMMITTED")
-        except (Stop, OSError, ValueError):
+        except (Stop, OSError, ValueError) as exc:
+            reason = str(exc) if isinstance(exc, Stop) else "protected host state operation"
+            self.record["failure"] = reason
             self.phase("FAILED")
             self.recover()
             raise Stop(
-                f"{action} failed; pre-state restored. Journal {self.record['id']}."
+                f"{action} failed; pre-state restored. {reason} Journal {self.record['id']}."
             ) from None
         finally:
             self.host.step = None
@@ -375,7 +383,6 @@ def boot(phase):
             install = install or pending["install"]
         if not install or not network_scope(candidates):
             return
-        assert_files(install)
         resources = Resources(host, install["token"], candidates)
         if phase == "guard":
             resources.guard()
@@ -384,6 +391,7 @@ def boot(phase):
                 "An unfinished journal requires explicit rollback; boot guards remain active."
             )
         else:
+            installed_record()
             target = snapshot(active)
             host.assert_exclusive_ike(True, {name for name, _ in link_specs((target,))})
             baseline = resources.preflight(target)

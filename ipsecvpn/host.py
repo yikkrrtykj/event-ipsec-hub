@@ -15,7 +15,7 @@ from .secureio import Stop, read_file
 PATH = "/usr/sbin:/usr/bin:/sbin:/bin"
 UNIT = "strongswan.service"
 DROPIN = Path("/etc/systemd/system/strongswan.service.d/99-ipsecvpn.conf")
-SOCKET = "unix:///run/ipsecvpn-charon.vici"
+SOCKET = "unix:///run/charon.vici"
 PACKAGES = ("charon-systemd", "strongswan-swanctl")
 LAB_MARKER = Path("/etc/ipsecvpn/lab-authorized")
 HOST_TOOLS = ("ip", "nft", "ss", "systemctl", "sysctl", "modprobe", "dpkg-query", "apt-get")
@@ -65,11 +65,25 @@ class Host:
             "systemd query", "systemctl", "show", unit, "-p", prop, "--value"
         ).strip()
 
-    def vici(self, action):
-        return self.command("VICI query", "swanctl", action, "--uri", SOCKET)
+    def vici(self, action, *options):
+        return self.command("VICI query", "swanctl", action, *options, "--uri", SOCKET)
 
     def vici_names(self):
-        return set(re.findall(r"^([A-Za-z0-9_-]+):\s+IKEv2\b", self.vici("--list-conns"), re.M))
+        return set(self.vici_connections())
+
+    def vici_connections(self):
+        connections = {}
+        current = None
+        for line in self.vici("--list-conns").splitlines():
+            if line and not line[0].isspace():
+                match = re.match(r"^(.+?):\s+IKEv[12]\b", line)
+                if not match:
+                    raise Stop("VICI returned an unrecognized connection entry.")
+                current = match.group(1)
+                connections[current] = []
+            elif line and current is not None:
+                connections[current].append(line)
+        return connections
 
     def probe(self):
         if platform.system() != "Linux" or not hasattr(os, "geteuid") or os.geteuid() != 0:
@@ -142,10 +156,10 @@ class Host:
             "IKE socket probe", "ss", "-H", "-ulnp", "( sport = :500 or sport = :4500 )"
         ).strip()
 
-    def assert_exclusive_ike(self, installed, permitted=(), allow_inactive=False):
+    def assert_exclusive_ike(self, installed, permitted=()):
         if self.service("strongswan-starter.service", "ActiveState") not in {"inactive", "failed"}:
             raise Stop("A legacy strongSwan starter unit is active.")
-        if self.command("XFRM SA probe", "ip", "xfrm", "state", "list").strip():
+        if self.command("XFRM SA probe", "ip", "xfrm", "state", "list", "nokeys").strip():
             raise Stop("An active kernel IPsec SA exists. Use a dedicated idle VM.")
         if not installed:
             if self.ike_ports() or any(
@@ -154,6 +168,8 @@ class Host:
                     "/etc/swanctl",
                     "/etc/strongswan.conf",
                     "/etc/strongswan.d",
+                    "/run/charon.vici",
+                    "/run/charon.ctl",
                     DROPIN.parent,
                 )
             ):
@@ -172,16 +188,14 @@ class Host:
         if "charon-systemd" not in self.service(UNIT, "ExecStart"):
             raise Stop("The active unit does not use charon-systemd.")
         state = self.service(UNIT, "ActiveState")
-        if allow_inactive and state in {"inactive", "failed"} and not self.ike_ports():
-            return
         pid = self.service(UNIT, "MainPID")
         ports = self.ike_ports().splitlines()
         if state != "active" or not pid.isdecimal() or int(pid) <= 0 or not ports:
             raise Stop("The owned charon-systemd service and IKE sockets are not active.")
         if any(set(re.findall(r"pid=(\d+),", line)) != {pid} for line in ports):
             raise Stop("A foreign process owns an IKE socket.")
-        output = self.vici("--version")
-        if not re.search(r"\b5\.9\.\d+\b", output):
+        output = self.vici("--version", "--daemon")
+        if not re.search(r"\b5\.9\.\d+\b", output) or "charon-systemd" not in output:
             raise Stop("VICI did not report the expected strongSwan 5.9.x version.")
         if self.vici("--list-sas").strip() or not self.vici_names().issubset(permitted):
             raise Stop("Active SAs or unowned VICI connections prevent safe changes.")
@@ -298,6 +312,12 @@ class Host:
             service: self.service(service, "ActiveState")
             for service in ("ssh.service", "ssh.socket")
         }
+        ssh["socket"] = self.service("ssh.socket", "Listen")
+        ssh["listeners"] = sorted(
+            line.split()[3]
+            for line in self.command("SSH listener snapshot", "ss", "-H", "-ltnp").splitlines()
+            if '("sshd",' in line
+        )
         return {
             "rules": fingerprint(rules),
             "default_routes": fingerprint([row for row in routes if row.get("dst") == "default"]),

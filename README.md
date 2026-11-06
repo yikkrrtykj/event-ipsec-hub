@@ -40,6 +40,7 @@ ipsecvpn export-peer -c config/event.example.yaml --site stage-b --format json
 - [通用架构和配置约束](docs/architecture.md)
 - [赛事配置生命周期与安全](docs/event-lifecycle.md)
 - [P0/P1/P2 能力与 PR #2–#5 验收计划](docs/roadmap.md)
+- [隔离 VM 安装](docs/install.md)、[网络所有权](docs/network-ownership.md)、[备份回滚](docs/rollback.md)与[密钥安全](docs/security.md)
 
 ```bash
 python -m pip install '.[dev]'

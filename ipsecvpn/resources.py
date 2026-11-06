@@ -1,5 +1,6 @@
 """Apply and verify only declared project network and VICI objects."""
 
+import re
 from pathlib import Path
 
 from .host import SOCKET, fingerprint, route_key, separate_nft, xfrm_id
@@ -194,8 +195,21 @@ class Resources:
             raise Stop("Observed XFRM interfaces or exact routes differ from the manifest.")
         if bool(table) != bool(expected) or (nft_sha and nft_sha != fingerprint(table)):
             raise Stop("Observed project nftables rules differ from the expected state.")
-        if self.host.vici_names() != wanted:
+        connections = self.host.vici_connections()
+        if set(connections) != wanted:
             raise Stop("The daemon did not report exactly the intended VICI connections.")
+        for link in expected.links if expected else ():
+            listing = "\n".join(connections[link.name])
+            if (
+                f"  local:  {link.source}" not in connections[link.name]
+                or f"  remote: {link.peer}" not in connections[link.name]
+                or not re.search(rf"^  {re.escape(link.child)}: TUNNEL\b", listing, re.M)
+            ):
+                raise Stop("The loaded VICI peer addresses or CHILD differ from the manifest.")
+            for direction, selectors in (("local", link.local_ts), ("remote", link.remote_ts)):
+                observed = re.findall(rf"^    {direction}:\s+(.+)$", listing, re.M)
+                if len(observed) != 1 or set(observed[0].split()) != set(selectors):
+                    raise Stop("The loaded VICI selectors differ from the authorized CIDRs.")
         for spec in sorted(routes):
             if spec[1] == "unicast":
                 lookup = self.host.ip("-4", "route", "get", spec[0].split("/")[0])

@@ -41,7 +41,19 @@ ssh-keygen -q -t ed25519 -N '' -f "$work/key"
 printf '#cloud-config\nssh_authorized_keys:\n  - %s\npackage_update: false\npackage_upgrade: false\n' \
     "$(cat "$work/key.pub")" > "$work/user-data"
 printf 'instance-id: ipsecvpn-pr2-lab\nlocal-hostname: ipsecvpn-pr2-lab\n' > "$work/meta-data"
-cloud-localds "$work/seed.img" "$work/user-data" "$work/meta-data"
+cat > "$work/network-config" <<'EOF'
+version: 2
+ethernets:
+  labwan:
+    match:
+      macaddress: "52:54:00:12:34:56"
+    set-name: labwan
+    addresses: [10.0.2.15/24]
+    routes:
+      - to: default
+        via: 10.0.2.2
+EOF
+cloud-localds --network-config="$work/network-config" "$work/seed.img" "$work/user-data" "$work/meta-data"
 
 accel=tcg
 if [[ -r /dev/kvm && -w /dev/kvm ]]; then accel=kvm; fi
@@ -50,7 +62,7 @@ qemu-system-x86_64 -accel "$accel" -machine q35 -smp 2 -m 3072 -display none \
     -drive "file=$work/$image,if=virtio,format=qcow2" \
     -drive "file=$work/seed.img,if=virtio,format=raw,readonly=on" \
     -netdev user,id=isolated,restrict=on,ipv6=off,hostfwd=tcp:127.0.0.1:2222-:22 \
-    -device virtio-net-pci,netdev=isolated
+    -device virtio-net-pci,netdev=isolated,mac=52:54:00:12:34:56
 
 wait_ssh() {
     local _

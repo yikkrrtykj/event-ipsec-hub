@@ -14,7 +14,7 @@ UNIT_DIR = Path("/etc/systemd/system")
 GUARD = "ipsecvpn-guard.service"
 RESTORE = "ipsecvpn-restore.service"
 UNIT_FILES = (
-    STATE / "strongswan.conf",
+    Path("/etc/strongswan.d/ipsecvpn-private.conf"),
     DROPIN,
     UNIT_DIR / GUARD,
     UNIT_DIR / RESTORE,
@@ -29,6 +29,9 @@ def install_files(python):
         include /etc/strongswan.d/charon/*.conf
         kernel-netlink {{
             install_routes_xfrmi = no
+        }}
+        socket-default {{
+            use_ipv6 = no
         }}
         vici {{
             socket = {SOCKET}
@@ -57,7 +60,7 @@ WantedBy=multi-user.target
 Description=ipsecVPN restore committed lab configuration
 Requires={GUARD} {UNIT}
 Wants=network-online.target
-After={GUARD} network-online.target {UNIT}
+After={GUARD} network-online.target {UNIT} ssh.service ssh.socket
 PartOf={UNIT}
 
 [Service]
@@ -99,6 +102,14 @@ def assert_files(record, missing_ok=False):
             raise Stop("An installed project service file has drifted.")
 
 
+def vendor_plugins():
+    directory = Path("/etc/strongswan.d/charon")
+    os.close(trusted_dir(directory))
+    return {
+        path.name: digest(read_file(path, mode=0o644)) for path in sorted(directory.glob("*.conf"))
+    }
+
+
 def activate(host, record):
     assert_files(record, missing_ok=True)
     make_directory(DROPIN.parent, 0o755)
@@ -132,6 +143,7 @@ def install_packages(host, record):
     # Install the private override before any distribution maintainer script starts charon.
     assert_files(record, missing_ok=True)
     make_directory(DROPIN.parent, 0o755)
+    make_directory(UNIT_FILES[0].parent, 0o755)
     files = install_files(record["python"])
     atomic_write(UNIT_FILES[0], files[UNIT_FILES[0]])
     atomic_write(DROPIN, files[DROPIN], 0o644)
@@ -159,3 +171,4 @@ def install_packages(host, record):
     activate(host, record)
     assert_files(record)
     host.assert_exclusive_ike(True)
+    record["vendor_plugins"] = vendor_plugins()
