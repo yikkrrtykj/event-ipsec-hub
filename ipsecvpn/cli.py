@@ -10,8 +10,12 @@ from pathlib import Path
 
 from .handoff import build_plan, peer_parameters, render_peer_markdown
 from .profile import ProfileError, backup_readiness, load_profile
+from .renderer import render
+from .secureio import Stop
+from .transaction import Deployment
 
 DEFAULT_PROFILES = Path("/etc/ipsecvpn/profiles")
+HOST_ACTIONS = ("install", "apply", "backup", "rollback", "uninstall")
 
 
 def _check(check_id, status, detail):
@@ -104,10 +108,29 @@ def _parser():
     export.add_argument("--site", required=True)
     export.add_argument("--format", choices=("md", "json"), default="md")
     export.add_argument("--template", choices=("auto", "hillstone", "generic"), default="auto")
+    rendering = commands.add_parser("render", help="Render a redacted deployment manifest.")
+    rendering.add_argument("-c", "--config", type=Path, required=True)
+    rendering.add_argument("--json", action="store_true")
+    for action in HOST_ACTIONS:
+        operation = commands.add_parser(
+            action, help=f"{action.capitalize()} on an authorized lab VM."
+        )
+        mode = operation.add_mutually_exclusive_group(required=True)
+        mode.add_argument("--dry-run", action="store_true")
+        mode.add_argument("--confirm", action="store_true")
+        operation.add_argument("--json", action="store_true")
+        if action == "apply":
+            operation.add_argument("-c", "--config", type=Path, required=True)
+        if action == "rollback":
+            operation.add_argument("--to", required=True)
     return parser
 
 
 def _run(args):
+    if args.command in HOST_ACTIONS:
+        return Deployment().dispatch(
+            args.command, args.confirm, getattr(args, "config", None), getattr(args, "to", None)
+        )
     if args.command == "profiles":
         return list_profiles(args.directory)
     if args.command == "check":
@@ -118,6 +141,8 @@ def _run(args):
         if not config:
             raise ProfileError("Select a profile explicitly with -c or IPSECVPN_CONFIG.")
     profile = load_profile(config)
+    if args.command == "render":
+        return render(profile)
     if args.command == "validate":
         return {
             "status": "PASS",
@@ -131,6 +156,13 @@ def _run(args):
 
 def _print_text(result):
     print(result["status"], result.get("detail", ""))
+    for key in ("journal", "backup_id"):
+        if key in result:
+            print(f"{key} {result[key]}")
+    for name, version in result.get("packages", {}).items():
+        print(f"{name} {version}")
+    if "diff" in result:
+        print(json.dumps(result["diff"], sort_keys=True))
     backup = result.get("backup", {})
     if backup.get("enabled"):
         print(f"{backup['status']}/{backup['readiness']} external backup handoff inputs")
@@ -150,13 +182,32 @@ def _print_text(result):
 def main(argv=None):
     args = _parser().parse_args(argv)
     export_format = getattr(args, "format", None)
-    json_output = args.command == "plan" or export_format == "json" or getattr(args, "json", False)
+    json_output = (
+        args.command in {"plan", "render"}
+        or export_format == "json"
+        or getattr(args, "json", False)
+    )
     try:
         result = _run(args)
     except ProfileError as exc:
         result = {"status": "FAIL", "detail": str(exc)}
+        if args.command in HOST_ACTIONS:
+            result["decision"] = "STOP"
         if not json_output:
-            print(f"FAIL {result['detail']}", file=sys.stderr)
+            status = "FAIL/STOP" if "decision" in result else "FAIL"
+            print(f"{status} {result['detail']}", file=sys.stderr)
+            return 1
+    except (Stop, OSError, KeyError, ValueError) as exc:
+        if args.command not in HOST_ACTIONS:
+            raise
+        detail = (
+            str(exc)
+            if isinstance(exc, Stop)
+            else "A protected host check or state operation failed."
+        )
+        result = {"status": "FAIL", "decision": "STOP", "detail": detail}
+        if not json_output:
+            print(f"FAIL/STOP {detail}", file=sys.stderr)
             return 1
     if json_output:
         print(json.dumps(result, ensure_ascii=False, indent=2, allow_nan=False))
