@@ -1,0 +1,71 @@
+schema_version: "2.0"
+event: {id: studio-mock, name: Studio Interconnect, purpose: Production and telemetry VLANs}
+hub:
+  id: node-jade
+  platform: ubuntu-24.04
+  public_endpoint: 203.0.113.125
+  provider_label: Fictional Compute C
+  location_label: Oceania lab
+sites:
+  - id: control-X
+    display_name: Control Studio
+    role: signal-operations
+    country: 澳大利亚
+    public_endpoint: 198.51.100.121
+    ike_identity: control-x.example
+    firewall: {vendor: hillstone, model: Example C}
+    lan_cidrs: [10.61.1.0/24, 10.61.2.0/24, 10.61.3.0/24]
+    uplinks:
+      - {id: fiber, isp_label: Fictional Transit 5, public_endpoint: 198.51.100.121}
+      - {id: radio, isp_label: Fictional Transit 6, public_endpoint: 198.51.100.122}
+  - id: intake-7
+    display_name: Intake Studio
+    role: telemetry
+    country: 新加坡
+    public_endpoint: 192.0.2.120
+    ike_identity: intake-7.example
+    firewall: {vendor: Example Firewall C}
+    lan_cidrs: [10.62.8.0/24, 10.62.9.0/24]
+site_links:
+  - site_id: control-X
+    if_id: 112
+    outer_path: {interface: enp1s0, isp_label: Fictional Transit 7}
+    secret_ref: file:/etc/ipsecvpn/secrets/control-x.psk
+    route_priority: 10
+  - site_id: intake-7
+    if_id: 113
+    outer_path: {interface: enp2s0, isp_label: Fictional Transit 8}
+    secret_ref: file:/etc/ipsecvpn/secrets/intake-7.psk
+    route_priority: 11
+traffic_policy:
+  allowed_site_pairs:
+    - a: control-X
+      b: intake-7
+      a_cidrs: [10.61.1.0/24, 10.61.2.0/24]
+      b_cidrs: [10.62.8.0/24, 10.62.9.0/24]
+backup:
+  enabled: true
+  type: external_managed
+  provider_label: Fictional Backup Gateway
+  location_label: Asia Pacific lab
+  peer_profile_ref: studio-standby
+  links:
+    - site_id: control-X
+      public_endpoint: 203.0.113.126
+      local_uplink_id: radio
+      tunnel_name: control-standby
+      remote_cidrs: [10.62.8.0/24, 10.62.9.0/24]
+      route_priority: 30
+      track_target: 10.62.8.9
+    - site_id: intake-7
+      public_endpoint: 203.0.113.127
+      tunnel_name: intake-standby
+      remote_cidrs: [10.61.1.0/24, 10.61.2.0/24]
+      route_priority: 31
+      track_target: 10.61.1.9
+monitoring:
+  enabled: true
+  probes:
+    - {site_id: control-X, protocol: udp_echo, target: 10.62.8.9, path: backup, port: 39001}
+  thresholds: {rtt_ms: 80, jitter_ms: 12, loss_pct: 2}
+  feishu_webhook_ref: file:/etc/ipsecvpn/secrets/example-notification.ref

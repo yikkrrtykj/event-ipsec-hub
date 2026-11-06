@@ -1,0 +1,38 @@
+schema_version: "2.0"
+event: {id: arena-mock, name: Arena Rehearsal, purpose: Observer feed}
+hub:
+  id: node-amber
+  platform: ubuntu-24.04
+  public_endpoint: 192.0.2.24
+  provider_label: Fictional Compute A
+  location_label: Asia Pacific lab
+sites:
+  - id: floor-72
+    display_name: Rehearsal Arena
+    role: venue
+    country: 韩国
+    public_endpoint: 198.51.100.51
+    ike_identity: floor-72.example
+    firewall: {vendor: Hillstone, model: Example A, os_version: unknown}
+    lan_cidrs: [10.44.50.0/24]
+  - id: relay-19
+    display_name: Remote Observer Desk
+    role: observer
+    country: 捷克
+    public_endpoint: 203.0.113.73
+    ike_identity: relay-19.example
+    firewall: {vendor: Example Firewall A}
+    lan_cidrs: [172.20.23.0/24]
+site_links:
+  - site_id: relay-19
+    if_id: 521
+    outer_path: {interface: auto, isp_label: Fictional Transit 1}
+    secret_ref: file:/etc/ipsecvpn/secrets/relay-19.psk
+  - site_id: floor-72
+    if_id: 492
+    outer_path: {interface: auto, isp_label: Fictional Transit 2}
+    secret_ref: file:/etc/ipsecvpn/secrets/floor-72.psk
+traffic_policy:
+  allowed_site_pairs:
+    - {a: relay-19, b: floor-72}
+backup: {enabled: false}

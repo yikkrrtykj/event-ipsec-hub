@@ -1,0 +1,262 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ipsecVPN event profile V2.0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "event", "hub", "sites", "site_links", "traffic_policy", "backup"],
+  "properties": {
+    "schema_version": {"const": "2.0"},
+    "event": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "name": {"$ref": "#/$defs/label"},
+        "purpose": {"$ref": "#/$defs/label"}
+      }
+    },
+    "hub": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "platform", "public_endpoint", "provider_label", "location_label"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "platform": {"const": "ubuntu-24.04"},
+        "public_endpoint": {"$ref": "#/$defs/ipv4"},
+        "ike_identity": {"$ref": "#/$defs/identity"},
+        "provider_label": {"$ref": "#/$defs/label"},
+        "location_label": {"$ref": "#/$defs/label"},
+        "country": {"$ref": "#/$defs/label"}
+      }
+    },
+    "sites": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "items": {"$ref": "#/$defs/site"}
+    },
+    "site_links": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "items": {"$ref": "#/$defs/site_link"}
+    },
+    "security": {"$ref": "#/$defs/security"},
+    "traffic_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["allowed_site_pairs"],
+      "properties": {
+        "allowed_site_pairs": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["a", "b"],
+            "dependentRequired": {"a_cidrs": ["b_cidrs"], "b_cidrs": ["a_cidrs"]},
+            "properties": {
+              "a": {"$ref": "#/$defs/id"},
+              "b": {"$ref": "#/$defs/id"},
+              "a_cidrs": {"$ref": "#/$defs/cidrs"},
+              "b_cidrs": {"$ref": "#/$defs/cidrs"}
+            }
+          }
+        }
+      }
+    },
+    "backup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled"],
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "type": {"const": "external_managed"},
+        "peer_profile_ref": {"$ref": "#/$defs/id"},
+        "provider_label": {"$ref": "#/$defs/label"},
+        "location_label": {"$ref": "#/$defs/label"},
+        "country": {"$ref": "#/$defs/label"},
+        "links": {
+          "type": "array",
+          "maxItems": 2,
+          "items": {"$ref": "#/$defs/backup_link"}
+        }
+      },
+      "if": {"properties": {"enabled": {"const": true}}},
+      "then": {"required": ["type"]}
+    },
+    "monitoring": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled"],
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "probes": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/probe"}
+        },
+        "thresholds": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "rtt_ms": {"type": "number", "exclusiveMinimum": 0},
+            "jitter_ms": {"type": "number", "exclusiveMinimum": 0},
+            "loss_pct": {"type": "number", "minimum": 0, "maximum": 100}
+          }
+        },
+        "feishu_webhook_ref": {"$ref": "#/$defs/file_ref"}
+      }
+    }
+  },
+  "$defs": {
+    "label": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
+      "pattern": "\\S",
+      "not": {"pattern": "[\\u0000-\\u001f\\u007f]"}
+    },
+    "id": {
+      "$ref": "#/$defs/label",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9_-]{0,62}$"
+    },
+    "ipv4": {"type": "string", "format": "ipv4"},
+    "identity": {
+      "$ref": "#/$defs/label",
+      "pattern": "^@?[A-Za-z0-9][A-Za-z0-9@._-]*$",
+      "not": {"const": "0.0.0.0"}
+    },
+    "cidrs": {
+      "type": "array",
+      "minItems": 1,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "format": "ipv4-cidr",
+        "pattern": "^([0-9]{1,3}\\.){3}[0-9]{1,3}/([0-9]|[12][0-9]|3[012])$"
+      }
+    },
+    "file_ref": {
+      "$ref": "#/$defs/label",
+      "pattern": "^file:/etc/ipsecvpn/secrets/[A-Za-z0-9][A-Za-z0-9_.-]{0,95}$"
+    },
+    "site": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "display_name", "public_endpoint", "lan_cidrs", "ike_identity", "firewall"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "display_name": {"$ref": "#/$defs/label"},
+        "role": {"$ref": "#/$defs/label"},
+        "country": {"$ref": "#/$defs/label"},
+        "location_label": {"$ref": "#/$defs/label"},
+        "public_endpoint": {"$ref": "#/$defs/ipv4"},
+        "ike_identity": {"$ref": "#/$defs/identity"},
+        "lan_cidrs": {"$ref": "#/$defs/cidrs"},
+        "firewall": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["vendor"],
+          "properties": {
+            "vendor": {"$ref": "#/$defs/label"},
+            "model": {"$ref": "#/$defs/label"},
+            "os_version": {"$ref": "#/$defs/label"}
+          }
+        },
+        "uplinks": {
+          "type": "array",
+          "items": {"$ref": "#/$defs/uplink"}
+        }
+      }
+    },
+    "uplink": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "isp_label", "public_endpoint"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "isp_label": {"$ref": "#/$defs/label"},
+        "public_endpoint": {"$ref": "#/$defs/ipv4"},
+        "interface": {"$ref": "#/$defs/label"}
+      }
+    },
+    "site_link": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["site_id", "secret_ref", "if_id", "outer_path"],
+      "properties": {
+        "site_id": {"$ref": "#/$defs/id"},
+        "secret_ref": {"$ref": "#/$defs/file_ref"},
+        "if_id": {"type": "integer", "minimum": 1, "maximum": 4294967295},
+        "ike_proposal": {"$ref": "#/$defs/ike"},
+        "esp_proposal": {"$ref": "#/$defs/esp"},
+        "route_priority": {"$ref": "#/$defs/priority"},
+        "outer_path": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["interface", "isp_label"],
+          "properties": {
+            "interface": {
+              "$ref": "#/$defs/label",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,14}$"
+            },
+            "isp_label": {"$ref": "#/$defs/label"},
+            "source_ip": {"$ref": "#/$defs/ipv4"},
+            "gateway": {"$ref": "#/$defs/ipv4"}
+          }
+        }
+      }
+    },
+    "ike": {
+      "$ref": "#/$defs/label",
+      "pattern": "^(aes(128|192|256)-sha(256|384|512)|aes(128|192|256)gcm16)-prfsha(256|384|512)-(modp(2048|3072|4096|6144|8192)|ecp(256|384|521))$"
+    },
+    "esp": {
+      "$ref": "#/$defs/label",
+      "pattern": "^(aes(128|192|256)-sha(256|384|512)|aes(128|192|256)gcm16)-(modp(2048|3072|4096|6144|8192)|ecp(256|384|521))$"
+    },
+    "security": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "ike_proposal": {"$ref": "#/$defs/ike"},
+        "esp_proposal": {"$ref": "#/$defs/esp"},
+        "ike_lifetime_seconds": {"type": "integer", "minimum": 1},
+        "child_lifetime_seconds": {"type": "integer", "minimum": 1},
+        "dpd_delay_seconds": {"type": "integer", "minimum": 1}
+      }
+    },
+    "priority": {"type": "integer", "minimum": 1},
+    "backup_link": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["site_id"],
+      "properties": {
+        "site_id": {"$ref": "#/$defs/id"},
+        "public_endpoint": {"$ref": "#/$defs/ipv4"},
+        "local_uplink_id": {"$ref": "#/$defs/id"},
+        "tunnel_name": {"$ref": "#/$defs/label"},
+        "remote_cidrs": {"$ref": "#/$defs/cidrs"},
+        "route_priority": {"$ref": "#/$defs/priority"},
+        "track_target": {"$ref": "#/$defs/ipv4"}
+      }
+    },
+    "probe": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["site_id", "protocol", "target", "path"],
+      "properties": {
+        "site_id": {"$ref": "#/$defs/id"},
+        "protocol": {"enum": ["icmp", "udp_echo"]},
+        "target": {"$ref": "#/$defs/ipv4"},
+        "path": {"enum": ["primary", "backup"]},
+        "port": {"type": "integer", "minimum": 1, "maximum": 65535}
+      },
+      "if": {"properties": {"protocol": {"const": "udp_echo"}}},
+      "then": {"required": ["port"]},
+      "else": {"not": {"required": ["port"]}}
+    }
+  }
+}
