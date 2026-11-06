@@ -389,6 +389,7 @@ def begin_captures(model, *, wan_only=False):
                 "-nn",
                 "-Z",
                 "root",
+                "--immediate-mode",
                 "-U",
                 "-i",
                 interface,
@@ -462,7 +463,7 @@ def verify_traffic(model, first):
                         sport=PORT + 10 + 4 * side + index,
                     )
                 )
-        time.sleep(0.2)
+        time.sleep(1.2)
     finally:
         observed = finish_captures(captures)
     current = cli("status")
@@ -483,7 +484,16 @@ def verify_traffic(model, first):
         edge = observed[f"{site['router']}/wan"]
         assert any("ESP" in line for line in edge)
         assert all(not any(row["source"] in line for row in all_rows) for line in edge)
-    for row in all_rows:
+    primary = [all_rows[0], all_rows[1], all_rows[5], all_rows[6]]
+    if first:
+        for case, row in zip(("T05", "T07", "T06", "T08"), primary, strict=True):
+            emit(
+                case,
+                "LAN hosts verify nonce, sequence and original source.",
+                {**row, "hub_xfrm_packets": {"before": initial_stats, "after": final_stats}},
+            )
+        emit("T09", "Every pair in the multi-CIDR matrix reaches the opposite LAN host.", all_rows)
+    for row in primary:
         needle = f"{row['source']}.{row['source_port']} > {row['destination']}.{PORT}:"
         for key in [f"hub/{link.name}" for link in model.links] + [
             f"{row['sender']}/eth0",
@@ -495,13 +505,6 @@ def verify_traffic(model, first):
             assert any(needle in line and "Flags [S]" in line for line in path)
             assert any(needle in line and "Flags [F" in line for line in path)
     if first:
-        for case, row in zip(
-            ("T05", "T07", "T06", "T08"),
-            [all_rows[0], all_rows[1], all_rows[5], all_rows[6]],
-            strict=True,
-        ):
-            emit(case, "LAN hosts verify nonce, sequence and original source.", row)
-        emit("T09", "Every pair in the multi-CIDR matrix reaches the opposite LAN host.", all_rows)
         emit(
             "T10 T11",
             "LAN and XFRM tuples match. WAN only carries encrypted test traffic.",
@@ -980,21 +983,47 @@ def verify_foreign_policy(model):
 
 
 class RouteFault(Host):
-    def __init__(self, kill=False):
+    def __init__(self, kind="route"):
         super().__init__()
-        self.kill = kill
+        self.kind = kind
         self.triggered = False
+        self.nft_writes = 0
 
     def command(self, label, *args, **kwargs):
-        if label == "IPv4 unicast route del" and kwargs.get("mutate") and not self.triggered:
+        if label == "nft atomic update" and kwargs.get("mutate"):
+            self.nft_writes += 1
+            if self.kind == "nft" and self.nft_writes == 2:
+                self.triggered = True
+                return super().command(
+                    label, *args, content=b"intentionally invalid fixture input\n", mutate=True
+                )
+        if (
+            self.kind in {"route", "kill"}
+            and label == "IPv4 unicast route del"
+            and kwargs.get("mutate")
+            and not self.triggered
+        ):
             self.triggered = True
-            if self.kill:
+            if self.kind == "kill":
                 super().command(label, *args, **kwargs)
                 os.kill(os.getpid(), signal.SIGKILL)
             return super().command(
                 label, "setpriv", "--bounding-set=-net_admin", *args, mutate=True
             )
         return super().command(label, *args, **kwargs)
+
+
+class ViciFault(Deployment):
+    def __init__(self):
+        super().__init__()
+        self.triggered = False
+
+    def step(self, label, result):
+        super().step(label, result)
+        if label == "VICI scoped load" and result == "STARTED":
+            self.triggered = True
+            with session(HOST.service(UNIT, "MainPID")) as client:
+                client.request("ipsecvpn-unknown-fixture-operation")
 
 
 def verify_maintenance(model):
@@ -1019,14 +1048,15 @@ def verify_maintenance(model):
     returned = cli("rollback", "--to", saved, "--maintenance", "--confirm")
     assert returned["configuration_restored"] and returned["data_path_restored"]["status"] == "SKIP"
     assert cli("status")["status"] == "PASS"
-    for kill, case in ((False, "S10"), (True, "S08")):
-        if kill:
-            child = subprocess.run((sys.executable, __file__, "crash"), check=False, timeout=30)
+    for index, kind in enumerate(("route", "nft", "vici", "kill")):
+        if kind == "kill":
+            child = subprocess.run((sys.executable, __file__, "crash"), check=False, timeout=90)
             assert child.returncode == -signal.SIGKILL
         else:
-            faulty = RouteFault()
+            faulty = ViciFault() if kind == "vici" else RouteFault(kind)
+            operation = faulty if kind == "vici" else Deployment(faulty)
             try:
-                Deployment(faulty).dispatch("apply", True, UPDATE, maintenance=True)
+                operation.dispatch("apply", True, UPDATE, maintenance=True)
             except Stop:
                 assert faulty.triggered
             else:
@@ -1034,24 +1064,25 @@ def verify_maintenance(model):
         journal = read_record(JOURNAL)
         assert journal["phase"] in {"STOP_FOR_MANUAL", "APPLYING"}
         assert not journal.get("configuration_restored")
-        proof = capture_fail_closed(model, 90 + 2 * kill)
+        proof = capture_fail_closed(model, 140 + 4 * index)
         recovered = cli("rollback", "--to", journal["id"], "--maintenance", "--confirm")
         assert (
             recovered["configuration_restored"]
             and recovered["data_path_restored"]["status"] == "SKIP"
         )
         emit(
-            case,
+            "S08" if kind == "kill" else "S10",
             "Fault stays guarded until explicit maintenance recovery and real traffic proof.",
             {
                 "journal": journal["id"],
                 "failed_phase": journal["phase"],
                 "guard": proof,
                 "restored_phase": read_record(JOURNAL)["phase"],
-                "flows": pair("udp", 94 + 2 * kill),
+                "flows": pair("udp", 142 + 4 * index),
+                "fault": kind,
             },
         )
-        if kill:
+        if kind == "kill":
             emit("F10", "Interrupted transaction has no WAN private plaintext.", proof)
     assert read_record(ACTIVE)["profile"] == load_profile(PROFILE)
 
@@ -1255,7 +1286,7 @@ if __name__ == "__main__":
         summarize()
         sys.exit(0)
     if sys.argv[1] == "crash":
-        Deployment(RouteFault(kill=True)).dispatch("apply", True, UPDATE, maintenance=True)
+        Deployment(RouteFault("kill")).dispatch("apply", True, UPDATE, maintenance=True)
         sys.exit(2)
     try:
         {"before-reboot": before_reboot, "after-reboot": after_reboot}[sys.argv[1]]()

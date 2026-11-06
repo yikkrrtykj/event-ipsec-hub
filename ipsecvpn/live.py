@@ -7,7 +7,7 @@ from vici.exception import CommandException
 
 from .renderer import build_manifest, connection_settings
 from .resources import Resources
-from .sa import SAError, inventory, session
+from .sa import SAError, identity, inventory, session
 from .secureio import Stop
 
 
@@ -32,6 +32,7 @@ def owned_resources(host, install, active):
 def initiate_link(host, manifest, pid, link):
     diagnostic = "IKE_NEGOTIATION_UNVERIFIED"
     with session(pid) as client:
+        verify_initiate_config(client, manifest)
         try:
             for event in client.initiate(
                 {"ike": link.name, "child": link.child, "timeout": "6000", "loglevel": "1"}
@@ -53,6 +54,33 @@ def initiate_link(host, manifest, pid, link):
     if not observed or not observed.child:
         raise SAError("CHILD_NOT_ESTABLISHED", "The target did not install a verified CHILD SA.")
     return observed
+
+
+def verify_initiate_config(client, manifest):
+    links = {item.name: item for item in manifest.links}
+    seen = set()
+    for event in client.list_conns():
+        for name, row in event.items():
+            if name in seen or name not in links:
+                raise Stop("The daemon has an unowned loaded connection.")
+            seen.add(name)
+            link = links[name]
+            auth = {key for key in row if key.startswith(("local-", "remote-"))}
+            if auth != {"local-1", "remote-1"} or row.get("version") != b"IKEv2":
+                raise Stop("The loaded authentication profile is not the expected IKEv2 PSK.")
+            for direction, expected in (("local", link.local_id), ("remote", link.remote_id)):
+                section = row[f"{direction}-1"]
+                if section.get("class") != b"pre-shared key" or identity(
+                    section.get("id", b"").decode("ascii")
+                ) != identity(expected):
+                    raise Stop("A loaded IKE identity differs from the active manifest.")
+    keys = set(client.get_shared().get("keys", ()))
+    if (
+        seen != set(links)
+        or keys != {f"ike-{name}".encode() for name in links}
+        or client.get_keys().get("keys")
+    ):
+        raise Stop("The loaded credential or connection inventory is not project-exclusive.")
 
 
 def rekey_ids(event, kind, link):
