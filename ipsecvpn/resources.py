@@ -110,7 +110,11 @@ class Resources:
         content = f"delete table ip {TABLE}\n" if owned else ""
         if transition:
             content += nft_config(
-                None, self.token, network_scope(self.candidates), (name for name, _ in self.links)
+                None,
+                self.token,
+                network_scope(self.candidates),
+                (name for name, _ in self.links),
+                handshake=manifest,
             )
         elif manifest:
             content += nft_config(manifest, self.token)
@@ -145,6 +149,7 @@ class Resources:
             self.route("add", spec)
 
     def load(self, manifest, keys):
+        self.host.assert_exclusive_ike({name for name, _ in self.links})
         make_directory(self.runtime)
         conf = self.runtime / "swanctl.conf"
         atomic_write(conf, swanctl_config(manifest, keys).encode())
@@ -164,7 +169,7 @@ class Resources:
         finally:
             self.purge_runtime()
 
-    def replace(self, target, keys):
+    def replace(self, target, keys, *, loader=None, hold=False):
         self.guard()
         _, _, links, routes, names, _, _ = self.network()
         desired_links = link_specs((target,))
@@ -208,8 +213,14 @@ class Resources:
                 self.host.command("XFRM up", "ip", "link", "set", "dev", name, "up", mutate=True)
         for spec in sorted(desired_routes - self.network()[3]):
             self.route("add", spec)
-        self.load(target, keys)
-        for spec in sorted(self.network()[3] - desired_routes):
+        (loader or self.load)(target, keys)
+        if hold:
+            self.nft(target, transition=True)
+        else:
+            self.finish(target)
+
+    def finish(self, target):
+        for spec in sorted(self.network()[3] - route_specs((target,))):
             self.route("del", spec)
         self.nft(target)
 

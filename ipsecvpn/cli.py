@@ -16,7 +16,7 @@ from .secureio import Stop
 from .transaction import Deployment
 
 DEFAULT_PROFILES = Path("/etc/ipsecvpn/profiles")
-HOST_ACTIONS = ("install", "apply", "backup", "rollback", "uninstall")
+HOST_ACTIONS = ("install", "apply", "backup", "rollback", "uninstall", "initiate", "rekey")
 
 
 def _check(check_id, status, detail):
@@ -127,13 +127,27 @@ def _parser():
             operation.add_argument("-c", "--config", type=Path, required=True)
         if action == "rollback":
             operation.add_argument("--to", required=True)
+        if action in {"apply", "rollback", "uninstall"}:
+            operation.add_argument("--maintenance", action="store_true")
+        if action in {"initiate", "rekey"}:
+            operation.add_argument("--site", required=True)
+        if action == "rekey":
+            kind = operation.add_mutually_exclusive_group(required=True)
+            kind.add_argument("--child", dest="kind", action="store_const", const="child")
+            kind.add_argument("--ike", dest="kind", action="store_const", const="ike")
     return parser
 
 
 def _run(args):
     if args.command in HOST_ACTIONS:
         return Deployment().dispatch(
-            args.command, args.confirm, getattr(args, "config", None), getattr(args, "to", None)
+            args.command,
+            args.confirm,
+            getattr(args, "config", None),
+            getattr(args, "to", None),
+            maintenance=getattr(args, "maintenance", False),
+            site=getattr(args, "site", None),
+            kind=getattr(args, "kind", None),
         )
     if args.command == "profiles":
         return list_profiles(args.directory)
@@ -221,6 +235,8 @@ def main(argv=None):
             else "A protected host check or state operation failed."
         )
         result = {"status": "FAIL", "decision": "STOP", "detail": detail}
+        if hasattr(exc, "reason"):
+            result["reason_code"] = exc.reason
         if not json_output:
             print(f"FAIL/STOP {detail}", file=sys.stderr)
             return 1

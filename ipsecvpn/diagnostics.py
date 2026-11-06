@@ -4,22 +4,10 @@ import os
 import platform
 
 from .host import Host
-from .resources import Resources, link_specs
-from .sa import SAError, inventory
+from .live import owned_resources
+from .sa import SAError
 from .secureio import Stop, read_record
-from .transaction import ACTIVE, INSTALLED, JOURNAL, TERMINAL, installed_record, snapshot
-
-
-def owned_resources(host, install, active):
-    manifest = snapshot(active)
-    resources = Resources(host, install["token"], (manifest,))
-    pid = host.assert_daemon({name for name, _ in link_specs((manifest,))})
-    baseline = resources.preflight(manifest)
-    observed = inventory(host, manifest, pid)
-    resources.verify(
-        manifest, baseline, active.get("nft_sha256") if active else None, live=observed
-    )
-    return manifest, observed, pid
+from .transaction import ACTIVE, INSTALLED, JOURNAL, TERMINAL, installed_record
 
 
 def status_report(host=None):

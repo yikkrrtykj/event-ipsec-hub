@@ -29,13 +29,13 @@ from topology import (
     require_lab,
 )
 
-from ipsecvpn.host import SOCKET, UNIT
+from ipsecvpn.host import UNIT
 from ipsecvpn.profile import load_profile
 from ipsecvpn.renderer import DeploymentManifest, build_manifest
 from ipsecvpn.resources import Resources
 from ipsecvpn.sa import correlate, inventory, kernel_policies, kernel_states, parse_vici, session
 from ipsecvpn.secureio import read_record
-from ipsecvpn.transaction import INSTALLED
+from ipsecvpn.transaction import INSTALLED, JOURNAL
 
 SUMMARY = Path("/var/tmp/ipsecvpn-pr3-acceptance.jsonl")
 BASELINE = HERE / "baseline.json"
@@ -412,17 +412,27 @@ def verify_routes(model):
 
 def connect(model):
     for link in model.links:
-        command(
-            "swanctl",
-            "--initiate",
-            "--child",
-            link.child,
-            "--timeout",
-            "10",
-            "--uri",
-            SOCKET,
-            timeout=15,
-        )
+        report = cli("initiate", "--site", link.site_id, "--confirm")
+        assert report["status"] == "PASS", report
+
+
+def verify_noop(model):
+    pid = HOST.assert_daemon({link.name for link in model.links})
+    live = inventory(HOST, model, pid)
+    recorded = JOURNAL.read_bytes()
+    assert cli("doctor")["data_path"]["status"] == "SKIP"
+    result = cli("apply", "-c", str(PROFILE), "--confirm")
+    assert "NOOP" in result["detail"] and JOURNAL.read_bytes() == recorded
+    assert inventory(HOST, model, pid) == live
+    row = exchange(
+        0, "udp", TOPO["sites"][0]["lans"][0], TOPO["sites"][1]["lans"][0], sport=PORT + 39
+    )
+    emit(
+        "T14",
+        "Live same-profile apply preserves IKE/CHILD IDs and journal.",
+        {"apply": result["detail"], "payload": row},
+        action="doctor; apply --confirm; UDP probe",
+    )
 
 
 def before_reboot():
@@ -438,16 +448,25 @@ def before_reboot():
     verify_sas(model)
     verify_routes(model)
     verify_traffic(model, first=True)
+    verify_noop(model)
     assert baseline_for(model) == json.loads(BASELINE.read_text(encoding="utf-8"))
 
 
 def after_reboot():
     environment()
     model = manifest()
-    connect(model)
-    assert cli("status")["status"] == "PASS"
-    verify_traffic(model, first=False)
-    assert baseline_for(model) == json.loads(BASELINE.read_text(encoding="utf-8"))
+    command("systemctl", "is-active", "ipsecvpn-guard.service", "ipsecvpn-restore.service")
+    result = cli("status")
+    assert result["status"] == "PASS", result
+    receipts = verify_traffic(model, first=False)
+    baseline = json.loads(BASELINE.read_text(encoding="utf-8"))
+    assert baseline_for(model) == baseline
+    emit(
+        "T13",
+        "VM reboot restores guard, routes, owned SAs and real bidirectional LAN traffic.",
+        {"baseline": baseline, "flows": receipts},
+        action="actual VM reboot; verify new SSH session, restored services and UDP/TCP",
+    )
 
 
 if __name__ == "__main__":

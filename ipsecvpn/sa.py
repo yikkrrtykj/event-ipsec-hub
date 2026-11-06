@@ -10,7 +10,12 @@ from ipaddress import IPv4Address, IPv4Network
 from itertools import product
 
 from vici import Session
-from vici.exception import SessionException
+from vici.exception import (
+    CommandException,
+    DeserializationException,
+    EventUnknownException,
+    SessionException,
+)
 
 from .host import VICI_PATH
 from .secureio import Stop
@@ -41,8 +46,16 @@ def session(pid, path=VICI_PATH):
             if (actual_pid, uid) != (int(pid), 0):
                 raise SAError("UNOWNED_DAEMON", "The VICI socket peer is not the owned daemon.")
             yield Session(client)
-    except (OSError, SessionException) as exc:
-        raise SAError("VICI_UNAVAILABLE", "A local VICI request did not complete.") from exc
+    except CommandException:
+        raise SAError("VICI_REJECTED", "The daemon rejected the requested operation.") from None
+    except (
+        OSError,
+        SessionException,
+        DeserializationException,
+        EventUnknownException,
+        struct.error,
+    ):
+        raise SAError("VICI_UNAVAILABLE", "A local VICI request did not complete.") from None
 
 
 def number(text, base=10):
@@ -290,8 +303,8 @@ def correlate(snapshot, manifest, states, policies):
         raise unowned("The kernel XFRM policy does not map exactly to the authorized selectors.")
 
 
-def inventory(host, manifest, pid):
-    for attempt in range(4):
+def inventory(host, manifest, pid, *, attempts=4, delay=0.2):
+    for attempt in range(attempts):
         try:
             with session(pid) as client:
                 before = parse_vici(client.list_sas(), manifest)
@@ -314,6 +327,6 @@ def inventory(host, manifest, pid):
             error = SAError("SA_UNVERIFIED", "SA or policy fields could not be verified.")
         except SAError as exc:
             error = exc
-        if attempt < 3:
-            time.sleep(0.2)
+        if attempt + 1 < attempts:
+            time.sleep(delay)
     raise error
