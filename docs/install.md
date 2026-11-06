@@ -22,4 +22,6 @@ sudo "$vpn" apply -c "$profile" --confirm
 
 应用同一 profile 前会核对运行资源与凭据摘要，完整一致时返回 `NOOP`。同一赛事可以在核对变更后更新，切换赛事须先清理现有活动 profile。外部备网关只报告交接状态。双端协商、跨隧道业务、MTU 和现场设备验收为 `SKIP`。
 
+卸载后的 `install --dry-run` 会验证已提交的卸载记录、保留包的版本和状态、发行版文件及已停用的服务。核验通过时，`install --confirm` 用新的安装标记启用服务，无需重新运行 APT。发现额外配置、运行中的外部 daemon、包版本变化或无法核实来源时返回 STOP。
+
 实验 VM 的创建、隔离和销毁由 `scripts/pr2-vm/run.sh` 驱动。它启动独立 QEMU 客户机，限制客户机向外访问，仅将 SSH 转发到 runner 的本地回环地址。Ubuntu 包和 wheel 经本地通道传入 VM，所有部署网络命令均在客户机执行。

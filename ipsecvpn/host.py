@@ -15,8 +15,13 @@ from .secureio import Stop, read_file
 PATH = "/usr/sbin:/usr/bin:/sbin:/bin"
 UNIT = "strongswan.service"
 DROPIN = Path("/etc/systemd/system/strongswan.service.d/99-ipsecvpn.conf")
+PRIVATE_CONF = Path("/etc/strongswan.d/ipsecvpn-private.conf")
 SOCKET = "unix:///run/charon.vici"
 PACKAGES = ("charon-systemd", "strongswan-swanctl", "libstrongswan-standard-plugins")
+VENDOR_UNITS = {
+    "/usr/lib/systemd/system/strongswan.service",
+    "/lib/systemd/system/strongswan.service",
+}
 LAB_MARKER = Path("/etc/ipsecvpn/lab-authorized")
 HOST_TOOLS = ("ip", "nft", "ss", "systemctl", "sysctl", "modprobe", "dpkg-query", "apt-get")
 
@@ -129,6 +134,18 @@ class Host:
             if state.startswith("ii")
         }
 
+    def package_state(self):
+        inventory = self.command(
+            "Full dpkg inventory",
+            "dpkg-query",
+            "-W",
+            "-f=${binary:Package}\t${Version}\t${db:Status-Abbrev}\n",
+        )
+        return {
+            name: {"version": version, "status": state}
+            for name, version, state in (line.split("\t") for line in inventory.splitlines())
+        }
+
     def apt_plan(self):
         if self.command("Package audit", "dpkg", "--audit").strip():
             raise Stop("The VM already has an incomplete package transaction.")
@@ -162,32 +179,33 @@ class Host:
             "IKE socket probe", "ss", "-H", "-ulnp", "( sport = :500 or sport = :4500 )"
         ).strip()
 
-    def assert_exclusive_ike(self, installed, permitted=()):
+    def assert_no_other_ike(self):
         if self.service("strongswan-starter.service", "ActiveState") not in {"inactive", "failed"}:
             raise Stop("A legacy strongSwan starter unit is active.")
         if self.command("XFRM SA probe", "ip", "xfrm", "state", "list", "nokeys").strip():
             raise Stop("An active kernel IPsec SA exists. Use a dedicated idle VM.")
-        if not installed:
-            if self.ike_ports() or any(
-                Path(name).exists() or Path(name).is_symlink()
-                for name in (
-                    "/etc/swanctl",
-                    "/etc/strongswan.conf",
-                    "/etc/strongswan.d",
-                    "/run/charon.vici",
-                    "/run/charon.ctl",
-                    DROPIN.parent,
+
+    def assert_idle_ike(self):
+        self.assert_no_other_ike()
+        if (
+            self.service(UNIT, "ActiveState") != "inactive"
+            or self.ike_ports()
+            or any(
+                path.exists() or path.is_symlink()
+                for path in map(
+                    Path,
+                    (
+                        "/run/charon.vici",
+                        "/run/charon.ctl",
+                    ),
                 )
-            ):
-                raise Stop("An existing IKE listener or strongSwan configuration is unowned.")
-            if any(name in self.packages() for name in (*PACKAGES, "strongswan-starter")):
-                raise Stop("An unowned strongSwan package or starter is installed.")
-            return
-        fragment = self.service(UNIT, "FragmentPath")
-        if fragment not in {
-            "/usr/lib/systemd/system/strongswan.service",
-            "/lib/systemd/system/strongswan.service",
-        }:
+            )
+        ):
+            raise Stop("An existing IKE listener or strongSwan service is unowned.")
+
+    def assert_exclusive_ike(self, permitted=()):
+        self.assert_no_other_ike()
+        if self.service(UNIT, "FragmentPath") not in VENDOR_UNITS:
             raise Stop("The strongSwan unit is not the expected Ubuntu unit.")
         if self.service(UNIT, "DropInPaths") != str(DROPIN):
             raise Stop("The strongSwan unit has unexpected overrides.")
@@ -198,6 +216,7 @@ class Host:
         ports = self.ike_ports().splitlines()
         if state != "active" or not pid.isdecimal() or int(pid) <= 0 or not ports:
             raise Stop("The owned charon-systemd service and IKE sockets are not active.")
+        self.assert_private_daemon(pid)
         if any(set(re.findall(r"pid=(\d+),", line)) != {pid} for line in ports):
             raise Stop("A foreign process owns an IKE socket.")
         output = self.vici("--version", "--daemon")
@@ -205,6 +224,13 @@ class Host:
             raise Stop("VICI did not report the expected strongSwan 5.9.x version.")
         if self.vici("--list-sas").strip() or not self.vici_names().issubset(permitted):
             raise Stop("Active SAs or unowned VICI connections prevent safe changes.")
+
+    def assert_private_daemon(self, pid):
+        if not pid.isdecimal() or int(pid) <= 0:
+            raise Stop("The strongSwan service has no provable process identity.")
+        environment = Path(f"/proc/{pid}/environ").read_bytes().split(b"\0")
+        if f"STRONGSWAN_CONF={PRIVATE_CONF}".encode() not in environment:
+            raise Stop("The running strongSwan process does not use the project configuration.")
 
     def routing(self):
         rules = self.ip("-4", "rule", "show")

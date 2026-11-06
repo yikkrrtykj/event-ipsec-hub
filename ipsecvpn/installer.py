@@ -6,20 +6,30 @@ import stat
 import sys
 from pathlib import Path
 
-from .host import DROPIN, PACKAGES, SOCKET, UNIT
+from .host import DROPIN, PACKAGES, PRIVATE_CONF, SOCKET, UNIT, VENDOR_UNITS
 from .renderer import digest
-from .secureio import Stop, atomic_write, make_directory, read_file, remove_file, trusted_dir
+from .secureio import (
+    Stop,
+    atomic_write,
+    make_directory,
+    read_file,
+    remove_file,
+    sync_dir,
+    trusted_dir,
+)
 
 STATE = Path("/var/lib/ipsecvpn")
 UNIT_DIR = Path("/etc/systemd/system")
 GUARD = "ipsecvpn-guard.service"
 RESTORE = "ipsecvpn-restore.service"
 UNIT_FILES = (
-    Path("/etc/strongswan.d/ipsecvpn-private.conf"),
+    PRIVATE_CONF,
     DROPIN,
     UNIT_DIR / GUARD,
     UNIT_DIR / RESTORE,
 )
+CONFIG_PATHS = tuple(map(Path, ("/etc/strongswan.conf", "/etc/strongswan.d", "/etc/swanctl")))
+INSTALL_DIRS = (DROPIN.parent, UNIT_FILES[0].parent)
 
 
 def install_files(python):
@@ -117,6 +127,77 @@ def vendor_plugins():
     }
 
 
+def verify_install_source(host, retained, package_state):
+    host.assert_idle_ike()
+    extra_paths = (
+        *UNIT_FILES,
+        Path("/etc/ipsec.conf"),
+        Path("/etc/ipsec.secrets"),
+        Path("/etc/systemd/system") / UNIT,
+        Path("/run/systemd/system") / UNIT,
+        Path("/run/systemd/system") / f"{UNIT}.d",
+    )
+    if any(path.exists() or path.is_symlink() for path in extra_paths):
+        raise Stop("An existing IKE configuration or reserved service path is unowned.")
+    if any(host.service(unit, "LoadState") != "not-found" for unit in (GUARD, RESTORE)):
+        raise Stop("A reserved boot service is unowned.")
+    if host.command("Package audit", "dpkg", "--audit").strip():
+        raise Stop("The VM already has an incomplete package transaction.")
+    related = {
+        name
+        for name in package_state
+        if "strongswan" in name or name == "charon-systemd" or name.startswith("libcharon-")
+    }
+    if retained is None:
+        if (
+            related
+            or host.service(UNIT, "LoadState") != "not-found"
+            or any(path.exists() or path.is_symlink() for path in (*CONFIG_PATHS, DROPIN.parent))
+        ):
+            raise Stop("An existing strongSwan package or configuration is unowned.")
+        return
+
+    packages = retained["packages"]
+    if (
+        not set(PACKAGES).issubset(packages)
+        or not related.issubset(packages)
+        or any(
+            package_state.get(name) != {"version": version, "status": "ii "}
+            for name, version in packages.items()
+        )
+    ):
+        raise Stop("Retained package versions or states differ from the committed install.")
+    if (
+        host.service(UNIT, "FragmentPath") not in VENDOR_UNITS
+        or host.service(UNIT, "UnitFileState") != "disabled"
+        or host.service(UNIT, "DropInPaths")
+        or host.service(UNIT, "NeedDaemonReload") != "no"
+    ):
+        raise Stop("The retained strongSwan unit is no longer the disabled distribution unit.")
+    if DROPIN.parent.exists() or DROPIN.parent.is_symlink():
+        os.close(trusted_dir(DROPIN.parent, 0o755))
+        if any(DROPIN.parent.iterdir()):
+            raise Stop("A foreign strongSwan service override is present.")
+    if host.command("Distribution file verification", "dpkg", "--verify", *packages).strip():
+        raise Stop("Retained strongSwan distribution files have changed.")
+    owned = set(host.command("Distribution file list", "dpkg-query", "-L", *packages).splitlines())
+    for root in CONFIG_PATHS:
+        for path in (root, *root.rglob("*")):
+            if str(path) not in owned or path.is_symlink():
+                raise Stop("A retained strongSwan configuration path is unowned.")
+            if path.is_dir():
+                os.close(trusted_dir(path))
+            else:
+                info = path.lstat()
+                if (
+                    not stat.S_ISREG(info.st_mode)
+                    or info.st_uid != 0
+                    or info.st_mode & 0o022
+                    or info.st_nlink != 1
+                ):
+                    raise Stop("A retained strongSwan configuration file is unsafe.")
+
+
 def activate(host, record):
     assert_files(record, missing_ok=True)
     make_directory(DROPIN.parent, 0o755)
@@ -130,20 +211,45 @@ def activate(host, record):
 
 def deactivate(host, record):
     assert_files(record, missing_ok=True)
+    owned_files = {path for path in UNIT_FILES if path.exists()}
     if host.service(UNIT, "LoadState") == "loaded":
-        if host.service(UNIT, "DropInPaths") != str(DROPIN):
+        dropins = host.service(UNIT, "DropInPaths")
+        if dropins == str(DROPIN) and DROPIN in owned_files:
+            if host.service(UNIT, "FragmentPath") not in VENDOR_UNITS:
+                raise Stop("The strongSwan unit cannot be proven owned for cleanup.")
+            pid = host.service(UNIT, "MainPID")
+            if pid != "0":
+                host.assert_private_daemon(pid)
+            host.command("Stop owned daemon", "systemctl", "stop", UNIT, mutate=True)
+            host.command("Disable owned daemon", "systemctl", "disable", UNIT, mutate=True)
+        elif (
+            dropins
+            or host.service(UNIT, "ActiveState") != "inactive"
+            or host.service(UNIT, "UnitFileState") != "disabled"
+        ):
             raise Stop("Daemon ownership cannot be proven for cleanup.")
-        host.command("Stop owned daemon", "systemctl", "stop", UNIT, mutate=True)
-        host.command("Disable owned daemon", "systemctl", "disable", UNIT, mutate=True)
     for unit in (RESTORE, GUARD):
         if host.service(unit, "LoadState") == "loaded":
+            path = UNIT_DIR / unit
+            if (
+                path not in owned_files
+                or host.service(unit, "FragmentPath") != str(path)
+                or host.service(unit, "DropInPaths")
+            ):
+                raise Stop("A boot service cannot be proven owned for cleanup.")
             host.command(
                 "Disable project boot unit", "systemctl", "disable", "--now", unit, mutate=True
             )
-    for path in UNIT_FILES:
-        if path.exists():
-            remove_file(path)
-    host.command("Reload unit definitions", "systemctl", "daemon-reload", mutate=True)
+    for path in sorted(owned_files):
+        remove_file(path)
+    for path in INSTALL_DIRS:
+        if str(path) in record.get("created_dirs", ()) and path.exists():
+            os.close(trusted_dir(path, 0o755))
+            if not any(path.iterdir()):
+                path.rmdir()
+                sync_dir(path.parent)
+    if owned_files:
+        host.command("Reload unit definitions", "systemctl", "daemon-reload", mutate=True)
 
 
 def install_packages(host, record):
@@ -167,15 +273,13 @@ def install_packages(host, record):
         mutate=True,
         timeout=600,
     )
-    actual = host.packages()
-    delta = {
-        name: version for name, version in actual.items() if name not in record["before_packages"]
+    after = host.package_state()
+    expected = {
+        **record["before_package_state"],
+        **{
+            name: {"version": version, "status": "ii "}
+            for name, version in record["packages"].items()
+        },
     }
-    if delta != record["packages"] or any(
-        actual.get(name) != version for name, version in record["before_packages"].items()
-    ):
-        raise Stop("The observed package delta differs from the preflight simulation.")
-    activate(host, record)
-    assert_files(record)
-    host.assert_exclusive_ike(True)
-    record["vendor_plugins"] = vendor_plugins()
+    if after != expected or host.command("Package audit", "dpkg", "--audit").strip():
+        raise Stop("The full dpkg state differs from the preflight plan.")

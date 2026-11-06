@@ -9,14 +9,15 @@ from pathlib import Path
 
 from .host import Host
 from .installer import (
+    INSTALL_DIRS,
     STATE,
-    UNIT_FILES,
     activate,
     assert_files,
     deactivate,
     install_packages,
     trusted_python,
     vendor_plugins,
+    verify_install_source,
 )
 from .profile import MAX_PROFILE_BYTES, load_profile, parse_profile
 from .renderer import build_manifest, canonical, digest, external_backup, resource_diff
@@ -26,6 +27,7 @@ from .secureio import Stop, make_directory, read_file, read_keys, read_record, w
 LOCK = Path("/run/ipsecvpn.lock")
 ACTIVE = STATE / "active.json"
 INSTALLED = STATE / "installed.json"
+RETAINED = STATE / "retained.json"
 JOURNAL = STATE / "journal.json"
 BACKUPS = STATE / "backups"
 HISTORY = STATE / "journals"
@@ -84,6 +86,59 @@ def installed_record():
     if record["vendor_plugins"] != vendor_plugins():
         raise Stop("Distribution strongSwan plugin configuration changed.")
     return record
+
+
+def retained_install():
+    current = read_record(JOURNAL)
+    receipt = read_record(RETAINED)
+    if receipt is None:
+        # A committed uninstall from before receipts were introduced is also evidence.
+        journal = current
+        if (
+            not journal
+            or journal.get("action") != "uninstall"
+            or journal.get("phase") != "COMMITTED"
+        ):
+            return None
+    else:
+        identifier = receipt.get("uninstall_id") if isinstance(receipt, dict) else None
+        if not isinstance(identifier, str) or not re.fullmatch(r"[0-9a-f]{32}", identifier):
+            raise Stop("The retained-package receipt is invalid.")
+        journal = (
+            current
+            if current and current.get("id") == identifier
+            else read_record(HISTORY / f"{identifier}.json")
+        )
+        if (
+            not journal
+            or journal.get("id") != identifier
+            or journal.get("action") != "uninstall"
+            or journal.get("phase") != "COMMITTED"
+        ):
+            raise Stop("A committed uninstall does not prove the retained-package receipt.")
+    return journal
+
+
+def package_recovery(host, before):
+    evidence = {
+        "before_sha256": digest(canonical(before)) if before is not None else None,
+        "after_sha256": None,
+        "delta": None,
+        "audit_clean": None,
+    }
+    try:
+        after = host.package_state()
+        evidence["after_sha256"] = digest(canonical(after))
+        if before is not None:
+            evidence["delta"] = {
+                name: {"before": before.get(name), "after": after.get(name)}
+                for name in sorted(before.keys() | after.keys())
+                if before.get(name) != after.get(name)
+            }
+        evidence["audit_clean"] = not bool(host.command("Package audit", "dpkg", "--audit").strip())
+    except (Stop, ValueError, OSError):
+        pass
+    return evidence
 
 
 def read_backup(identifier):
@@ -158,15 +213,29 @@ class Deployment:
         install = self.record["install"]
         try:
             if self.record["action"] == "install":
-                deactivate(self.host, install)
-                if self.host.command("Package audit", "dpkg", "--audit").strip():
-                    raise Stop("The failed package operation needs manual repair.")
-                if self.host.ike_ports():
-                    raise Stop("IKE sockets remain occupied after restoring the install baseline.")
+                try:
+                    deactivate(self.host, install)
+                finally:
+                    packages = package_recovery(self.host, install.get("before_package_state"))
+                    self.record["package_recovery"] = packages
+                    self.record.setdefault("install_failure_packages", packages)
+                self.host.assert_idle_ike()
                 resources = Resources(self.host, install["token"], ())
                 if resources.baseline() != self.record["baseline"]:
                     raise Stop("The install baseline differs after attempted restoration.")
+                self.record["protected_baseline_unchanged"] = True
                 write_record(INSTALLED, None)
+                if packages["audit_clean"] is not True or packages["delta"] != {}:
+                    raise Stop(
+                        "The original dpkg state was not restored or could not be proven. "
+                        "Compare the journal package delta and dpkg --audit, restore the "
+                        "pre-install state per docs/rollback.md, then retry rollback with this ID."
+                    )
+                retained = install.get("retained_from")
+                if not retained:
+                    verify_install_source(self.host, None, self.host.package_state())
+                else:
+                    verify_install_source(self.host, install, self.host.package_state())
             else:
                 old = snapshot(before)
                 requested = snapshot(target)
@@ -174,7 +243,7 @@ class Deployment:
                 if self.record["action"] == "uninstall":
                     activate(self.host, install)
                 permitted = {name for name, _ in link_specs((old, requested))}
-                self.host.assert_exclusive_ike(True, permitted)
+                self.host.assert_exclusive_ike(permitted)
                 current_baseline = resources.preflight(old)
                 if current_baseline != self.record["baseline"]:
                     raise Stop("The protected host baseline changed; keep the transition guards.")
@@ -199,30 +268,52 @@ class Deployment:
         if read_record(INSTALLED):
             installed_record()
             active = snapshot(read_record(ACTIVE))
-            self.host.assert_exclusive_ike(True, {name for name, _ in link_specs((active,))})
+            self.host.assert_exclusive_ike({name for name, _ in link_specs((active,))})
             return {"status": "PASS", "detail": "NOOP: owned strongSwan installation is present."}
-        self.host.assert_exclusive_ike(False)
-        if any(path.exists() or path.is_symlink() for path in UNIT_FILES):
-            raise Stop("A reserved service path is already occupied.")
-        packages = self.host.apt_plan()
+        if read_record(ACTIVE):
+            raise Stop("An active profile lacks its installation record.")
+        retained = retained_install()
+        before_packages = self.host.package_state()
+        verify_install_source(self.host, retained["install"] if retained else None, before_packages)
+        packages = retained["install"]["packages"] if retained else self.host.apt_plan()
         baseline = Resources(self.host, "preflight", ()).preflight(None)
+        mode = "reinstall" if retained else "install"
         if not confirmed:
             return {
                 "status": "PASS",
-                "detail": "Dry-run; no packages installed.",
-                "packages": packages,
+                "detail": f"Dry-run {mode}; no packages installed.",
+                "mode": mode,
+                "packages": {} if retained else packages,
             }
         install = {
             "token": uuid.uuid4().hex,
             "python": trusted_python(),
             "packages": packages,
-            "before_packages": self.host.packages(),
+            "before_package_state": before_packages,
+            "retained_from": retained["id"] if retained else None,
+            "created_dirs": [str(path) for path in INSTALL_DIRS if not path.exists()],
         }
+        if retained:
+            archive = HISTORY / f"{retained['id']}.json"
+            if read_record(archive) is None:
+                write_record(archive, retained)
+            if read_record(RETAINED) is None:
+                # Keep the legacy receipt available after this new journal replaces it.
+                write_record(RETAINED, {"uninstall_id": retained["id"]})
         self.begin("install", None, None, install, baseline)
         try:
             self.phase("STAGED")
             self.phase("APPLYING")
-            install_packages(self.host, install)
+            if not retained:
+                install_packages(self.host, install)
+            else:
+                verify_install_source(self.host, retained["install"], self.host.package_state())
+            activate(self.host, install)
+            assert_files(install)
+            self.host.assert_exclusive_ike()
+            install["vendor_plugins"] = vendor_plugins()
+            if retained and self.host.package_state() != before_packages:
+                raise Stop("Reinstallation changed the dpkg inventory.")
             if Resources(self.host, install["token"], ()).baseline() != baseline:
                 raise Stop("Installation changed a protected host baseline.")
             self.phase("VERIFIED")
@@ -241,8 +332,11 @@ class Deployment:
             self.host.step = None
         return {
             "status": "PASS",
-            "detail": "Installed the owned Ubuntu strongSwan service.",
-            "packages": packages,
+            "detail": "Reactivated the retained Ubuntu strongSwan service."
+            if retained
+            else "Installed the owned Ubuntu strongSwan service.",
+            "mode": mode,
+            "packages": {} if retained else packages,
             "journal": self.record["id"],
             "baseline_unchanged": True,
         }
@@ -268,7 +362,7 @@ class Deployment:
             requested = target = None
         resources = Resources(self.host, install["token"], (before, target))
         owned_names = {name for name, _ in link_specs((before,))}
-        self.host.assert_exclusive_ike(True, owned_names)
+        self.host.assert_exclusive_ike(owned_names)
         baseline = resources.preflight(target)
         resources.verify(before, baseline, active.get("nft_sha256") if active else None)
         result = {"status": "PASS", "diff": resource_diff(before, target)}
@@ -299,6 +393,7 @@ class Deployment:
                 deactivate(self.host, install)
                 if resources.baseline() != baseline:
                     raise Stop("Uninstall changed a protected host baseline.")
+                write_record(RETAINED, {"uninstall_id": self.record["id"]})
                 write_record(INSTALLED, None)
             self.phase("VERIFIED")
             self.phase("COMMITTED")
@@ -326,7 +421,7 @@ class Deployment:
         manifest = snapshot(active)
         resources = Resources(self.host, install["token"], (manifest,))
         baseline = resources.preflight(manifest)
-        self.host.assert_exclusive_ike(True, {name for name, _ in link_specs((manifest,))})
+        self.host.assert_exclusive_ike({name for name, _ in link_specs((manifest,))})
         resources.verify(manifest, baseline, active.get("nft_sha256") if active else None)
         if not confirmed:
             return {"status": "PASS", "detail": "Dry-run; no snapshot written."}
@@ -397,7 +492,7 @@ def boot(phase):
         else:
             installed_record()
             target = snapshot(active)
-            host.assert_exclusive_ike(True, {name for name, _ in link_specs((target,))})
+            host.assert_exclusive_ike({name for name, _ in link_specs((target,))})
             baseline = resources.preflight(target)
             resources.replace(target, keys_for(active))
             resources.verify(target, baseline, active.get("nft_sha256") if active else None)

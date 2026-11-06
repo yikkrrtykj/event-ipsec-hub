@@ -67,6 +67,10 @@ CASE_COMMANDS = {
     "F12": "ip route add blackhole <host-route> / ip rule add <policy>; apply preflight",
     "F13": "ipsecvpn render -c <invalid-profile>",
     "F14": "ipsecvpn apply -c <incomplete-backup-profile> --confirm --json",
+    "L01": "ipsecvpn install; apply; uninstall; install; apply (each with --confirm)",
+    "L02": "apt-get install; systemctl start <missing-unit>; ipsecvpn rollback --to <id>",
+    "L03": "dpkg --unpack --no-triggers <deb>; dpkg --audit; ipsecvpn rollback --to <id>",
+    "L04": "systemctl start strongswan.service; ipsecvpn install --confirm with foreign fixtures",
 }
 READ_ONLY_CASES = {"V01", "V02", "V08", "V19", "F04", "F06", "F09", "F13"}
 
@@ -235,6 +239,100 @@ def check_failure(label, manifest, baseline):
         raise AssertionError("Injected failure did not stop the transaction.")
     assert read_record(JOURNAL)["phase"] == "RESTORED"
     resources(manifest).verify(manifest, baseline, read_record(ACTIVE)["nft_sha256"])
+
+
+class InstallFaultHost(Host):
+    def __init__(self, partial):
+        super().__init__()
+        self.partial = partial
+
+    def command(self, label, *args, **kwargs):
+        if self.partial and label == "APT install":
+            (deb,) = (HERE / "apt").glob("libstrongswan_*.deb")
+            self.step(label, "STARTED")
+            super().command(
+                "Partial dpkg unpack", "dpkg", "--unpack", "--no-triggers", str(deb), mutate=True
+            )
+            raise Stop("Injected APT failure after dpkg unpacked the first package.")
+        if not self.partial and label == "Start owned daemon":
+            return super().command(
+                label, "systemctl", "start", "ipsecvpn-missing-test.service", mutate=True
+            )
+        return super().command(label, *args, **kwargs)
+
+
+def check_install_failure(partial, baseline, services):
+    case = "L03" if partial else "L02"
+    before = HOST.package_state()
+    try:
+        Deployment(InstallFaultHost(partial)).dispatch("install", True)
+    except Stop as exc:
+        assert "STOP_FOR_MANUAL" in str(exc), str(exc)
+    else:
+        raise AssertionError("The injected install failure did not stop the transaction.")
+    journal = read_record(JOURNAL)
+    identifier = journal["id"]
+    evidence = journal["install_failure_packages"]
+    assert journal["action"] == "install" and journal["phase"] == "STOP_FOR_MANUAL"
+    assert journal["protected_baseline_unchanged"] and read_record(INSTALLED) is None
+    after = HOST.package_state()
+    assert before == journal["install"]["before_package_state"]
+    assert evidence["delta"] and set(evidence["delta"]) == after.keys() - before.keys()
+    assert evidence["audit_clean"] is not partial and after != before
+    assert all(
+        row["before"] is None and row["after"] == after[name]
+        for name, row in evidence["delta"].items()
+    )
+    steps = [[step["label"], step["result"]] for step in journal["steps"]]
+    if partial:
+        assert ["Partial dpkg unpack", "DONE"] in steps and ["APT install", "DONE"] not in steps
+        assert set(evidence["delta"]) == {"libstrongswan"}
+        assert after["libstrongswan"]["status"] == "iU "
+    else:
+        assert ["APT install", "DONE"] in steps
+        assert ["Start owned daemon", "STARTED"] in steps
+        assert ["Start owned daemon", "DONE"] not in steps
+        assert set(evidence["delta"]) == set(journal["install"]["packages"])
+        assert all(after[name]["status"] == "ii " for name in evidence["delta"])
+    assert not HOST.ike_ports() and resources().baseline() == baseline
+    assert foreign_services() == services
+    assert "Unfinished" in cli("install", "--confirm", ok=False)["detail"]
+    blocked = cli("rollback", "--to", identifier, "--confirm", ok=False)
+    assert "STOP_FOR_MANUAL" in blocked["detail"] and HOST.package_state() == after
+
+    # This is the operator's explicit lab repair, outside the deployment transaction.
+    added = sorted(evidence["delta"])
+    if partial:
+        HOST.command("Lab purge of unpacked package", "dpkg", "--purge", *added)
+    else:
+        preview = HOST.command("Lab purge preview", "apt-get", "-s", "purge", *added)
+        removals = {
+            line.split()[1] for line in preview.splitlines() if line.startswith(("Remv ", "Purg "))
+        }
+        assert removals == set(added) and not any(
+            line.startswith("Inst ") for line in preview.splitlines()
+        )
+        HOST.command("Lab purge of explicitly added packages", "apt-get", "-y", "purge", *added)
+    assert HOST.package_state() == before
+    cli("rollback", "--to", identifier, "--confirm")
+    restored = read_record(JOURNAL)
+    assert restored["phase"] == "RESTORED" and restored["package_recovery"]["delta"] == {}
+    assert restored["install_failure_packages"] == evidence
+    assert resources().baseline() == baseline and foreign_services() == services
+    emit(
+        case,
+        "PASS",
+        "Package drift stops recovery; only exact manual repair permits RESTORED.",
+        {
+            "journal": identifier,
+            "phases": [journal["phase"], restored["phase"]],
+            "failure": journal["failure"],
+            "package_drift": evidence,
+            "after_manual_rollback": restored["package_recovery"],
+            "protected_baseline": baseline,
+            "foreign_service_pids_equal": True,
+        },
+    )
 
 
 def negative_cases(profile, manifest, baseline):
@@ -437,6 +535,8 @@ def before_reboot():
         "Dry-run preserves packages, files and networking.",
         "Package and state inventories matched.",
     )
+    check_install_failure(partial=False, baseline=baseline, services=services)
+    check_install_failure(partial=True, baseline=baseline, services=services)
     installed = cli("install", "--confirm")
     ENV["strongswan"] = HOST.packages()["charon-systemd"]
     assert installed["baseline_unchanged"] and HOST.vici_names() == set()
@@ -613,7 +713,9 @@ def after_reboot():
         "Independent reboot, new SSH session and automatic restore.",
         "Boot services active and protected baseline hashes identical.",
     )
-    cli("uninstall", "--confirm")
+    old_owner = read_record(INSTALLED)["token"]
+    package_state = HOST.package_state()
+    uninstalled = cli("uninstall", "--confirm")
     assert resources().baseline() == baseline
     assert foreign_services() == services
     assert read_record(ACTIVE) is None and HOST.packages()["charon-systemd"]
@@ -624,7 +726,65 @@ def after_reboot():
         "Remove owned network and boot resources, keep shared packages and SSH.",
         "Exact protected baseline and package retention verified.",
     )
+    check_reinstall(baseline, services, old_owner, package_state, uninstalled["backup_id"])
+    cli("uninstall", "--confirm")
     test_firewall_frontends()
+
+
+def check_reinstall(baseline, services, old_owner, package_state, uninstall_id):
+    before = (STATE / "journal.json").read_bytes()
+    assert HOST.package_state() == package_state
+    foreign = Path("/etc/swanctl/foreign.conf")
+    foreign.write_text("# independently configured strongSwan fixture\n", encoding="ascii")
+    try:
+        assert "unowned" in cli("install", "--confirm", ok=False)["detail"]
+        assert (
+            foreign.read_text(encoding="ascii") == "# independently configured strongSwan fixture\n"
+        )
+    finally:
+        foreign.unlink()
+    command("systemctl", "start", UNIT)
+    try:
+        pid = HOST.service(UNIT, "MainPID")
+        assert int(pid) > 0
+        assert "unowned" in cli("install", "--confirm", ok=False)["detail"]
+        assert HOST.service(UNIT, "MainPID") == pid and HOST.ike_ports()
+    finally:
+        command("systemctl", "stop", UNIT)
+    assert HOST.package_state() == package_state and (STATE / "journal.json").read_bytes() == before
+    assert resources().baseline() == baseline and foreign_services() == services
+    emit(
+        "L04",
+        "PASS",
+        "Reinstall stops on genuine foreign config or running daemon.",
+        "Both refusals preserved the foreign object, packages, journal and protected baseline.",
+    )
+    dry = cli("install", "--dry-run")
+    assert dry["mode"] == "reinstall" and not dry["packages"]
+    assert (STATE / "journal.json").read_bytes() == before and HOST.package_state() == package_state
+    install = cli("install", "--confirm")
+    assert install["mode"] == "reinstall" and not install["packages"]
+    assert read_record(INSTALLED)["token"] != old_owner
+    assert read_record(INSTALLED)["retained_from"] == uninstall_id
+    assert all(step["label"] != "APT install" for step in read_record(JOURNAL)["steps"])
+    applied = cli("apply", "-c", str(PROFILE), "--confirm")
+    manifest = current_manifest()
+    resources(manifest).verify(manifest, baseline, read_record(ACTIVE)["nft_sha256"])
+    assert HOST.package_state() == package_state and foreign_services() == services
+    emit(
+        "L01",
+        "PASS",
+        "Install, apply, uninstall, reinstall without APT, apply again.",
+        {
+            "uninstall_journal": uninstall_id,
+            "reinstall_journal": install["journal"],
+            "apply_journal": applied["backup_id"],
+            "package_state_sha256": fingerprint(package_state),
+            "package_delta": {},
+            "protected_baseline": baseline,
+            "foreign_service_pids_equal": True,
+        },
+    )
 
 
 def test_firewall_frontends():
