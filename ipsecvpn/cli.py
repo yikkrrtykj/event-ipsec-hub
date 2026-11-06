@@ -8,6 +8,7 @@ import shutil
 import sys
 from pathlib import Path
 
+from .diagnostics import status_report
 from .handoff import build_plan, peer_parameters, render_peer_markdown
 from .profile import ProfileError, backup_readiness, load_profile
 from .renderer import render
@@ -101,6 +102,9 @@ def _parser():
     validate.add_argument("--json", action="store_true")
     check = commands.add_parser("check", help="Inspect local host prerequisites only.")
     check.add_argument("--json", action="store_true")
+    for name in ("status", "doctor"):
+        observation = commands.add_parser(name, help="Inspect the installed Hub without probes.")
+        observation.add_argument("--json", action="store_true")
     plan = commands.add_parser("plan", help="Print a read-only topology plan as JSON.")
     plan.add_argument("-c", "--config", type=Path, required=True)
     export = commands.add_parser("export-peer", help="Print a site-side handoff.")
@@ -135,6 +139,8 @@ def _run(args):
         return list_profiles(args.directory)
     if args.command == "check":
         return check_host()
+    if args.command in {"status", "doctor"}:
+        return status_report()
     config = args.config
     if args.command == "export-peer" and config is None:
         config = os.environ.get("IPSECVPN_CONFIG")
@@ -155,7 +161,16 @@ def _run(args):
 
 
 def _print_text(result):
-    print(result["status"], result.get("detail", ""))
+    print(
+        "FAIL/STOP" if result.get("decision") == "STOP" else result["status"],
+        result.get("detail", ""),
+    )
+    for site in result.get("sites", []):
+        if "ike_state" in site:
+            print(
+                f"{site['site_id']} IKE={site['ike_state']} CHILD={site['child_state']} "
+                f"business={site['data_path']['status']}"
+            )
     for key in ("journal", "backup_id"):
         if key in result:
             print(f"{key} {result[key]}")

@@ -213,7 +213,7 @@ class Resources:
             self.route("del", spec)
         self.nft(target)
 
-    def verify(self, expected, baseline, nft_sha=None):
+    def verify(self, expected, baseline, nft_sha=None, *, live=None):
         _, _, links, routes, names, table, _ = self.network()
         wanted = {name for name, _ in link_specs((expected,))}
         up = {row["ifname"] for row in links if row["ifname"] in names and "UP" in row["flags"]}
@@ -222,7 +222,7 @@ class Resources:
         if bool(table) != bool(expected) or (nft_sha and nft_sha != fingerprint(table)):
             raise Stop("Observed project nftables rules differ from the expected state.")
         connections = self.host.vici_connections()
-        if set(connections) != wanted or self.host.vici("--list-sas").strip():
+        if set(connections) != wanted or (live is None and self.host.vici("--list-sas").strip()):
             raise Stop("The daemon did not report exactly the intended VICI connections.")
         for link in expected.links if expected else ():
             listing = "\n".join(connections[link.name])
