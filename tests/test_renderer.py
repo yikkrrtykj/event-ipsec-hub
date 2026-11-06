@@ -67,9 +67,10 @@ def test_incomplete_backup_leaves_primary_manifest_unchanged():
     assert resource_diff(before, after)["update"] == []
 
 
-def test_linux_route_keys_match_declared_exact_fallback():
+@pytest.mark.parametrize("route_type", ["blackhole", "6", 6])
+def test_linux_route_keys_match_declared_exact_fallback(route_type):
     key = route_key(
-        {"dst": "10.44.50.0/24", "type": "blackhole", "metric": 32760, "protocol": "242"}
+        {"dst": "10.44.50.0/24", "type": route_type, "metric": 32760, "protocol": "242"}
     )
     manifest = build_manifest(load_profile(FIXTURES / "arena-apac-eu.yaml"))
     assert key in route_specs((manifest,))

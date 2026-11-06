@@ -271,7 +271,7 @@ class Host:
                 len(lookup) != 1
                 or lookup[0].get("dev") != link.wan
                 or (link.gateway is not None and lookup[0].get("gateway") != link.gateway)
-                or lookup[0].get("type", "unicast") != "unicast"
+                or route_kind(lookup[0]) != "unicast"
                 or link.wan in names
                 or link.wan in owned_links
             ):
@@ -375,12 +375,18 @@ def route_key(row):
     table = table_id(row.get("table", "254"))
     return (
         destination,
-        row.get("type", "unicast"),
+        route_kind(row),
         row.get("dev"),
         str(row.get("metric", 0)),
         str(row.get("protocol")),
         table,
     )
+
+
+def route_kind(row):
+    kind = str(row.get("type", "unicast"))
+    # ip -N prints RTN_* values numerically even in JSON.
+    return {"1": "unicast", "6": "blackhole"}.get(kind, kind)
 
 
 def table_id(value):
