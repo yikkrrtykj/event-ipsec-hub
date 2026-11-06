@@ -278,23 +278,30 @@ def check_install_failure(partial, baseline, services):
     assert read_record(INSTALLED) is None
     after = HOST.package_state()
     assert before == journal["install"]["before_package_state"]
-    assert evidence["delta"] and set(evidence["delta"]) == after.keys() - before.keys()
+    delta = evidence["delta"]
+    assert delta and set(delta) == {
+        name for name in before.keys() | after.keys() if before.get(name) != after.get(name)
+    }
     assert evidence["audit_clean"] is not partial and after != before
     assert all(
-        row["before"] is None and row["after"] == after[name]
-        for name, row in evidence["delta"].items()
+        row["before"] == before.get(name) and row["after"] == after.get(name)
+        for name, row in delta.items()
     )
+    added = sorted(after.keys() - before.keys())
     steps = [[step["label"], step["result"]] for step in journal["steps"]]
     if partial:
         assert ["Partial dpkg unpack", "DONE"] in steps and ["APT install", "DONE"] not in steps
-        assert set(evidence["delta"]) == {"libstrongswan"}
+        assert added == ["libstrongswan"]
         assert after["libstrongswan"]["status"] == "iU "
+        for name in delta.keys() - set(added):
+            assert after[name]["status"] in {"it ", "iW "}
+            assert after[name]["version"] == before[name]["version"]
     else:
         assert ["APT install", "DONE"] in steps
         assert ["Start owned daemon", "STARTED"] in steps
         assert ["Start owned daemon", "DONE"] not in steps
-        assert set(evidence["delta"]) == set(journal["install"]["packages"])
-        assert all(after[name]["status"] == "ii " for name in evidence["delta"])
+        assert set(delta) == set(added) == set(journal["install"]["packages"])
+        assert all(after[name]["status"] == "ii " for name in delta)
     assert not HOST.ike_ports() and not VICI_PATH.exists()
     assert resources().baseline() == baseline
     assert foreign_services() == services
@@ -303,9 +310,10 @@ def check_install_failure(partial, baseline, services):
     assert "STOP_FOR_MANUAL" in blocked["detail"] and HOST.package_state() == after
 
     # This is the operator's explicit lab repair, outside the deployment transaction.
-    added = sorted(evidence["delta"])
     if partial:
         HOST.command("Lab purge of unpacked package", "dpkg", "--purge", *added)
+        if HOST.package_state() != before:
+            HOST.command("Lab process pending triggers", "dpkg", "--triggers-only", "--pending")
     else:
         preview = HOST.command("Lab purge preview", "apt-get", "-s", "purge", *added)
         removals = {
@@ -858,9 +866,9 @@ if __name__ == "__main__":
                 )
             if journal and journal["action"] == "install" and journal["phase"] != "COMMITTED":
                 emit(
-                    "V03",
+                    "INSTALL",
                     "FAIL",
-                    "Install commits and preserves the baseline.",
+                    "Install or injected recovery preserves the intended state.",
                     {
                         "phase": journal["phase"],
                         "failure": journal.get("failure"),
