@@ -6,13 +6,13 @@
 
 | 用例 | 结果 | 证据 |
 | --- | --- | --- |
-| C01 | PASS | 71 项 pytest，包括 PR #1 的 62 项回归。 |
+| C01 | PASS | 73 项 pytest，包括 PR #1 的 62 项回归和 iproute2 数字类型测试。 |
 | C02 | PASS | Ruff、ShellCheck、四份公开配置校验、Gitleaks，以及渲染输出脱敏断言。 |
 | C03 | PASS | 仓库外创建独立 venv，安装构建的 wheel，并执行 validate、plan、export-peer 和 render。 |
 | C04–C06 | PASS | 三个虚构赛事渲染、方向与选择器一致性、重复渲染和非法拓扑回归。 |
 | C07–C10 | PASS | 离线占位 WAN 停止、外部备用与主 Hub 隔离、只读渲染及非目标平台写入停止。 |
 
-离线证据对应提交 `55e1e075c8e8dc4c7f6682b1dd0f975d7d6c08fe`。 [GitHub 离线 CI](https://github.com/yikkrrtykj/ipsecVPN/actions/runs/42215661460)
+离线证据对应提交 `217fa3aa43f38cd4291f0a9a8405f9c3d5467e7d`。 [GitHub 离线 CI](https://github.com/yikkrrtykj/ipsecVPN/actions/runs/42220411612)
 
 ## VM 执行记录
 
@@ -22,5 +22,7 @@
 - 依据 strongSwan 5.9.13 内核插件代码，非零路由表配置会在 daemon 初始化时注册策略路由，即使禁用自动路由安装。修复将项目 daemon 的 `routing_table` 置零，保留策略路由守恒检查。 [strongSwan 5.9.13 内核插件](https://github.com/strongswan/strongswan/blob/5.9.13/src/libcharon/plugins/kernel_netlink/kernel_netlink_net.c)
 - `ebad8ba` 实测 V01–V03 为 PASS，安装事务 `COMMITTED`，strongSwan 软件包为 `5.9.13-2ubuntu4.24.04.5`，默认路由、策略规则、SSH 和非项目防火墙摘要与安装前一致。F01–F04、F08 和 F12 也通过。该轮在 F05 的外部阻断规则测试夹具创建阶段失败，未执行 F05 断言或后续事务用例。日志末尾的额外 V03 FAIL 行来自错误归类，实际安装状态仍为 `COMMITTED`。已修正夹具语法和归类。 [安装成功与夹具失败日志](https://github.com/yikkrrtykj/ipsecVPN/actions/runs/42216693304)
 - `2c371fc` 实测 V01–V03、V08、F01–F09、F12、F13 为 PASS。F05 此轮验证了独立 nftables 拒绝链，UFW 和 iptables 前端子场景仍待运行。V09 首次真实 apply 为 FAIL，事务发出 `STOP_FOR_MANUAL`，所以 V04–V07 和 V10–V20、F10、F11、F14 仍为 SKIP。 [分项日志](https://github.com/yikkrrtykj/ipsecVPN/actions/runs/42217436609)
+- `d027a9c` 诊断复现了 V09。日志确认私有 nftables 保护已加载，三条精确 blackhole 路由命令成功。旧解析把 `ip -N` 返回的数字路由类型判为未登记，应用和恢复均按所有权门禁停止。后续修复同时接受内核数字类型和文字类型，继续严格匹配前缀、类型、设备、优先级、协议和路由表。 [VM 事务诊断](https://github.com/yikkrrtykj/ipsecVPN/actions/runs/42218721328) · [iproute2 路由类型代码](https://github.com/iproute2/iproute2/blob/v6.1.0/ip/rtm_map.c)
+- `217fa3a` 的隔离 VM 复测结果以客户机任务的分项日志为准。 [路由类型修复复测](https://github.com/yikkrrtykj/ipsecVPN/actions/runs/42220411594)
 
 真实双端 IKE/CHILD SA、UDP/TCP、MTU、现场防火墙和外部备用切换属于后续 PR，标记为 SKIP。PR 保持 Draft，所有部署操作限于实验客户机。
