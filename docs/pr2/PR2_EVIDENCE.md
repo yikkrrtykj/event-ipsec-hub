@@ -23,6 +23,6 @@
 - `ebad8ba` 实测 V01–V03 为 PASS，安装事务 `COMMITTED`，strongSwan 软件包为 `5.9.13-2ubuntu4.24.04.5`，默认路由、策略规则、SSH 和非项目防火墙摘要与安装前一致。F01–F04、F08 和 F12 也通过。该轮在 F05 的外部阻断规则测试夹具创建阶段失败，未执行 F05 断言或后续事务用例。日志末尾的额外 V03 FAIL 行来自错误归类，实际安装状态仍为 `COMMITTED`。已修正夹具语法和归类。 [安装成功与夹具失败日志](https://github.com/yikkrrtykj/ipsecVPN/actions/runs/42216693304)
 - `2c371fc` 实测 V01–V03、V08、F01–F09、F12、F13 为 PASS。F05 此轮验证了独立 nftables 拒绝链，UFW 和 iptables 前端子场景仍待运行。V09 首次真实 apply 为 FAIL，事务发出 `STOP_FOR_MANUAL`，所以 V04–V07 和 V10–V20、F10、F11、F14 仍为 SKIP。 [分项日志](https://github.com/yikkrrtykj/ipsecVPN/actions/runs/42217436609)
 - `d027a9c` 诊断复现了 V09。日志确认私有 nftables 保护已加载，三条精确 blackhole 路由命令成功。旧解析把 `ip -N` 返回的数字路由类型判为未登记，应用和恢复均按所有权门禁停止。后续修复同时接受内核数字类型和文字类型，继续严格匹配前缀、类型、设备、优先级、协议和路由表。 [VM 事务诊断](https://github.com/yikkrrtykj/ipsecVPN/actions/runs/42218721328) · [iproute2 路由类型代码](https://github.com/iproute2/iproute2/blob/v6.1.0/ip/rtm_map.c)
-- `217fa3a` 的隔离 VM 复测结果以客户机任务的分项日志为准。 [路由类型修复复测](https://github.com/yikkrrtykj/ipsecVPN/actions/runs/42220411594)
+- `217fa3a` 与仅更新文档的 `95cc5bd` 均通过原有安装和 dry-run 检查，并越过黑洞路由所有权校验。两次 V09 均在创建两条 XFRM 后以 `STOP_FOR_MANUAL` 结束。Linux 6.8 的创建路径不应用接口 alias，修复改为创建后用独立的 `ip link set` 设置所有权标记并启用接口。 [首次复测](https://github.com/yikkrrtykj/ipsecVPN/actions/runs/42220411594) · [重复复测](https://github.com/yikkrrtykj/ipsecVPN/actions/runs/42222752430) · [Linux rtnetlink 创建与更新](https://github.com/torvalds/linux/blob/v6.8/net/core/rtnetlink.c)
 
 真实双端 IKE/CHILD SA、UDP/TCP、MTU、现场防火墙和外部备用切换属于后续 PR，标记为 SKIP。PR 保持 Draft，所有部署操作限于实验客户机。

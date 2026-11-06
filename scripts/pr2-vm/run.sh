@@ -20,15 +20,11 @@ cleanup() {
 }
 trap cleanup EXIT
 
-sudo apt-get -qq update
-sudo apt-get -qq install -y --no-install-recommends qemu-system-x86 qemu-utils cloud-image-utils dpkg-dev
+apt_network=(-o Acquire::Retries=1 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20)
+sudo apt-get "${apt_network[@]}" -qq update
+sudo apt-get "${apt_network[@]}" -qq install -y --no-install-recommends \
+    qemu-system-x86 qemu-utils cloud-image-utils dpkg-dev
 mkdir -p "$work/payload/apt" "$work/payload/wheels" "$work/apt-archives"
-sudo apt-get -qq -y --download-only --no-install-recommends \
-    -o Dir::State::status=/dev/null -o "Dir::Cache::archives=$work/apt-archives" \
-    install charon-systemd strongswan-swanctl libstrongswan-standard-plugins \
-    nftables iproute2 python3-venv iptables ufw
-cp "$work"/apt-archives/*.deb "$work/payload/apt/"
-(cd "$work/payload/apt" && dpkg-scanpackages -m . /dev/null > Packages)
 python -m pip wheel --wheel-dir "$work/payload/wheels" "$root"
 cp "$root"/scripts/pr2-vm/{guest.sh,verify.py} "$work/payload/"
 cp "$root/config/event.example.yaml" "$work/payload/example.yaml"
@@ -78,7 +74,14 @@ wait_ssh() {
     return 1
 }
 wait_ssh
-guest 'cloud-init status --wait'
+guest 'timeout 180 cloud-init status --wait'
+guest 'cat /var/lib/dpkg/status' > "$work/guest-dpkg-status"
+sudo apt-get "${apt_network[@]}" -qq -y --download-only --no-install-recommends \
+    -o "Dir::State::status=$work/guest-dpkg-status" -o "Dir::Cache::archives=$work/apt-archives" \
+    install charon-systemd strongswan-swanctl libstrongswan-standard-plugins \
+    nftables iproute2 python3-venv iptables ufw
+cp "$work"/apt-archives/*.deb "$work/payload/apt/"
+(cd "$work/payload/apt" && dpkg-scanpackages -m . /dev/null > Packages)
 scp "${ssh_options[@]}" -P 2222 -r "$work/payload" ubuntu@127.0.0.1:lab
 guest 'sudo bash /home/ubuntu/lab/guest.sh'
 before="$(guest 'cat /proc/sys/kernel/random/boot_id')"

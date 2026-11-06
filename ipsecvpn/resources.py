@@ -185,15 +185,27 @@ class Resources:
                     "add",
                     "name",
                     name,
-                    "alias",
-                    self.alias,
                     "type",
                     "xfrm",
                     "if_id",
                     str(if_id),
                     mutate=True,
                 )
-            self.host.command("XFRM up", "ip", "link", "set", "dev", name, "up", mutate=True)
+                # Linux 6.8's newlink path ignores IFLA_IFALIAS on creation.
+                self.host.command(
+                    "XFRM mark and activate",
+                    "ip",
+                    "link",
+                    "set",
+                    "dev",
+                    name,
+                    "alias",
+                    self.alias,
+                    "up",
+                    mutate=True,
+                )
+            else:
+                self.host.command("XFRM up", "ip", "link", "set", "dev", name, "up", mutate=True)
         for spec in sorted(desired_routes - self.network()[3]):
             self.route("add", spec)
         self.load(target, keys)
