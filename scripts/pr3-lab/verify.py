@@ -48,6 +48,11 @@ PORT = TOPO["traffic_port"]
 UPDATE = PROFILE.with_name("pr3-update.yaml")
 ENV = {}
 HEAD = (HERE / "head-sha").read_text(encoding="ascii").strip()
+LAB_CASES = {
+    f"{section}{index:02d}"
+    for section, count in (("T", 14), ("S", 10), ("N", 6), ("F", 16))
+    for index in range(1, count + 1)
+}
 
 
 def emit(cases, expected, observed, *, status="PASS", action="inspect real nodes"):
@@ -77,6 +82,102 @@ def environment():
         iproute2=packages["iproute2"],
         nft=command("nft", "--version").stdout.strip(),
     )
+
+
+def recorded_cases():
+    lines = SUMMARY.read_text(encoding="utf-8").splitlines() if SUMMARY.exists() else ()
+    return [json.loads(line) for line in lines]
+
+
+def summarize():
+    ENV.update(HOST.probe())
+    packages = HOST.packages()
+    ENV.update(
+        strongswan=packages.get("charon-systemd", "not installed"),
+        iproute2=packages.get("iproute2", "unknown"),
+        nft=command("nft", "--version").stdout.strip(),
+    )
+    previous = {item["case"] for item in recorded_cases()}
+    for case in sorted(LAB_CASES - previous):
+        emit(
+            case,
+            "Execute the case under the PR3 acceptance matrix.",
+            "Not reached after an earlier isolated failure or interrupted run.",
+            status="SKIP",
+            action="collect existing evidence",
+        )
+
+
+def failure_context():
+    known = {
+        "version",
+        "state",
+        "uniqueid",
+        "local-host",
+        "remote-host",
+        "local-id",
+        "remote-id",
+        "encr-alg",
+        "encr-keysize",
+        "integ-alg",
+        "prf-alg",
+        "dh-group",
+        "name",
+        "reqid",
+        "if-id-in",
+        "if-id-out",
+        "protocol",
+        "mode",
+        "encap",
+        "local-ts",
+        "remote-ts",
+    }
+
+    def safe(row):
+        return {
+            key: [item.decode("ascii") for item in value]
+            if isinstance(value, list)
+            else value.decode("ascii")
+            for key, value in row.items()
+            if key in known
+        }
+
+    result = {}
+    try:
+        pid = HOST.service(UNIT, "MainPID")
+        if pid.isdecimal() and int(pid):
+            with session(pid) as control:
+                result["hub_vici"] = [
+                    {
+                        "connection": name,
+                        **safe(row),
+                        "children": [safe(child) for child in row.get("child-sas", {}).values()],
+                    }
+                    for event in control.list_sas()
+                    for name, row in event.items()
+                ]
+        for kind, option in (("state", "nokeys"), ("policy", "nosock")):
+            raw = ip("-o", "xfrm", kind, "list", option).stdout
+            # Extract only field pairs with fixed token types. Do not emit a raw SA dump.
+            result[f"hub_{kind}_fields"] = [
+                re.findall(
+                    r"\b(?:src|dst|dir|proto|reqid|mode|if_id|priority) [0-9a-zA-Z./_-]+", row
+                )
+                for row in raw.splitlines()
+            ][:40]
+        journal = read_record(JOURNAL)
+        if journal:
+            result["journal"] = {
+                key: journal[key]
+                for key in ("id", "action", "phase", "failure", "recovery_failure")
+                if key in journal
+            }
+            result["journal"]["steps"] = [
+                [step["label"], step["result"]] for step in journal["steps"]
+            ]
+    except (Stop, RuntimeError, ValueError, TypeError, KeyError, OSError):
+        result["diagnostic"] = "Some local evidence was unavailable."
+    return result
 
 
 def manifest():
@@ -1141,17 +1242,28 @@ def after_reboot():
         "Live maintenance uninstall drains only owned SAs and restores the foreign baseline.",
         {"journal": removed["backup_id"], "empty_sad_spd": True, "baseline": baseline},
     )
-    if any(json.loads(line)["status"] == "FAIL" for line in SUMMARY.read_text().splitlines()):
-        raise RuntimeError("One or more executed data-plane observations failed.")
+    cases = recorded_cases()
+    if any(item["status"] == "FAIL" for item in cases) or LAB_CASES - {
+        item["case"] for item in cases if item["status"] == "PASS"
+    }:
+        raise RuntimeError("The complete three-node acceptance matrix did not pass.")
 
 
 if __name__ == "__main__":
     require_lab()
+    if sys.argv[1] == "summarize":
+        summarize()
+        sys.exit(0)
     if sys.argv[1] == "crash":
         Deployment(RouteFault(kill=True)).dispatch("apply", True, UPDATE, maintenance=True)
         sys.exit(2)
     try:
         {"before-reboot": before_reboot, "after-reboot": after_reboot}[sys.argv[1]]()
     except (RuntimeError, OSError, AssertionError, ValueError, KeyError) as exc:
-        emit("LAB", "Executed three-node assertions pass.", str(exc), status="FAIL")
+        emit(
+            "LAB",
+            "Executed three-node assertions pass.",
+            {"failure": str(exc), **failure_context()},
+            status="FAIL",
+        )
         raise

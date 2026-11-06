@@ -18,6 +18,7 @@ from vici.exception import (
 )
 
 from .host import VICI_PATH
+from .renderer import DeploymentManifest
 from .secureio import Stop
 
 
@@ -141,6 +142,7 @@ class Ike:
 @dataclass(frozen=True)
 class Snapshot:
     ikes: tuple[Ike, ...]
+    manifest: DeploymentManifest | None
 
     def get(self, name):
         return next((ike for ike in self.ikes if ike.name == name), None)
@@ -207,7 +209,7 @@ def parse_vici(events, manifest):
             if name in result:
                 raise transition("Multiple IKE generations require a stable VICI snapshot.")
             result[name] = parse_ike(name, row, links[name])
-    return Snapshot(tuple(sorted(result.values(), key=lambda ike: ike.name)))
+    return Snapshot(tuple(sorted(result.values(), key=lambda ike: ike.name)), manifest)
 
 
 def value(tokens, key):

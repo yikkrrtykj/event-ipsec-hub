@@ -1,4 +1,4 @@
-"""Read-only CLI for the V2.0 profile and handoff workflow."""
+"""V2.0 profile, handoff and authorized Ubuntu lab Hub operations."""
 
 import argparse
 import json

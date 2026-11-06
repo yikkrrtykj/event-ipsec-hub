@@ -20,7 +20,10 @@ cleanup() {
     code=$?
     trap - EXIT
     evidence=/var/tmp/ipsecvpn-acceptance.jsonl
-    if [[ "$suite" == pr3 ]]; then evidence=/var/tmp/ipsecvpn-pr3-acceptance.jsonl; fi
+    if [[ "$suite" == pr3 ]]; then
+        evidence=/var/tmp/ipsecvpn-pr3-acceptance.jsonl
+        guest 'sudo /opt/ipsecvpn-lab/venv/bin/python /opt/ipsecvpn-lab/verify.py summarize' +            >/dev/null 2>&1 || true
+    fi
     if guest "sudo cat $evidence" > "$work/acceptance.jsonl" 2>/dev/null; then
         cat "$work/acceptance.jsonl"
         if [[ -n "${IPSECVPN_EVIDENCE_FILE:-}" ]]; then

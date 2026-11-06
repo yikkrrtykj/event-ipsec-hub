@@ -13,6 +13,7 @@ from .renderer import (
     nft_config,
     swanctl_config,
 )
+from .sa import Snapshot
 from .secureio import Stop, atomic_write, make_directory, remove_file, sync_dir, trusted_dir
 
 SWANCTL_DIR = Path("/etc/swanctl")
@@ -225,6 +226,8 @@ class Resources:
         self.nft(target)
 
     def verify(self, expected, baseline, nft_sha=None, *, live=None):
+        if live is not None and (not isinstance(live, Snapshot) or live.manifest != expected):
+            raise Stop("The live SA proof does not belong to the expected manifest.")
         _, _, links, routes, names, table, _ = self.network()
         wanted = {name for name, _ in link_specs((expected,))}
         up = {row["ifname"] for row in links if row["ifname"] in names and "UP" in row["flags"]}
