@@ -12,7 +12,7 @@ from pathlib import Path
 
 import yaml
 
-from ipsecvpn.host import UNIT, Host
+from ipsecvpn.host import UNIT, Host, fingerprint
 from ipsecvpn.installer import GUARD, RESTORE, STATE
 from ipsecvpn.profile import load_profile
 from ipsecvpn.renderer import build_manifest
@@ -41,10 +41,11 @@ def command(*args, allowed=(0,), data=None):
 
 
 def cli(*args, ok=True):
-    proc = command(str(CLI), *args, "--json", allowed=(0,) if ok else (1,))
+    proc = command(str(CLI), *args, "--json", allowed=(0, 1))
     output = (proc.stdout + proc.stderr).encode()
     assert all(key not in output and key.hex().encode() not in output for key in KEYS)
     report = json.loads(proc.stdout)
+    assert proc.returncode == (0 if ok else 1), report.get("detail")
     assert report["status"] == ("PASS" if ok else "FAIL"), report.get("detail")
     if not ok:
         assert report.get("decision") == "STOP", report.get("detail")
@@ -118,6 +119,10 @@ class FaultHost(Host):
             if self.crash:
                 super().command(label, *args, **kwargs)
                 os.kill(os.getpid(), signal.SIGKILL)
+            if label == "IPv4 unicast route del":
+                return super().command(
+                    label, "setpriv", "--bounding-set=-net_admin", *args, mutate=True
+                )
             return super().command(
                 label, args[0], "--ipsecvpn-injected-invalid-option", mutate=True
             )
@@ -152,6 +157,12 @@ def negative_cases(profile, manifest, baseline):
         assert HOST.ip("link", "show", "dev", "labcollision")
     finally:
         command("ip", "link", "del", "dev", "labcollision")
+    command("ip", "link", "add", "name", link.name, "type", "dummy")
+    try:
+        stopped("F02", "Reserved interface name detected.", match="XFRM")
+        assert HOST.ip("link", "show", "dev", link.name)
+    finally:
+        command("ip", "link", "del", "dev", link.name)
     network = link.remote_ts[0]
     host_route = network.split("/")[0] + "/32"
     for cidr, case in ((network, "F03"), (host_route, "F12")):
@@ -217,6 +228,28 @@ def negative_cases(profile, manifest, baseline):
     )
     assert "FAIL/STOP" in nonroot.stderr
     emit("F09", "PASS", "Non-root host write exits STOP.", "Exit 1 before work.")
+    wrong_release = HERE / "foreign-os-release"
+    wrong_release.write_text("ID=ubuntu\nVERSION_ID=22.04\n", encoding="ascii")
+    for source, target, expected_error in (
+        (wrong_release, Path("/etc/os-release").resolve(), "Only Ubuntu 24.04"),
+        (Path("/usr/bin/false"), Path("/usr/sbin/modprobe").resolve(), "XFRM interface support"),
+    ):
+        rejected = command(
+            "unshare",
+            "--mount",
+            "--propagation",
+            "private",
+            "sh",
+            "-ec",
+            'mount --bind "$1" "$2"; exec "$3" install --confirm',
+            "isolated-probe",
+            str(source),
+            str(target),
+            str(CLI),
+            allowed=(1,),
+        )
+        assert "FAIL/STOP" in rejected.stderr and expected_error in rejected.stderr
+        emit("F09", "PASS", "Reject version or kernel feature mismatch.", expected_error)
     malformed = copy.deepcopy(profile)
     malformed["default_route"] = "192.0.2.1"
     profile_write(draft, malformed)
@@ -231,6 +264,10 @@ def negative_cases(profile, manifest, baseline):
         "Reject foreign configuration fields and injected syntax.",
         "Schema rejected both before execution.",
     )
+    malformed = copy.deepcopy(profile)
+    malformed["site_links"][0]["secret_ref"] = "file:/etc/ipsecvpn/secrets/../lab-authorized"
+    profile_write(draft, malformed)
+    stopped("F07", "Key path traversal rejected by profile validation.", draft, "Schema violation")
     assert resources().baseline() == baseline
 
 
@@ -432,7 +469,7 @@ def check_secret_evidence(profile):
                 value not in content and value.hex().encode() not in content
                 for value in secret_values
             )
-    assert not Path("/run/ipsecvpn/swanctl.conf").exists()
+    assert not list(Path("/etc/swanctl").glob("ipsecvpn-*/swanctl.conf"))
     daemon = command("journalctl", "--no-pager", "-u", UNIT, "-o", "cat").stdout.encode()
     assert all(
         value not in daemon and value.hex().encode() not in daemon for value in secret_values
@@ -471,6 +508,34 @@ def after_reboot():
         "Remove owned network and boot resources, keep shared packages and SSH.",
         "Exact protected baseline and package retention verified.",
     )
+    test_firewall_frontends()
+
+
+def test_firewall_frontends():
+    # These disposable guest rules are fixtures, after the project has been removed.
+    command("iptables", "-w", "-I", "FORWARD", "-j", "DROP")
+    try:
+        assert_foreign_firewall_stops("iptables FORWARD DROP")
+    finally:
+        command("iptables", "-w", "-D", "FORWARD", "-j", "DROP")
+    command("ufw", "allow", "22/tcp")
+    command("ufw", "--force", "enable")
+    try:
+        assert_foreign_firewall_stops("UFW default routed policy")
+    finally:
+        command("ufw", "--force", "disable")
+
+
+def assert_foreign_firewall_stops(label):
+    rules = HOST.nft()
+    try:
+        HOST.check_firewall(rules)
+    except Stop:
+        pass
+    else:
+        raise AssertionError("Foreign firewall fixture did not stop preflight.")
+    assert fingerprint(rules) == fingerprint(HOST.nft())
+    emit("F05", "PASS", "Foreign frontend policy stops preflight with no rule changes.", label)
 
 
 if __name__ == "__main__":
@@ -484,4 +549,22 @@ if __name__ == "__main__":
             {"before-reboot": before_reboot, "after-reboot": after_reboot}[action]()
         except (AssertionError, OSError, RuntimeError, ValueError, KeyError, IndexError) as exc:
             emit("VM", "FAIL", "All executed acceptance assertions pass.", str(exc))
+            journal = read_record(JOURNAL)
+            if journal and journal["action"] == "install":
+                emit(
+                    "V03",
+                    "FAIL",
+                    "Install commits and preserves the baseline.",
+                    {
+                        "phase": journal["phase"],
+                        "failure": journal.get("failure"),
+                        "steps": journal["steps"],
+                    },
+                )
+                diagnostic = command(
+                    "journalctl", "--no-pager", "-u", UNIT, "-n", "18", "-o", "cat"
+                )
+                raw = diagnostic.stdout.encode()
+                if all(key not in raw and key.hex().encode() not in raw for key in KEYS):
+                    print(diagnostic.stdout, flush=True)
             raise

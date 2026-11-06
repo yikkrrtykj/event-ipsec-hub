@@ -1,5 +1,6 @@
 """Apply and verify only declared project network and VICI objects."""
 
+import os
 import re
 from pathlib import Path
 
@@ -12,9 +13,9 @@ from .renderer import (
     nft_config,
     swanctl_config,
 )
-from .secureio import Stop, atomic_write, make_directory, remove_file
+from .secureio import Stop, atomic_write, make_directory, remove_file, sync_dir, trusted_dir
 
-RUNTIME = Path("/run/ipsecvpn")
+SWANCTL_DIR = Path("/etc/swanctl")
 
 
 def route_specs(manifests):
@@ -46,6 +47,19 @@ class Resources:
         self.candidates = tuple(candidates)
         self.routes = route_specs(self.candidates)
         self.links = link_specs(self.candidates)
+
+    @property
+    def runtime(self):
+        return SWANCTL_DIR / f"ipsecvpn-{self.token}"
+
+    def purge_runtime(self):
+        try:
+            os.close(trusted_dir(self.runtime, 0o700))
+        except FileNotFoundError:
+            return
+        remove_file(self.runtime / "swanctl.conf")
+        self.runtime.rmdir()
+        sync_dir(SWANCTL_DIR)
 
     def network(self):
         rules, routes, links = self.host.routing()
@@ -131,8 +145,8 @@ class Resources:
             self.route("add", spec)
 
     def load(self, manifest, keys):
-        make_directory(RUNTIME)
-        conf = RUNTIME / "swanctl.conf"
+        make_directory(self.runtime)
+        conf = self.runtime / "swanctl.conf"
         atomic_write(conf, swanctl_config(manifest, keys).encode())
         try:
             self.host.command(
@@ -148,7 +162,7 @@ class Resources:
                 mutate=True,
             )
         finally:
-            remove_file(conf)
+            self.purge_runtime()
 
     def replace(self, target, keys):
         self.guard()
@@ -196,7 +210,7 @@ class Resources:
         if bool(table) != bool(expected) or (nft_sha and nft_sha != fingerprint(table)):
             raise Stop("Observed project nftables rules differ from the expected state.")
         connections = self.host.vici_connections()
-        if set(connections) != wanted:
+        if set(connections) != wanted or self.host.vici("--list-sas").strip():
             raise Stop("The daemon did not report exactly the intended VICI connections.")
         for link in expected.links if expected else ():
             listing = "\n".join(connections[link.name])

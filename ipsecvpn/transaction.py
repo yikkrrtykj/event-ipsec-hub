@@ -223,7 +223,7 @@ class Deployment:
             self.phase("VERIFIED")
             write_record(INSTALLED, install)
             self.phase("COMMITTED")
-        except (Stop, OSError, ValueError) as exc:
+        except (Stop, OSError, ValueError, KeyError) as exc:
             reason = str(exc) if isinstance(exc, Stop) else "protected install state operation"
             self.record["failure"] = reason
             self.phase("FAILED")
@@ -297,7 +297,7 @@ class Deployment:
                 write_record(INSTALLED, None)
             self.phase("VERIFIED")
             self.phase("COMMITTED")
-        except (Stop, OSError, ValueError) as exc:
+        except (Stop, OSError, ValueError, KeyError) as exc:
             reason = str(exc) if isinstance(exc, Stop) else "protected host state operation"
             self.record["failure"] = reason
             self.phase("FAILED")
@@ -386,6 +386,7 @@ def boot(phase):
         resources = Resources(host, install["token"], candidates)
         if phase == "guard":
             resources.guard()
+            resources.purge_runtime()
         elif interrupted:
             raise Stop(
                 "An unfinished journal requires explicit rollback; boot guards remain active."

@@ -40,7 +40,13 @@ class Host:
                 capture_output=True,
                 input=content,
                 timeout=timeout,
-                env={"PATH": PATH, "LC_ALL": "C", "DEBIAN_FRONTEND": "noninteractive"},
+                env={
+                    "PATH": PATH,
+                    "LC_ALL": "C",
+                    "DEBIAN_FRONTEND": "noninteractive",
+                    "NEEDRESTART_MODE": "l",
+                    "NEEDRESTART_SUSPEND": "1",
+                },
                 check=False,
             )
         except (OSError, subprocess.TimeoutExpired):

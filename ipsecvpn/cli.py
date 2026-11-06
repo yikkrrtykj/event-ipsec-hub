@@ -191,8 +191,11 @@ def main(argv=None):
         result = _run(args)
     except ProfileError as exc:
         result = {"status": "FAIL", "detail": str(exc)}
+        if args.command in HOST_ACTIONS:
+            result["decision"] = "STOP"
         if not json_output:
-            print(f"FAIL {result['detail']}", file=sys.stderr)
+            status = "FAIL/STOP" if "decision" in result else "FAIL"
+            print(f"{status} {result['detail']}", file=sys.stderr)
             return 1
     except (Stop, OSError, KeyError, ValueError) as exc:
         if args.command not in HOST_ACTIONS:
