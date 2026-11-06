@@ -29,7 +29,7 @@ jobs:
       - name: Tests
         run: python -m pytest -q
       - name: ShellCheck
-        run: shellcheck scripts/validate-examples.sh
+        run: shellcheck scripts/*.sh scripts/pr2-vm/*.sh
       - name: Validate example and fixture profiles using the installed CLI
         run: bash scripts/validate-examples.sh
       - name: Smoke-test the wheel outside the checkout
@@ -43,9 +43,12 @@ jobs:
           python -m venv venv
           venv/bin/python -m pip install ./ipsecvpn-*.whl
           venv/bin/ipsecvpn validate -c profile.yaml
+          venv/bin/ipsecvpn plan -c profile.yaml > plan.json
+          venv/bin/ipsecvpn render -c profile.yaml --json > render.json
           site_id="$(venv/bin/python -c 'import yaml; print(yaml.safe_load(open("profile.yaml"))["sites"][0]["id"])')"
           venv/bin/ipsecvpn export-peer -c profile.yaml --site "$site_id" --format json > handoff.json
           venv/bin/python -c 'import json; assert json.load(open("handoff.json"))["status"] == "PASS"'
+          venv/bin/python -c 'import json; assert len(json.load(open("render.json"))["manifest"]["links"]) == 2'
       - name: Scan reachable commits for secrets
         shell: bash
         run: |

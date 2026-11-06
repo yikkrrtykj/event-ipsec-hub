@@ -86,12 +86,21 @@ def load_profile(path):
             raise ProfileError("Select a readable .yaml or .yml profile.")
         with path.open("rb") as stream:
             content = stream.read(MAX_PROFILE_BYTES + 1)
-        if len(content) > MAX_PROFILE_BYTES:
-            raise ProfileError("The profile exceeds the 256 KiB size limit.")
-        profile = yaml.load(content.decode("utf-8-sig"), Loader=ProfileLoader)
     except ProfileError:
         raise
     except (OSError, yaml.YAMLError, RecursionError, ValueError):
+        raise ProfileError("Could not read a single UTF-8 YAML profile.") from None
+    return parse_profile(content)
+
+
+def parse_profile(content):
+    if len(content) > MAX_PROFILE_BYTES:
+        raise ProfileError("The profile exceeds the 256 KiB size limit.")
+    try:
+        profile = yaml.load(content.decode("utf-8-sig"), Loader=ProfileLoader)
+    except ProfileError:
+        raise
+    except (yaml.YAMLError, RecursionError, ValueError):
         raise ProfileError("Could not read a single UTF-8 YAML profile.") from None
     validate_profile(profile)
     return profile
