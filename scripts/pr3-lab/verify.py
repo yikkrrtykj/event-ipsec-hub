@@ -1637,7 +1637,9 @@ def verify_peer_restart(model):
 
 def verify_timed_rekey():
     profile = load_profile(PROFILE)
-    profile["security"].update(child_lifetime_seconds=24, ike_lifetime_seconds=38)
+    # Allow the daemon's old-SA retention and all three real kernel/VICI reads
+    # to finish between generations, including on a software-emulated guest.
+    profile["security"].update(child_lifetime_seconds=90, ike_lifetime_seconds=120)
     timed_path = PROFILE.with_name("pr3-timed.yaml")
     write_profile(profile, timed_path)
     saved = cli("backup", "--confirm")["backup_id"]
@@ -1658,7 +1660,7 @@ def verify_timed_rekey():
             and (row.child.unique_id != old.child.unique_id)
         )
 
-    after = stable(model, both_advanced, seconds=55).get(link.name)
+    after = stable(model, both_advanced, seconds=150).get(link.name)
     verify_sas(model, phase="automatic IKE and CHILD timers")
     emit(
         "S01 S02",
@@ -1667,6 +1669,10 @@ def verify_timed_rekey():
             "old_ike_child": [old.unique_id, old.child.unique_id],
             "new_ike_child": [after.unique_id, after.child.unique_id],
             "elapsed_seconds": round(time.monotonic() - start, 3),
+            "configured_seconds": {
+                "ike_rekey": link.ike_lifetime,
+                "child_lifetime": link.child_lifetime,
+            },
             "before_flows": before_flows,
             "after_flows": pair("udp", 174),
         },
