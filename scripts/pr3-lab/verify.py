@@ -1606,14 +1606,114 @@ def verify_daemon_restart(model):
     )
 
 
+def reset_saved_peer_kernel(site, states, policies):
+    require_lab()
+    node = site["router"]
+    current_states = kernel_states(ip("-o", "xfrm", "state", "list", "nokeys", ns=node).stdout)
+    current_policies = kernel_policies(ip("-o", "xfrm", "policy", "list", "nosock", ns=node).stdout)
+    if (
+        set(current_states) != set(states)
+        or len(current_states) != len(states)
+        or set(current_policies) != set(policies)
+        or len(current_policies) != len(policies)
+    ):
+        raise Stop("Peer crash recovery requires an exact match to its saved owned objects.")
+    for policy, _ in policies:
+        ip(
+            "xfrm",
+            "policy",
+            "delete",
+            "src",
+            policy.source,
+            "dst",
+            policy.destination,
+            "dir",
+            policy.direction,
+            "if_id",
+            str(policy.if_id),
+            ns=node,
+        )
+    for state in states:
+        ip(
+            "xfrm",
+            "state",
+            "delete",
+            "src",
+            state.source,
+            "dst",
+            state.destination,
+            "proto",
+            "esp",
+            "spi",
+            hex(state.spi),
+            "if_id",
+            str(state.if_id),
+            ns=node,
+        )
+    assert not ip("xfrm", "state", "list", "nokeys", ns=node).stdout.strip()
+    assert not ip("xfrm", "policy", "list", "nosock", ns=node).stdout.strip()
+
+
 def verify_peer_restart(model):
     node, link = TOPO["sites"][0], model.links[0]
+    verify_sas(model, phase="before simulated peer power loss")
+    states = kernel_states(ip("-o", "xfrm", "state", "list", "nokeys", ns=node["router"]).stdout)
+    policies = kernel_policies(
+        ip("-o", "xfrm", "policy", "list", "nosock", ns=node["router"]).stdout
+    )
+    peer_model = DeploymentManifest(model.event_id, (reversed_link(link),))
+    with session(peer_pid(node), PEER_ROOT / node["router"] / "charon.vici") as control:
+        correlate(parse_vici(list(control.list_sas()), peer_model), peer_model, states, policies)
+    saved_hash = hashlib.sha256(repr((states, policies)).encode()).hexdigest()
     old = peer_pid(node)
     os.kill(old, signal.SIGKILL)
     deadline = time.monotonic() + 12
     while Path(f"/proc/{old}").exists() and time.monotonic() < deadline:
         time.sleep(0.25)
     assert not Path(f"/proc/{old}").exists()
+    # A crashed process leaves kernel objects. Model loss of the peer's IPsec
+    # kernel state using only its pre-crash, exactly verified ownership snapshot.
+    unknown = (
+        "src",
+        "10.195.0.0/24",
+        "dst",
+        "10.196.0.0/24",
+        "dir",
+        "out",
+        "if_id",
+        str(link.if_id),
+    )
+    ip(
+        "xfrm",
+        "policy",
+        "add",
+        *unknown,
+        "action",
+        "block",
+        "priority",
+        "470001",
+        ns=node["router"],
+    )
+    before_state = ip("-o", "xfrm", "state", "list", "nokeys", ns=node["router"]).stdout
+    before_policy = ip("-o", "xfrm", "policy", "list", "nosock", ns=node["router"]).stdout
+    try:
+        try:
+            reset_saved_peer_kernel(node, states, policies)
+        except Stop:
+            assert (
+                ip("-o", "xfrm", "state", "list", "nokeys", ns=node["router"]).stdout
+                == before_state
+            )
+            assert (
+                ip("-o", "xfrm", "policy", "list", "nosock", ns=node["router"]).stdout
+                == before_policy
+            )
+        else:
+            raise AssertionError("Unknown peer kernel object was accepted during crash recovery.")
+    finally:
+        ip("xfrm", "policy", "delete", *unknown, ns=node["router"])
+    reset_saved_peer_kernel(node, states, policies)
+    guard = capture_fail_closed(model, 202)
     socket_path = PEER_ROOT / node["router"] / "charon.vici"
     if socket_path.is_socket():
         socket_path.unlink()
@@ -1629,6 +1729,10 @@ def verify_peer_restart(model):
             "peer": node["router"],
             "old_pid": old,
             "new_pid": peer_pid(node),
+            "saved_kernel_snapshot_sha256": saved_hash,
+            "known_kernel_objects_reset": {"states": len(states), "policies": len(policies)},
+            "unknown_recovery_object": "STOP with kernel inventory unchanged",
+            "guard": guard,
             "journal": report["journal"],
             "flows": pair("udp", 168),
         },

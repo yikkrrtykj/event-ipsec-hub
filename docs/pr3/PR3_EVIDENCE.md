@@ -34,6 +34,7 @@ DF UDP payload `1200/1300/1380` 字节收到校验回执，`1420/1460/1472` 字�
 2. 删除 XFRM 后 Hub 本机 AF_PACKET 可看到入站解密 skb。新增独立 WAN 交换机抓包，并用文档公网地址间的随机控制报文验证采集有效。F09 线侧没有私网地址或业务 nonce，pcap SHA-256 为 `18c897da54c26e3a463211f870afd5dac1e44fea92900afd5b50f72b9c73e4a0`，Hub 本机观察仍保留。 [strongSwan 抓包语义](https://docs.strongswan.org/docs/5.9/support/faq.html#_capturing_outbound_plaintext_packets_with_tcpdumpwireshark)
 3. 旧 VM 回归曾在恢复 oneshot 尚未完成时检查规则。journal 当时只有 restore 的 Starting，观察到保护规则。多 unit 的 `systemctl is-active` 只需其中一个 active 就成功。实验现逐个等待全部 unit active，再执行原有核验，没有人工启动修复动作。
 4. Hub restart 曾连带停止实验 topology 服务的 Peer B，Hub 最终呈 A 已建立、B CONNECTING。实验 topology 服务移除对 Hub unit 的 Requires，新增 Hub 重启时对端 PID 持续存活断言。840ead5 的 T13_DAEMON、T13、S09 已通过。历史失败的原始记录继续保留。 [历史失败 JSONL](https://github.com/yikkrrtykj/event-ipsec-hub/actions/runs/42332206806/artifacts/13558353867)
+5. 补充双端采样发现 Peer 被 SIGKILL 后遗留内核 SA，新进程可以建立新连接但库存仍不完整。实验恢复先保存崩溃前的完整 VICI/内核归属证明，核对遗留库存完全一致后逐条清理该 Peer 的已知对象，模拟断电时的 IPsec 内核状态丢失。混入未知策略的负面用例要求 STOP 且库存不变，之后还需重建 daemon、完整双端核验及真实双向流量。此恢复操作仅属于可销毁 Peer 夹具。
 
 ## 继续 SKIP 的范围
 
