@@ -8,13 +8,13 @@
 
 ## 可复核运行
 
-下表记录实际执行提交 `64c7dc1e78742167a49b6e371702b0f31f505f0a`。后续提交修复了实验节点在 Hub 服务重启时的生命周期耦合。最新整轮结论与 HEAD 在 Draft PR 描述中更新。
+下表记录实际执行提交 `840ead5bb443de0af5a66331c3d3f73172632400`。该轮已完成 Hub 服务重启、VM 重启和活动卸载。独立端口阻断、仅 CHILD 下线、外层明文注入及 PFS 不匹配的补充用例随下一提交重新执行。最新整轮结论与 HEAD 在 Draft PR 描述中更新。
 
 | 运行 | 实际结果与证据 |
 | --- | --- |
-| 离线验证 | PASS。85 项 pytest，保留原 73 项。Ruff、ShellCheck、4 份配置、仓库外 wheel 的 validate/plan/export-peer/render/status/doctor、Gitleaks 均通过。 [运行日志](https://github.com/yikkrrtykj/event-ipsec-hub/actions/runs/42332206784) |
-| PR #2 VM 回归 | PASS。V01–V20、F01–F14、L01–L04 共 38 个唯一 case、52 条 PASS 记录。包含包清单差异、dpkg 异常、APT 后激活失败、人工恢复及外来 strongSwan 拒绝。 [运行日志](https://github.com/yikkrrtykj/event-ipsec-hub/actions/runs/42332206994) · [JSONL 13558452543](https://github.com/yikkrrtykj/event-ipsec-hub/actions/runs/42332206994/artifacts/13558452543) |
-| PR #3 三节点 | T01–T12、T14、S01–S08、S10、N01–N06、F01–F16 已执行 PASS。Hub 服务重启仍 FAIL，后续 VM 重启和活动卸载为 SKIP，该轮整体失败。 [运行日志](https://github.com/yikkrrtykj/event-ipsec-hub/actions/runs/42332206806) · [JSONL 13558353867](https://github.com/yikkrrtykj/event-ipsec-hub/actions/runs/42332206806/artifacts/13558353867) |
+| 离线验证 | PASS。85 项 pytest，保留原 73 项。Ruff、ShellCheck、4 份配置、仓库外 wheel 的 validate/plan/export-peer/render/status/doctor、Gitleaks 均通过。 [运行日志](https://github.com/yikkrrtykj/event-ipsec-hub/actions/runs/42333944846) |
+| PR #2 VM 回归 | PASS。V01–V20、F01–F14、L01–L04 共 38 个唯一 case，包含包清单差异、dpkg 异常、APT 后激活失败、人工恢复及外来 strongSwan 拒绝。 [运行日志](https://github.com/yikkrrtykj/event-ipsec-hub/actions/runs/42333944868) · [JSONL 13559765301](https://github.com/yikkrrtykj/event-ipsec-hub/actions/runs/42333944868/artifacts/13559765301) |
+| PR #3 三节点 | T01–T14、S01–S10、N01–N06、F01–F16 全部 PASS。包含两个 Peer PID 保留的 Hub daemon 重启、新 SSH 会话确认的实际 VM 重启、重启后双向 UDP/TCP 与活动卸载后的 SAD/SPD 清空、主机基线一致。 [运行日志](https://github.com/yikkrrtykj/event-ipsec-hub/actions/runs/42333944849) · [JSONL 13559233621](https://github.com/yikkrrtykj/event-ipsec-hub/actions/runs/42333944849/artifacts/13559233621) |
 
 ## 数据平面与生命周期观察
 
@@ -33,7 +33,7 @@ DF UDP payload `1200/1300/1380` 字节收到校验回执，`1420/1460/1472` 字�
 1. 最初维护保护阻断终止回执，VICI 超时而内核已撤除首条 SA。修复只保留原授权 Peer 的握手入口，每次终止后核验精确剩余 SA，再关闭入口变更配置。后续 S07、S08、S10 已实际通过。
 2. 删除 XFRM 后 Hub 本机 AF_PACKET 可看到入站解密 skb。新增独立 WAN 交换机抓包，并用文档公网地址间的随机控制报文验证采集有效。F09 线侧没有私网地址或业务 nonce，pcap SHA-256 为 `18c897da54c26e3a463211f870afd5dac1e44fea92900afd5b50f72b9c73e4a0`，Hub 本机观察仍保留。 [strongSwan 抓包语义](https://docs.strongswan.org/docs/5.9/support/faq.html#_capturing_outbound_plaintext_packets_with_tcpdumpwireshark)
 3. 旧 VM 回归曾在恢复 oneshot 尚未完成时检查规则。journal 当时只有 restore 的 Starting，观察到保护规则。多 unit 的 `systemctl is-active` 只需其中一个 active 就成功。实验现逐个等待全部 unit active，再执行原有核验，没有人工启动修复动作。
-4. Hub restart 曾连带停止实验 topology 服务的 Peer B，Hub 最终呈 A 已建立、B CONNECTING。实验 topology 服务移除对 Hub unit 的 Requires，新增 Hub 重启时对端 PID 持续存活断言。修复后的整轮结果见 Draft PR 最新运行。
+4. Hub restart 曾连带停止实验 topology 服务的 Peer B，Hub 最终呈 A 已建立、B CONNECTING。实验 topology 服务移除对 Hub unit 的 Requires，新增 Hub 重启时对端 PID 持续存活断言。840ead5 的 T13_DAEMON、T13、S09 已通过。历史失败的原始记录继续保留。 [历史失败 JSONL](https://github.com/yikkrrtykj/event-ipsec-hub/actions/runs/42332206806/artifacts/13558353867)
 
 ## 继续 SKIP 的范围
 

@@ -957,6 +957,13 @@ def verify_bad_negotiation(model):
             "PROPOSAL_REJECTED",
         ),
         (
+            "F02",
+            "wrong IKE DH group",
+            replace(reverse, ike_proposal="aes256-sha256-prfsha256-modp3072"),
+            key,
+            "PROPOSAL_REJECTED",
+        ),
+        (
             "F03",
             "disjoint selectors",
             replace(reverse, local_ts=("10.192.0.0/24",)),
@@ -987,6 +994,35 @@ def verify_bad_negotiation(model):
             with session(peer_pid(node), path) as peer:
                 remove_fixture_sa(peer, link.name)
                 set_link(peer, reverse, key)
+    with session(peer_pid(node), path) as peer:
+        set_link(peer, replace(reverse, esp_proposal="aes256-sha256-modp3072"), key)
+    try:
+        # IKE_AUTH inherits the IKE DH exchange. PFS mismatch is exercised by
+        # the subsequent CREATE_CHILD_SA rekey, which must retain the old CHILD.
+        cli("initiate", "--site", link.site_id, "--confirm")
+        old = inventory(HOST, model, pid).get(link.name)
+        refusal = cli("rekey", "--site", link.site_id, "--child", "--confirm", expect=1)
+        after = inventory(HOST, model, pid).get(link.name)
+        assert refusal["reason_code"] == "SA_TRANSITION" and after == old
+        emit(
+            "F02",
+            "Disjoint PFS groups do not create a downgraded CHILD generation.",
+            {
+                "decision": refusal["decision"],
+                "reason_code": refusal["reason_code"],
+                "hub_pfs": link.esp_proposal,
+                "peer_pfs": "aes256-sha256-modp3072",
+                "old_child_retained": True,
+                "flows": pair("udp", 180),
+            },
+            action="real CHILD rekey with disjoint configured PFS groups",
+        )
+    finally:
+        with session(pid) as hub:
+            remove_fixture_sa(hub, link.name)
+        with session(peer_pid(node), path) as peer:
+            remove_fixture_sa(peer, link.name)
+            set_link(peer, reverse, key)
     cli("initiate", "--site", link.site_id, "--confirm")
 
 
@@ -1268,6 +1304,126 @@ def verify_isolation_failures(model):
     emit("F15", "Invalid backup and unexpected PSK drift block changes.", "STOP")
 
 
+def verify_plaintext_injection(model):
+    site, target = TOPO["sites"]
+    destination = addr(target["lans"][0], 11)
+    host_route = f"{destination}/32"
+    captures = begin_captures(model)
+    receipt = None
+    ip(
+        "route",
+        "add",
+        host_route,
+        "via",
+        TOPO["hub"].split("/")[0],
+        "dev",
+        "wan",
+        ns=site["router"],
+    )
+    try:
+        receipt = exchange(
+            0,
+            "udp",
+            site["lans"][0],
+            target["lans"][0],
+            sport=PORT + 184,
+            count=1,
+            expected_failure=True,
+        )
+    finally:
+        ip("route", "del", host_route, ns=site["router"])
+        observed, proof = finish_captures(captures, markers=[receipt["nonce"]] if receipt else ())
+    needle = f"{receipt['source']}.{PORT + 184} > {destination}.{PORT}:"
+    assert any(needle in line for line in observed["wan-switch/bridge"])
+    assert proof["wan-switch/bridge"]["plaintext_payload_markers"] == 1
+    for point in (f"hub/{model.links[1].name}", f"{target['host']}/eth0"):
+        assert all(needle not in line for line in observed[point]), point
+    emit(
+        "F07",
+        "An actual plaintext private packet on the outer WAN is refused by the Hub ACL.",
+        {
+            "injected_flow": receipt,
+            "wire": proof["wan-switch/bridge"],
+            "forwarded_attack_packets": 0,
+            "recovered_flows": pair("udp", 186),
+        },
+        action="divert one peer host route onto the closed WAN, then restore it",
+    )
+
+
+def verify_child_outage(model):
+    link, other = model.links
+    pid = HOST.assert_daemon({item.name for item in model.links})
+    before = inventory(HOST, model, pid)
+    old = before.get(link.name)
+    with session(pid) as hub:
+        hub.request(
+            "terminate", {"child-id": str(old.child.unique_id), "force": "yes", "timeout": "2500"}
+        )
+    remaining = stable(model, lambda row: row.get(link.name) and not row.get(link.name).child)
+    assert remaining.get(link.name).unique_id == old.unique_id
+    assert remaining.get(other.name) == before.get(other.name)
+    diagnostics = cli("status")
+    assert diagnostics["status"] == "SKIP" and diagnostics["data_path"]["status"] == "SKIP"
+    guard = capture_fail_closed(model, 188)
+    cli("initiate", "--site", link.site_id, "--confirm")
+    restored = inventory(HOST, model, pid).get(link.name)
+    assert restored.unique_id == old.unique_id and restored.child.unique_id != old.child.unique_id
+    emit(
+        "F09 S06",
+        "Only one CHILD is removed, IKE and the other site survive, then traffic is restored.",
+        {
+            "ike_retained": old.unique_id,
+            "guard": guard,
+            "flows": pair("udp", 190) + pair("tcp", 192),
+        },
+        action="target one verified CHILD ID in the disposable Hub",
+    )
+
+
+def verify_blocked_ike(model):
+    link, other = model.links
+    site = TOPO["sites"][0]
+    pid = HOST.assert_daemon({item.name for item in model.links})
+    original = inventory(HOST, model, pid)
+    path = PEER_ROOT / site["router"] / "charon.vici"
+    with session(pid) as hub, session(peer_pid(site), path) as peer:
+        remove_fixture_sa(hub, link.name)
+        remove_fixture_sa(peer, link.name)
+    stable(model, lambda row: not row.get(link.name))
+    command(
+        *in_ns(site["router"], "nft", "-f", "-"),
+        input=(
+            "table ip pr3_ike_block { chain input { type filter hook input priority -10; "
+            f"ip saddr {link.source} udp dport {{ 500, 4500 }} drop; "
+            "} }\n"
+        ),
+    )
+    try:
+        refusal = cli("initiate", "--site", link.site_id, "--confirm", expect=1)
+        assert refusal.get("reason_code") == "PEER_UNREACHABLE", refusal
+        guard = capture_fail_closed(model, 194)
+    finally:
+        command(*in_ns(site["router"], "nft", "delete", "table", "ip", "pr3_ike_block"))
+        with session(pid) as hub, session(peer_pid(site), path) as peer:
+            remove_fixture_sa(hub, link.name)
+            remove_fixture_sa(peer, link.name)
+    assert inventory(HOST, model, pid).get(other.name) == original.get(other.name)
+    cli("initiate", "--site", link.site_id, "--confirm")
+    emit(
+        "S05 S06",
+        "UDP500/4500 block has bounded failed negotiation, guarded data and targeted recovery.",
+        {
+            "decision": refusal["decision"],
+            "reason_code": refusal["reason_code"],
+            "guard": guard,
+            "other_site_preserved": True,
+            "flows": pair("udp", 196) + pair("tcp", 198),
+        },
+        action="block both IKE ports only in one isolated peer, then remove the exact fixture",
+    )
+
+
 def verify_dpd(model):
     link, other = model.links
     site = TOPO["sites"][0]
@@ -1319,7 +1475,7 @@ def verify_daemon_restart(model):
 def verify_peer_restart(model):
     node, link = TOPO["sites"][0], model.links[0]
     old = peer_pid(node)
-    os.kill(old, signal.SIGTERM)
+    os.kill(old, signal.SIGKILL)
     deadline = time.monotonic() + 12
     while Path(f"/proc/{old}").exists() and time.monotonic() < deadline:
         time.sleep(0.25)
@@ -1333,7 +1489,7 @@ def verify_peer_restart(model):
     report = cli("initiate", "--site", link.site_id, "--confirm")
     emit(
         "S06",
-        "Restarted peer daemon in its own stack and restored both LAN directions.",
+        "Abruptly killed the peer daemon, restarted its stack and restored both LAN directions.",
         {
             "peer": node["router"],
             "old_pid": old,
@@ -1419,6 +1575,9 @@ def before_reboot():
     verify_maintenance(model)
     verify_mtu(model)
     verify_isolation_failures(model)
+    verify_plaintext_injection(model)
+    verify_child_outage(model)
+    verify_blocked_ike(model)
     verify_dpd(model)
     verify_peer_restart(model)
     verify_timed_rekey()
