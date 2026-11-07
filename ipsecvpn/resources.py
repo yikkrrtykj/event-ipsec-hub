@@ -172,6 +172,7 @@ class Resources:
 
     def replace(self, target, keys, *, loader=None, hold=False):
         self.guard()
+        self.host.assert_exclusive_ike({name for name, _ in self.links})
         _, _, links, routes, names, _, _ = self.network()
         desired_links = link_specs((target,))
         desired_routes = route_specs((target,))

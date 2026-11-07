@@ -31,10 +31,11 @@ from topology import (
     ip,
     peerctl,
     require_lab,
+    start_peer,
     write_profile,
 )
 
-from ipsecvpn.host import UNIT, Host
+from ipsecvpn.host import LAB_MARKER, UNIT, Host
 from ipsecvpn.profile import load_profile
 from ipsecvpn.renderer import DeploymentManifest, build_manifest, connection_settings
 from ipsecvpn.resources import Resources
@@ -1222,9 +1223,90 @@ def verify_daemon_restart(model):
     )
 
 
+def verify_peer_restart(model):
+    node, link = TOPO["sites"][0], model.links[0]
+    old = peer_pid(node)
+    os.kill(old, signal.SIGTERM)
+    deadline = time.monotonic() + 12
+    while Path(f"/proc/{old}").exists() and time.monotonic() < deadline:
+        time.sleep(0.25)
+    assert not Path(f"/proc/{old}").exists()
+    socket_path = PEER_ROOT / node["router"] / "charon.vici"
+    if socket_path.is_socket():
+        socket_path.unlink()
+    start_peer(node, link, read_keys(load_profile(PROFILE)), model.event_id)
+    assert peer_pid(node) != old
+    stable(model, lambda snapshot: not snapshot.get(link.name), seconds=190)
+    report = cli("initiate", "--site", link.site_id, "--confirm")
+    emit(
+        "S06",
+        "Restarted peer daemon in its own stack and restored both LAN directions.",
+        {
+            "peer": node["router"],
+            "old_pid": old,
+            "new_pid": peer_pid(node),
+            "journal": report["journal"],
+            "flows": pair("udp", 168),
+        },
+    )
+
+
+def verify_timed_rekey():
+    profile = load_profile(PROFILE)
+    profile["security"].update(child_lifetime_seconds=24, ike_lifetime_seconds=38)
+    timed_path = PROFILE.with_name("pr3-timed.yaml")
+    write_profile(profile, timed_path)
+    saved = cli("backup", "--confirm")["backup_id"]
+    cli("apply", "-c", str(timed_path), "--maintenance", "--confirm")
+    model = build_manifest(profile)
+    link = model.links[0]
+    pid = HOST.assert_daemon({item.name for item in model.links})
+    old = inventory(HOST, model, pid).get(link.name)
+    start = time.monotonic()
+    before_flows = pair("udp", 172)
+
+    def both_advanced(observed):
+        row = observed.get(link.name)
+        return (
+            row
+            and row.child
+            and row.unique_id != old.unique_id
+            and (row.child.unique_id != old.child.unique_id)
+        )
+
+    after = stable(model, both_advanced, seconds=55).get(link.name)
+    emit(
+        "S01 S02",
+        "Configured timers independently replace IKE and CHILD without operator rekey.",
+        {
+            "old_ike_child": [old.unique_id, old.child.unique_id],
+            "new_ike_child": [after.unique_id, after.child.unique_id],
+            "elapsed_seconds": round(time.monotonic() - start, 3),
+            "before_flows": before_flows,
+            "after_flows": pair("udp", 174),
+        },
+        action="observe real VICI and XFRM while daemon timers elapse",
+    )
+    cli("rollback", "--to", saved, "--maintenance", "--confirm")
+
+
 def before_reboot():
+    displaced = LAB_MARKER.with_suffix(".fixture")
+    LAB_MARKER.rename(displaced)
+    try:
+        refusal = cli("install", "--confirm", expect=1)
+        assert refusal["decision"] == "STOP" and "authorization marker" in refusal["detail"]
+        assert read_record(INSTALLED) is None
+    finally:
+        displaced.rename(LAB_MARKER)
     assert cli("install", "--confirm")["status"] == "PASS"
     environment()
+    emit(
+        "C05",
+        "Missing root-only lab authorization prevents install.",
+        refusal["detail"],
+        action="install --confirm in the disposable guest without marker",
+    )
     create_profile()
     install_topology_unit()
     model = manifest()
@@ -1245,6 +1327,8 @@ def before_reboot():
     verify_mtu(model)
     verify_isolation_failures(model)
     verify_dpd(model)
+    verify_peer_restart(model)
+    verify_timed_rekey()
     verify_daemon_restart(model)
     assert baseline_for(model) == json.loads(BASELINE.read_text(encoding="utf-8"))
 

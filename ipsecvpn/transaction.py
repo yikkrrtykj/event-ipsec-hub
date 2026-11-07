@@ -404,6 +404,7 @@ class Deployment:
             keys = read_keys(profile)
             requested["keys"] = key_digests(keys)
             if active and active["profile"] == profile and active["keys"] == requested["keys"]:
+                result.pop("maintenance", None)
                 return {**result, "detail": "NOOP: the active profile and live resources match."}
         else:
             keys = keys_for(requested)
