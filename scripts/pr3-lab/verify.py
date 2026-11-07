@@ -1427,14 +1427,26 @@ def verify_blocked_ike(model):
         remove_fixture_sa(hub, link.name)
         remove_fixture_sa(peer, link.name)
     stable(model, lambda row: not row.get(link.name))
-    command(
+    blocked = command(
         *in_ns(site["router"], "nft", "-f", "-"),
         input=(
-            "table ip pr3_ike_block { chain input { type filter hook input priority -10; "
-            f"ip saddr {link.source} udp dport {{ 500, 4500 }} drop; "
-            "} }\n"
+            "table ip pr3_ike_block {\n"
+            "    chain input {\n"
+            "        type filter hook input priority -10; policy accept;\n"
+            f"        ip saddr {link.source} udp dport {{ 500, 4500 }} drop\n"
+            "    }\n"
+            "}\n"
         ),
+        allowed=(0, 1),
     )
+    if blocked.returncode:
+        emit(
+            "IKE_BLOCK_FIXTURE",
+            "Load the exact isolated peer port-block rule.",
+            {"nft_error": blocked.stderr[:1600]},
+            status="FAIL",
+        )
+        raise RuntimeError("The isolated peer IKE-port fixture could not be installed.")
     try:
         refusal = cli("initiate", "--site", link.site_id, "--confirm", expect=1)
         assert refusal.get("reason_code") == "PEER_UNREACHABLE", refusal
