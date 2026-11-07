@@ -13,7 +13,7 @@ from pathlib import Path
 
 import yaml
 
-from ipsecvpn.host import UNIT, VICI_PATH, Host, fingerprint
+from ipsecvpn.host import UNIT, VICI_PATH, Host, fingerprint, separate_nft
 from ipsecvpn.installer import GUARD, RESTORE, STATE
 from ipsecvpn.profile import load_profile
 from ipsecvpn.renderer import build_manifest
@@ -672,6 +672,9 @@ def before_reboot():
         {**baseline, "foreign_service_units": sorted(services), "foreign_service_pids_equal": True},
     )
     check_secret_evidence(profile)
+    (HERE / "nft-before-reboot.json").write_text(
+        json.dumps(separate_nft(HOST.nft())[0]), encoding="utf-8"
+    )
 
 
 def check_secret_evidence(profile):
@@ -711,7 +714,33 @@ def after_reboot():
     baseline = saved["network"]
     command("systemctl", "is-active", GUARD, RESTORE, UNIT)
     manifest = current_manifest()
-    resources(manifest).verify(manifest, baseline, read_record(ACTIVE)["nft_sha256"])
+    try:
+        resources(manifest).verify(manifest, baseline, read_record(ACTIVE)["nft_sha256"])
+    except Stop:
+        emit(
+            "REBOOT_DIAGNOSTIC",
+            "FAIL",
+            "Project firewall after reboot matches the recorded configuration.",
+            {
+                "recorded_sha256": read_record(ACTIVE)["nft_sha256"],
+                "before_objects": json.loads((HERE / "nft-before-reboot.json").read_text()),
+                "after_objects": separate_nft(HOST.nft())[0],
+                "boot_units": command(
+                    "journalctl",
+                    "--no-pager",
+                    "-b",
+                    "-u",
+                    GUARD,
+                    "-u",
+                    RESTORE,
+                    "-n",
+                    "30",
+                    "-o",
+                    "cat",
+                ).stdout,
+            },
+        )
+        raise
     services = foreign_services()
     for unit, row in services.items():
         assert all(

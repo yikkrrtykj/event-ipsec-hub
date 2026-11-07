@@ -1,10 +1,11 @@
+import json
 from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
-from ipsecvpn import live
+from ipsecvpn import cli, diagnostics, live
 from ipsecvpn.profile import load_profile
 from ipsecvpn.renderer import build_manifest, nft_config
 from ipsecvpn.sa import (
@@ -144,6 +145,34 @@ def test_matching_name_cannot_authorize_narrowed_child(observed):
     child["remote-ts"] = [b"10.99.99.0/24"]
     with pytest.raises(SAError, match="CHILD selector"):
         parse_vici([event], manifest)
+
+
+@pytest.mark.parametrize("command", ("status", "doctor"))
+def test_read_only_diagnostics_keep_business_unverified(observed, monkeypatch, capsys, command):
+    manifest, _, event, _, _, _ = observed
+    snapshot = parse_vici([event], manifest)
+    reads = []
+
+    class ReadOnlyHost:
+        def probe(self):
+            reads.append("host probe")
+
+    def read(path):
+        reads.append(path.name)
+        return None if path == diagnostics.JOURNAL else {"fixture": True}
+
+    monkeypatch.setattr(diagnostics.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(diagnostics.os, "geteuid", lambda: 0, raising=False)
+    monkeypatch.setattr(diagnostics, "Host", ReadOnlyHost)
+    monkeypatch.setattr(diagnostics, "read_record", read)
+    monkeypatch.setattr(diagnostics, "installed_record", lambda: {"fixture": True})
+    monkeypatch.setattr(diagnostics, "owned_resources", lambda *_: (manifest, snapshot, 17))
+    assert cli.main([command, "--json"]) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["status"] == "SKIP" and report["data_path"]["status"] == "SKIP"
+    assert [site["child_state"] for site in report["sites"]] == ["INSTALLED", "DOWN"]
+    assert len(reads) == 4 and "host probe" in reads
+    assert all(site["data_path"]["status"] == "SKIP" for site in report["sites"])
 
 
 def test_unconfirmed_rekey_overlap_is_not_a_write_snapshot(observed):
