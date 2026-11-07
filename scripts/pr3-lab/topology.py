@@ -11,7 +11,7 @@ from pathlib import Path
 
 import yaml
 
-from ipsecvpn.host import UNIT, Host
+from ipsecvpn.host import Host
 from ipsecvpn.installer import install_files
 from ipsecvpn.profile import load_profile, validate_profile
 from ipsecvpn.renderer import DeploymentManifest, build_manifest, swanctl_config
@@ -235,8 +235,7 @@ def install_topology_unit():
     unit.write_text(
         f"""[Unit]
 Description=PR3 disposable isolated peer network
-After=local-fs.target systemd-sysctl.service {UNIT}
-Requires={UNIT}
+After=local-fs.target systemd-sysctl.service
 Before=ipsecvpn-restore.service
 
 [Service]

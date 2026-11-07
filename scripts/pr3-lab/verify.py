@@ -1301,13 +1301,17 @@ def verify_dpd(model):
 
 def verify_daemon_restart(model):
     old_pid = HOST.service(UNIT, "MainPID")
+    peers = {site["router"]: peer_pid(site) for site in TOPO["sites"]}
     command("systemctl", "restart", UNIT, timeout=90)
-    stable(model, lambda snap: len(snap.ikes) == 2 and all(ike.child for ike in snap.ikes))
+    assert all(Path(f"/proc/{pid}").exists() for pid in peers.values()), peers
+    stable(
+        model, lambda snap: len(snap.ikes) == 2 and all(ike.child for ike in snap.ikes), seconds=90
+    )
     assert HOST.service(UNIT, "MainPID") != old_pid
     emit(
         "T13_DAEMON",
         "Restarting the owned daemon restores verified SAs and both business directions.",
-        {"flows": pair("udp", 114)},
+        {"flows": pair("udp", 114), "independent_peer_pids_preserved": peers},
         action="systemctl restart strongswan",
     )
 
