@@ -7,6 +7,7 @@ import re
 import secrets
 import select
 import signal
+import socket
 import subprocess
 import sys
 import time
@@ -372,7 +373,10 @@ def exchange(
 
 
 def begin_captures(model, *, wan_only=False):
-    points = [("hub", TOPO["wan"], None, "ip")]
+    points = [
+        ("hub", TOPO["wan"], None, "ip"),
+        ("wan-switch", "bridge", "wan-switch", "ip"),
+    ]
     for link, site in zip(model.links, TOPO["sites"], strict=True) if not wan_only else ():
         points.extend(
             (
@@ -432,6 +436,11 @@ def finish_captures(captures, *, markers=()):
             "pcap_sha256": hashlib.sha256(data).hexdigest(),
             "captured_bytes": len(data),
             "plaintext_payload_markers": sum(marker.encode() in data for marker in markers),
+            "marker_hashes_present": [
+                hashlib.sha256(marker.encode()).hexdigest()
+                for marker in markers
+                if marker.encode() in data
+            ],
         }
         lines = command("tcpdump", "-nn", "-tt", "-r", str(path)).stdout.splitlines()
         path.unlink()
@@ -492,6 +501,9 @@ def verify_traffic(model, first):
     wan = observed[f"hub/{TOPO['wan']}"]
     assert captures_proof[f"hub/{TOPO['wan']}"]["plaintext_payload_markers"] == 0
     assert all(not any(row["source"] in line for row in all_rows) for line in wan)
+    wire = observed["wan-switch/bridge"]
+    assert captures_proof["wan-switch/bridge"]["plaintext_payload_markers"] == 0
+    assert all(not any(row["source"] in line for row in all_rows) for line in wire)
     for link in model.links:
         assert any(link.peer in line and "ESP" in line for line in wan), wan[:5]
     for site in TOPO["sites"]:
@@ -715,10 +727,18 @@ def verify_rekeys(model):
 def capture_fail_closed(model, start):
     captures = begin_captures(model, wan_only=True)
     rows = []
+    control = secrets.token_hex(16)
     try:
         rows = pair("udp", start, expected_failure=True, count=1)
+        # A public-endpoint test datagram verifies the independent wire tap.
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as probe:
+            probe.bind((TOPO["hub"].split("/")[0], 0))
+            probe.sendto(control.encode(), (TOPO["sites"][-1]["endpoint"].split("/")[0], PORT))
+        time.sleep(0.2)
     finally:
-        observed, captures_proof = finish_captures(captures, markers=[row["nonce"] for row in rows])
+        observed, captures_proof = finish_captures(
+            captures, markers=[row["nonce"] for row in rows] + [control]
+        )
     point = f"hub/{TOPO['wan']}"
     wan = observed[point]
     hits = [line for line in wan if any(row["source"] in line for row in rows)]
@@ -726,10 +746,30 @@ def capture_fail_closed(model, start):
         "unreachable_flows": rows,
         "capture_point": point,
         "wan_packets": len(wan),
-        "private_address_headers": hits[:12],
+        "hub_local_private_headers": hits[:12],
         **captures_proof[point],
+        "external_wire": {
+            "capture_point": "wan-switch/bridge",
+            "packets": len(observed["wan-switch/bridge"]),
+            "private_address_headers": [
+                line
+                for line in observed["wan-switch/bridge"]
+                if any(row["source"] in line for row in rows)
+            ][:12],
+            **captures_proof["wan-switch/bridge"],
+        },
     }
-    if hits or proof["plaintext_payload_markers"]:
+    wire = proof["external_wire"]
+    control_hash = hashlib.sha256(control.encode()).hexdigest()
+    assert control_hash in wire["marker_hashes_present"], "External capture missed its control."
+    private_hashes = {hashlib.sha256(row["nonce"].encode()).hexdigest() for row in rows}
+    wire["private_payload_markers"] = len(
+        private_hashes.intersection(wire["marker_hashes_present"])
+    )
+    wire["capture_control_verified"] = True
+    # The Hub's AF_PACKET view can see a decapsulated skb before the missing-XFRM
+    # inbound policy drop. The separate switch sees actual wire frames.
+    if wire["private_address_headers"] or wire["private_payload_markers"]:
         emit(
             "WAN_GUARD",
             "WAN capture must contain no private traffic or test payload.",
@@ -737,7 +777,7 @@ def capture_fail_closed(model, start):
             status="FAIL",
         )
         raise AssertionError("WAN capture includes private addresses or a test payload marker.")
-    return {**proof, "wan_plaintext": 0}
+    return {**proof, "wan_private_plaintext": 0}
 
 
 def verify_mtu(model):
@@ -1141,6 +1181,24 @@ def verify_isolation_failures(model):
             expected_failure=True,
         ),
     ]
+    spoofed_net = TOPO["sites"][1]["lans"][1]
+    spoofed = f"{addr(spoofed_net, 11)}/32"
+    sender = TOPO["sites"][0]["host"]
+    ip("addr", "add", spoofed, "dev", "eth0", ns=sender)
+    try:
+        failures.append(
+            exchange(
+                0,
+                "udp",
+                spoofed_net,
+                TOPO["sites"][1]["lans"][0],
+                sport=PORT + 176,
+                count=1,
+                expected_failure=True,
+            )
+        )
+    finally:
+        ip("addr", "del", spoofed, "dev", "eth0", ns=sender)
     emit("F07", "Declared but unauthorized LAN is refused in both directions.", failures)
     assert all(row["timeout"] or row["errno"] is not None for row in failures)
     emit(
@@ -1367,6 +1425,14 @@ def before_reboot():
 def after_reboot():
     environment()
     model = manifest()
+    units = ("ipsecvpn-guard.service", "ipsecvpn-restore.service", UNIT)
+    deadline = time.monotonic() + 90
+    while True:
+        states = {unit: HOST.service(unit, "ActiveState") for unit in units}
+        if all(state == "active" for state in states.values()):
+            break
+        assert "failed" not in states.values() and time.monotonic() < deadline, states
+        time.sleep(1)
     command("systemctl", "is-active", "ipsecvpn-guard.service", "ipsecvpn-restore.service")
     result = cli("status")
     assert result["status"] == "PASS", result

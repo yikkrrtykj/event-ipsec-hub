@@ -7,6 +7,7 @@ import secrets
 import signal
 import subprocess
 import sys
+import time
 from datetime import UTC, datetime
 from ipaddress import collapse_addresses, ip_network
 from pathlib import Path
@@ -712,6 +713,15 @@ def after_reboot():
     )
     saved = json.loads(BASELINE.read_text(encoding="utf-8"))
     baseline = saved["network"]
+    # is-active with several units succeeds when any one is active. Wait for every
+    # automatic oneshot to finish without manually starting or repairing a unit.
+    deadline = time.monotonic() + 90
+    while True:
+        states = {unit: HOST.service(unit, "ActiveState") for unit in (GUARD, RESTORE, UNIT)}
+        if all(state == "active" for state in states.values()):
+            break
+        assert "failed" not in states.values() and time.monotonic() < deadline, states
+        time.sleep(1)
     command("systemctl", "is-active", GUARD, RESTORE, UNIT)
     manifest = current_manifest()
     try:
