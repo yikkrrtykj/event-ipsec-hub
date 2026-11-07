@@ -36,6 +36,8 @@ DF UDP payload `1200/1300/1380` 字节收到校验回执，`1420/1460/1472` 字�
 4. Hub restart 曾连带停止实验 topology 服务的 Peer B，Hub 最终呈 A 已建立、B CONNECTING。实验 topology 服务移除对 Hub unit 的 Requires，新增 Hub 重启时对端 PID 持续存活断言。840ead5 的 T13_DAEMON、T13、S09 已通过。历史失败的原始记录继续保留。 [历史失败 JSONL](https://github.com/yikkrrtykj/event-ipsec-hub/actions/runs/42332206806/artifacts/13558353867)
 5. 补充双端采样发现 Peer 被 SIGKILL 后遗留内核 SA，新进程可以建立新连接但库存仍不完整。实验恢复先保存崩溃前的完整 VICI/内核归属证明，核对遗留库存完全一致后逐条清理该 Peer 的已知对象，模拟断电时的 IPsec 内核状态丢失。混入未知策略的负面用例要求 STOP 且库存不变，之后还需重建 daemon、完整双端核验及真实双向流量。此恢复操作仅属于可销毁 Peer 夹具。
 
+iproute2 6.1 的单条 SA 删除按端点、ESP 协议和 SPI 寻址，`if_id` 在写入前的完整库存比较中核验。 [iproute2 6.1 官方实现](https://github.com/iproute2/iproute2/blob/v6.1.0/ip/xfrm_state.c)
+
 ## 继续 SKIP 的范围
 
 现场厂商互操作、实际赛事与跨境公网 SLA、外部备用网关切换、监控告警、其他发行版、IPv6 和 N 站点为 SKIP。没有接触生产服务器或现场设备。PR #3 保持 Draft，等待人工代码审查。

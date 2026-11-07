@@ -1634,6 +1634,8 @@ def reset_saved_peer_kernel(site, states, policies):
             ns=node,
         )
     for state in states:
+        # iproute2 6.1 deletes a state by endpoints/protocol/SPI. Its if_id was
+        # already checked in the complete saved/current inventory comparison.
         ip(
             "xfrm",
             "state",
@@ -1646,8 +1648,6 @@ def reset_saved_peer_kernel(site, states, policies):
             "esp",
             "spi",
             hex(state.spi),
-            "if_id",
-            str(state.if_id),
             ns=node,
         )
     assert not ip("xfrm", "state", "list", "nokeys", ns=node).stdout.strip()
