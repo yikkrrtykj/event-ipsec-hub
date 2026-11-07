@@ -71,6 +71,10 @@ def emit(cases, expected, observed, *, status="PASS", action="inspect real nodes
             "proof_refs": [SUMMARY.name],
         }
         line = json.dumps(receipt, sort_keys=True)
+        if PROFILE.exists():
+            encoded = line.encode()
+            for key in read_keys(load_profile(PROFILE)).values():
+                assert key not in encoded and key.hex().encode() not in encoded
         with SUMMARY.open("a", encoding="utf-8") as stream:
             stream.write(line + "\n")
         print(line, flush=True)
@@ -219,7 +223,7 @@ def prove_topology():
     )
 
 
-def verify_sas(model):
+def verify_sas(model, *, phase="initial negotiation"):
     pid = HOST.assert_daemon({link.name for link in model.links})
     live = inventory(HOST, model, pid)
     assert len(live.ikes) == 2 and all(ike.child for ike in live.ikes)
@@ -235,7 +239,7 @@ def verify_sas(model):
         )
         peer = DeploymentManifest(model.event_id, (reverse,))
         with session(peer_pid(site), PEER_ROOT / site["router"] / "charon.vici") as ctl:
-            observed = parse_vici(ctl.list_sas(), peer)
+            observed = parse_vici(list(ctl.list_sas()), peer)
         states = kernel_states(
             ip("-o", "xfrm", "state", "list", "nokeys", ns=site["router"]).stdout
         )
@@ -259,11 +263,16 @@ def verify_sas(model):
                 "if_id": link.if_id,
                 "hub_reqid": hub_child.inbound.reqid,
                 "peer_reqid": peer_child.inbound.reqid,
+                "hub_ike_id": live.get(link.name).unique_id,
+                "peer_ike_id": observed.get(link.name).unique_id,
+                "hub_child_id": hub_child.unique_id,
+                "peer_child_id": peer_child.unique_id,
                 "local_ts": link.local_ts,
                 "remote_ts": link.remote_ts,
                 "peer_policy_count": len(policies),
                 "opposite_spis_match": True,
             },
+            action=f"verify both kernel and VICI ends after {phase}",
         )
     emit(
         "T04",
@@ -635,6 +644,7 @@ def verify_rekeys(model):
         old = before.unique_id if kind == "ike" else before.child.unique_id
         new = after.unique_id if kind == "ike" else after.child.unique_id
         assert old != new
+        verify_sas(model, phase=f"local {kind} rekey")
         emit(
             case,
             "Targeted rekey correlates VICI old/new and retains real bidirectional traffic.",
@@ -661,6 +671,7 @@ def verify_rekeys(model):
             )
 
         current = stable(model, changed).get(link.name)
+        verify_sas(model, phase=f"peer {kind} rekey")
         changes[kind] = [old, current.child.unique_id if kind == "child" else current.unique_id]
     emit(
         "S03",
@@ -707,6 +718,7 @@ def verify_rekeys(model):
             )
 
         stable(model, advanced, seconds=18)
+        verify_sas(model, phase=f"simultaneous {kind} rekey")
         assert abs(sent[0] - sent[1]) < 1
         emit(
             "S04",
@@ -838,7 +850,31 @@ def verify_mtu(model):
     emit(
         "N02",
         "Real DF size sweep with measured link MTUs.",
-        {"mtus": devices, "sweep": bounds, "outer": "UDP encapsulated ESP"},
+        {
+            "mtus": devices,
+            "sweep": bounds,
+            "outer": "UDP encapsulated ESP",
+            "path_routes": {
+                f"{node or 'hub'}-to-site-{side}": json.loads(
+                    ip(
+                        "-j",
+                        "-4",
+                        "route",
+                        "get",
+                        addr(TOPO["sites"][side]["lans"][0], 11),
+                        ns=node,
+                    ).stdout
+                )
+                for node, side in (
+                    (None, 0),
+                    (None, 1),
+                    (TOPO["sites"][0]["router"], 1),
+                    (TOPO["sites"][1]["router"], 0),
+                    (TOPO["sites"][0]["host"], 1),
+                    (TOPO["sites"][1]["host"], 0),
+                )
+            },
+        },
     )
     has_feedback = any(icmp.values()) or any(row.get("errno") == 90 for row in bounds)
     emit(
@@ -1524,6 +1560,7 @@ def verify_timed_rekey():
         )
 
     after = stable(model, both_advanced, seconds=55).get(link.name)
+    verify_sas(model, phase="automatic IKE and CHILD timers")
     emit(
         "S01 S02",
         "Configured timers independently replace IKE and CHILD without operator rekey.",
