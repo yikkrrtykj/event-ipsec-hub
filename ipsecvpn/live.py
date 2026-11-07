@@ -127,16 +127,30 @@ def drain_links(host, manifest, pid, live):
     current = inventory(host, manifest, pid)
     if current != live:
         raise SAError("SA_TRANSITION", "The active SAs changed after the maintenance snapshot.")
-    with session(pid) as client:
-        for ike in current.ikes:
-            reply = client.request(
-                "terminate",
-                {"ike-id": str(ike.unique_id), "force": "yes", "timeout": "2000", "loglevel": "0"},
-            )
-            if reply.get("matches") != b"1":
-                raise SAError("SA_TRANSITION", "The verified termination target changed.")
-    if inventory(host, manifest, pid).ikes:
-        raise SAError("SA_TRANSITION", "Verified SAs did not drain before configuration changes.")
+    remaining = list(current.ikes)
+    for ike in current.ikes:
+        try:
+            with session(pid) as client:
+                reply = client.request(
+                    "terminate",
+                    {
+                        "ike-id": str(ike.unique_id),
+                        "force": "yes",
+                        "timeout": "2500",
+                        "loglevel": "0",
+                    },
+                )
+                if reply.get("matches") != b"1":
+                    raise SAError("SA_TRANSITION", "The verified termination target changed.")
+        except SAError as exc:
+            if exc.reason != "VICI_REJECTED":
+                raise
+            # 5.9.13 can force local deletion on timeout and still return failure.
+            # Verify the exact resulting inventory before issuing the next command.
+        remaining.remove(ike)
+        observed = inventory(host, manifest, pid, attempts=8, delay=0.55)
+        if observed.ikes != tuple(remaining):
+            raise SAError("SA_TRANSITION", "The precise set of owned SAs did not drain.")
 
 
 def configure_scoped(host, pid, candidates, target, keys):

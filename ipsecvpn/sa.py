@@ -309,7 +309,7 @@ def inventory(host, manifest, pid, *, attempts=4, delay=0.2):
     for attempt in range(attempts):
         try:
             with session(pid) as client:
-                before = parse_vici(client.list_sas(), manifest)
+                before = parse_vici(list(client.list_sas()), manifest)
                 states = kernel_states(
                     host.command(
                         "XFRM state inventory", "ip", "-o", "xfrm", "state", "list", "nokeys"
@@ -320,7 +320,7 @@ def inventory(host, manifest, pid, *, attempts=4, delay=0.2):
                         "XFRM policy inventory", "ip", "-o", "xfrm", "policy", "list", "nosock"
                     )
                 )
-                after = parse_vici(client.list_sas(), manifest)
+                after = parse_vici(list(client.list_sas()), manifest)
             if before != after:
                 raise transition("VICI changed while the kernel inventory was being read.")
             correlate(after, manifest, states, policies)

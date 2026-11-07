@@ -143,8 +143,8 @@ class Resources:
             mutate=True,
         )
 
-    def guard(self):
-        self.nft(None, transition=True)
+    def guard(self, handshake=None):
+        self.nft(handshake, transition=True)
         owned_routes = self.network()[3]
         for spec in sorted(spec for spec in self.routes - owned_routes if spec[1] == "blackhole"):
             self.route("add", spec)

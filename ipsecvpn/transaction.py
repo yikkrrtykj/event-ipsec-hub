@@ -475,7 +475,7 @@ class Deployment:
         }
 
     def replace_live(self, resources, before, target, keys, pid, live):
-        resources.guard()
+        resources.guard(handshake=before)
         self.step("VICI targeted drain", "STARTED")
         drain_links(self.host, before, pid, live)
         self.step("VICI targeted drain", "DONE")
