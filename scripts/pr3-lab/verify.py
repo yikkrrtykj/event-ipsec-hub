@@ -40,7 +40,15 @@ from ipsecvpn.host import LAB_MARKER, UNIT, Host
 from ipsecvpn.profile import load_profile
 from ipsecvpn.renderer import DeploymentManifest, build_manifest, connection_settings
 from ipsecvpn.resources import Resources
-from ipsecvpn.sa import correlate, inventory, kernel_policies, kernel_states, parse_vici, session
+from ipsecvpn.sa import (
+    SAError,
+    correlate,
+    inventory,
+    kernel_policies,
+    kernel_states,
+    parse_vici,
+    session,
+)
 from ipsecvpn.secureio import Stop, read_keys, read_record
 from ipsecvpn.transaction import ACTIVE, INSTALLED, JOURNAL, Deployment
 
@@ -223,11 +231,13 @@ def prove_topology():
     )
 
 
-def verify_sas(model, *, phase="initial negotiation"):
+def sample_both_ends(model):
     pid = HOST.assert_daemon({link.name for link in model.links})
     live = inventory(HOST, model, pid)
-    assert len(live.ikes) == 2 and all(ike.child for ike in live.ikes)
-    for idx, (site, link) in enumerate(zip(TOPO["sites"], model.links, strict=True)):
+    if len(live.ikes) != 2 or not all(ike.child for ike in live.ikes):
+        raise SAError("SA_TRANSITION", "Both complete Hub CHILDs are required for this sample.")
+    proofs = []
+    for site, link in zip(TOPO["sites"], model.links, strict=True):
         reverse = replace(
             link,
             source=link.peer,
@@ -240,20 +250,26 @@ def verify_sas(model, *, phase="initial negotiation"):
         peer = DeploymentManifest(model.event_id, (reverse,))
         with session(peer_pid(site), PEER_ROOT / site["router"] / "charon.vici") as ctl:
             observed = parse_vici(list(ctl.list_sas()), peer)
-        states = kernel_states(
-            ip("-o", "xfrm", "state", "list", "nokeys", ns=site["router"]).stdout
-        )
-        policies = kernel_policies(
-            ip("-o", "xfrm", "policy", "list", "nosock", ns=site["router"]).stdout
-        )
+            states = kernel_states(
+                ip("-o", "xfrm", "state", "list", "nokeys", ns=site["router"]).stdout
+            )
+            policies = kernel_policies(
+                ip("-o", "xfrm", "policy", "list", "nosock", ns=site["router"]).stdout
+            )
+            if observed != parse_vici(list(ctl.list_sas()), peer):
+                raise SAError("SA_TRANSITION", "Peer VICI changed during its kernel sample.")
         correlate(observed, peer, states, policies)
         hub_child = live.get(link.name).child
-        peer_child = observed.get(link.name).child
-        assert hub_child.outbound.spi == peer_child.inbound.spi
-        assert hub_child.inbound.spi == peer_child.outbound.spi
-        emit(
-            f"T0{idx + 2}",
-            "Both ends installed the same negotiated tunnel.",
+        peer_ike = observed.get(link.name)
+        if not peer_ike or not peer_ike.child:
+            raise SAError("SA_TRANSITION", "The peer has no stable CHILD in this sample.")
+        peer_child = peer_ike.child
+        if (hub_child.outbound.spi, hub_child.inbound.spi) != (
+            peer_child.inbound.spi,
+            peer_child.outbound.spi,
+        ):
+            raise SAError("SA_TRANSITION", "The two endpoint generations changed between reads.")
+        proofs.append(
             {
                 "peer_node": site["router"],
                 "hub_interface": link.name,
@@ -264,14 +280,35 @@ def verify_sas(model, *, phase="initial negotiation"):
                 "hub_reqid": hub_child.inbound.reqid,
                 "peer_reqid": peer_child.inbound.reqid,
                 "hub_ike_id": live.get(link.name).unique_id,
-                "peer_ike_id": observed.get(link.name).unique_id,
+                "peer_ike_id": peer_ike.unique_id,
                 "hub_child_id": hub_child.unique_id,
                 "peer_child_id": peer_child.unique_id,
                 "local_ts": link.local_ts,
                 "remote_ts": link.remote_ts,
                 "peer_policy_count": len(policies),
                 "opposite_spis_match": True,
-            },
+            }
+        )
+    if live != inventory(HOST, model, pid):
+        raise SAError("SA_TRANSITION", "Hub VICI changed while the two peers were sampled.")
+    return live, proofs
+
+
+def verify_sas(model, *, phase="initial negotiation"):
+    deadline = time.monotonic() + 20
+    while True:
+        try:
+            live, proofs = sample_both_ends(model)
+            break
+        except SAError as exc:
+            if exc.reason not in {"SA_TRANSITION", "UNOWNED_SA"} or time.monotonic() >= deadline:
+                raise
+            time.sleep(0.35)
+    for index, proof in enumerate(proofs, start=2):
+        emit(
+            f"T0{index}",
+            "Both ends installed the same negotiated tunnel.",
+            proof,
             action=f"verify both kernel and VICI ends after {phase}",
         )
     emit(
@@ -1535,6 +1572,7 @@ def verify_peer_restart(model):
     assert peer_pid(node) != old
     stable(model, lambda snapshot: not snapshot.get(link.name), seconds=190)
     report = cli("initiate", "--site", link.site_id, "--confirm")
+    verify_sas(model, phase="peer daemon crash and restart")
     emit(
         "S06",
         "Abruptly killed the peer daemon, restarted its stack and restored both LAN directions.",
