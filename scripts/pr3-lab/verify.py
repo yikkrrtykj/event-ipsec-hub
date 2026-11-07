@@ -865,9 +865,54 @@ def verify_mtu(model):
             for i, size in enumerate((1200, 1300, 1380, 1420, 1460, 1472))
         ]
         fragments = pair("udp", 72, count=2, size=2048, pmtu="fragment", expected_failure=None)
-        streams = pair("tcp", 74, count=2, size=8192, mss=512) + pair(
-            "tcp", 76, count=2, size=8192, mss=1024
+        qdisc_before = json.loads(
+            command(*in_ns(node, "tc", "-j", "qdisc", "show", "dev", "wan")).stdout
         )
+        assert all(row["kind"] == "noqueue" for row in qdisc_before)
+        command(
+            *in_ns(
+                node,
+                "tc",
+                "qdisc",
+                "add",
+                "dev",
+                "wan",
+                "root",
+                "handle",
+                "300:",
+                "tbf",
+                "rate",
+                "1mbit",
+                "burst",
+                "8kb",
+                "latency",
+                "200ms",
+            )
+        )
+        try:
+            started = time.monotonic()
+            streams = pair("tcp", 74, count=2, size=8192, mss=512) + pair(
+                "tcp", 76, count=2, size=8192, mss=1024
+            )
+            shaping = {
+                "node": node,
+                "interface": "wan",
+                "requested_rate": "1mbit",
+                "elapsed_seconds": round(time.monotonic() - started, 3),
+                "observed_qdisc": json.loads(
+                    command(*in_ns(node, "tc", "-s", "-j", "qdisc", "show", "dev", "wan")).stdout
+                ),
+            }
+            assert len(shaping["observed_qdisc"]) == 1
+            assert shaping["observed_qdisc"][0]["kind"] == "tbf"
+            assert shaping["observed_qdisc"][0]["handle"] == "300:"
+        finally:
+            command(*in_ns(node, "tc", "qdisc", "del", "dev", "wan", "root", "handle", "300:"))
+        qdisc_after = json.loads(
+            command(*in_ns(node, "tc", "-j", "qdisc", "show", "dev", "wan")).stdout
+        )
+        assert qdisc_after == qdisc_before
+        shaping["original_qdisc_restored"] = True
     finally:
         observed, _ = finish_captures(captures)
     devices = {
@@ -933,7 +978,11 @@ def verify_mtu(model):
         {"flows": fragments, "fragments": fragment_evidence},
         status="PASS" if fragments_ok else "FAIL",
     )
-    emit("N05", "Bidirectional TCP transfers verify payloads at two bounded MSS settings.", streams)
+    emit(
+        "N05",
+        "Both TCP directions verify payloads and two MSS settings under a peer WAN rate cap.",
+        {"flows": streams, "shaping": shaping},
+    )
     after = {ns or "hub": stats(ns) for ns in nodes}
     counters = {
         node: {
