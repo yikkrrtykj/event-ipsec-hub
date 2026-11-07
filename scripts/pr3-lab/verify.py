@@ -345,6 +345,7 @@ def exchange(
                 "source": source,
                 "destination": destination,
                 "bytes": size,
+                "nonce": nonce,
                 **receipt,
             }
         assert expected_failure is not True
@@ -360,6 +361,7 @@ def exchange(
             "protocol": protocol,
             "source_port": sport,
             "destination_port": PORT,
+            "nonce": nonce,
             "received": count,
             "bytes_each": size,
             "mss": mss,
@@ -395,7 +397,7 @@ def begin_captures(model, *, wan_only=False):
                 "-i",
                 interface,
                 "-s",
-                "96",
+                "256",
                 "-w",
                 str(path),
                 capture_filter,
@@ -417,18 +419,26 @@ def begin_captures(model, *, wan_only=False):
     return captures
 
 
-def finish_captures(captures):
+def finish_captures(captures, *, markers=()):
     rows = {}
-    for node, interface, path, proc in captures:
+    evidence = {}
+    for _, _, _, proc in captures:
         stop_process(proc)
+    for node, interface, path, proc in captures:
         if not path.exists():
             continue
+        data = path.read_bytes()
+        evidence[f"{node}/{interface}"] = {
+            "pcap_sha256": hashlib.sha256(data).hexdigest(),
+            "captured_bytes": len(data),
+            "plaintext_payload_markers": sum(marker.encode() in data for marker in markers),
+        }
         lines = command("tcpdump", "-nn", "-tt", "-r", str(path)).stdout.splitlines()
         path.unlink()
         rows[f"{node}/{interface}"] = [
             re.sub(r"spi=0x[0-9a-f]+", "spi=<redacted>", line) for line in lines
         ]
-    return rows
+    return rows, evidence
 
 
 def verify_traffic(model, first):
@@ -466,7 +476,9 @@ def verify_traffic(model, first):
                 )
         time.sleep(1.2)
     finally:
-        observed = finish_captures(captures)
+        observed, captures_proof = finish_captures(
+            captures, markers=[row["nonce"] for row in all_rows]
+        )
     current = cli("status")
     assert current["status"] == "PASS" and current["data_path"]["status"] == "SKIP", current
     for site in current["sites"]:
@@ -478,6 +490,7 @@ def verify_traffic(model, first):
         for name in final_stats
     )
     wan = observed[f"hub/{TOPO['wan']}"]
+    assert captures_proof[f"hub/{TOPO['wan']}"]["plaintext_payload_markers"] == 0
     assert all(not any(row["source"] in line for row in all_rows) for line in wan)
     for link in model.links:
         assert any(link.peer in line and "ESP" in line for line in wan), wan[:5]
@@ -516,6 +529,7 @@ def verify_traffic(model, first):
                         "packets": len(lines),
                         "sha256": hashlib.sha256("\n".join(lines).encode()).hexdigest(),
                         "samples": lines[:4],
+                        **captures_proof[key],
                     }
                     for key, lines in observed.items()
                 },
@@ -700,13 +714,30 @@ def verify_rekeys(model):
 
 def capture_fail_closed(model, start):
     captures = begin_captures(model, wan_only=True)
+    rows = []
     try:
         rows = pair("udp", start, expected_failure=True, count=1)
     finally:
-        observed = finish_captures(captures)
-    wan = observed[f"hub/{TOPO['wan']}"]
-    assert all(not any(row["source"] in line for row in rows) for line in wan)
-    return {"unreachable_flows": rows, "wan_packets": len(wan), "wan_plaintext": 0}
+        observed, captures_proof = finish_captures(captures, markers=[row["nonce"] for row in rows])
+    point = f"hub/{TOPO['wan']}"
+    wan = observed[point]
+    hits = [line for line in wan if any(row["source"] in line for row in rows)]
+    proof = {
+        "unreachable_flows": rows,
+        "capture_point": point,
+        "wan_packets": len(wan),
+        "private_address_headers": hits[:12],
+        **captures_proof[point],
+    }
+    if hits or proof["plaintext_payload_markers"]:
+        emit(
+            "WAN_GUARD",
+            "WAN capture must contain no private traffic or test payload.",
+            proof,
+            status="FAIL",
+        )
+        raise AssertionError("WAN capture includes private addresses or a test payload marker.")
+    return {**proof, "wan_plaintext": 0}
 
 
 def verify_mtu(model):
@@ -749,7 +780,7 @@ def verify_mtu(model):
             "tcp", 76, count=2, size=8192, mss=1024
         )
     finally:
-        observed = finish_captures(captures)
+        observed, _ = finish_captures(captures)
     devices = {
         f"hub/{link.name}": json.loads(ip("-j", "link", "show", "dev", link.name).stdout)[0]["mtu"]
         for link in model.links

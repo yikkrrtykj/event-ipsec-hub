@@ -1,10 +1,12 @@
+from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
+from ipsecvpn import live
 from ipsecvpn.profile import load_profile
-from ipsecvpn.renderer import build_manifest
+from ipsecvpn.renderer import build_manifest, nft_config
 from ipsecvpn.sa import (
     Policy,
     SAError,
@@ -84,6 +86,57 @@ def test_vici_and_kernel_must_agree(observed):
         correlate(snapshot, manifest, states, policies[:-1])
     with pytest.raises(SAError, match="outside the active manifest"):
         parse_vici([{"foreign": next(iter(event.values()))}], manifest)
+
+
+@pytest.mark.parametrize("field", ("spi", "reqid", "if_id"))
+def test_known_connection_cannot_cover_mismatched_kernel_identifiers(observed, field):
+    manifest, _, event, _, states, policies = observed
+    changed = replace(states[0], **{field: getattr(states[0], field) + 1})
+    with pytest.raises(SAError, match="state does not map"):
+        correlate(parse_vici([event], manifest), manifest, [changed, states[1]], policies)
+
+
+@pytest.mark.parametrize("actually_drained", (True, False))
+def test_vici_timeout_needs_proof_of_exact_drain(observed, monkeypatch, actually_drained):
+    manifest, _, event, _, _, _ = observed
+    original = parse_vici([event], manifest)
+    after = parse_vici([], manifest) if actually_drained else original
+    observations = iter((original, after))
+    monkeypatch.setattr(live, "inventory", lambda *_args, **_kwargs: next(observations))
+    requests = []
+
+    class Control:
+        def request(self, action, data):
+            requests.append((action, data["ike-id"]))
+            raise SAError("VICI_REJECTED", "Timed out but may have deleted the SA.")
+
+    @contextmanager
+    def control(_pid):
+        yield Control()
+
+    monkeypatch.setattr(live, "session", control)
+    if actually_drained:
+        live.drain_links(None, manifest, 17, original)
+    else:
+        with pytest.raises(SAError, match="did not drain"):
+            live.drain_links(None, manifest, 17, original)
+    assert requests == [("terminate", str(original.ikes[0].unique_id))]
+
+
+def test_maintenance_handshake_guard_does_not_allow_data(observed):
+    manifest, _, _, _, _, _ = observed
+    guard = nft_config(
+        None, "test", manifest.networks, [link.name for link in manifest.links], handshake=manifest
+    )
+    forward, remainder = guard.split("chain output")
+    output, inbound = remainder.split("chain input")
+    assert "accept" not in forward.split("policy accept;")[1]
+    assert "accept" not in output.split("policy accept;")[1]
+    assert "udp dport { 500, 4500 } accept" in inbound
+    assert all(
+        f"ip daddr {net} drop" in forward and f"ip daddr {net} drop" in output
+        for net in manifest.networks
+    )
 
 
 def test_matching_name_cannot_authorize_narrowed_child(observed):
