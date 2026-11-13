@@ -15,7 +15,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
-from threading import Barrier
+from threading import Barrier, Event
 
 from topology import (
     HERE,
@@ -60,7 +60,7 @@ ENV = {}
 HEAD = (HERE / "head-sha").read_text(encoding="ascii").strip()
 LAB_CASES = {
     f"{section}{index:02d}"
-    for section, count in (("T", 14), ("S", 10), ("N", 6), ("F", 16))
+    for section, count in (("T", 14), ("S", 10), ("N", 6), ("F", 16), ("I", 3))
     for index in range(1, count + 1)
 }
 
@@ -656,6 +656,146 @@ def pair(protocol, start, **kwargs):
     ]
 
 
+def record_hashes():
+    return {
+        str(path.relative_to(INSTALLED.parent)): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in sorted(INSTALLED.parent.rglob("*.json"))
+    }
+
+
+def install_reports(*, expect=0):
+    return {mode: cli("install", mode, expect=expect) for mode in ("--dry-run", "--confirm")}
+
+
+def install_noop_evidence(model):
+    names = {link.name for link in model.links} if model else set()
+    pid = HOST.assert_daemon(names)
+    before = inventory(HOST, model, pid)
+    records = record_hashes()
+    baseline = baseline_for(model)
+    packages = HOST.package_state()
+    flows = []
+    overlap = {}
+    if model:
+        assert len(before.ikes) == 2 and all(ike.child for ike in before.ikes)
+        started, finished = Event(), Event()
+
+        def probe():
+            for index in range(64):
+                start = time.monotonic()
+                rows = pair("udp", 230 + 4 * index) + pair("tcp", 232 + 4 * index)
+                flows.append((start, time.monotonic(), rows))
+                started.set()
+                if finished.is_set():
+                    return
+            raise RuntimeError("Install exceeded the bounded traffic probe window.")
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            pending = pool.submit(probe)
+            try:
+                if not started.wait(55):
+                    pending.result()
+                    raise RuntimeError("No bidirectional traffic probe completed before install.")
+                reports, windows = {}, {}
+                for mode in ("--dry-run", "--confirm"):
+                    start = time.monotonic()
+                    reports[mode] = cli("install", mode)
+                    windows[mode] = (start, time.monotonic())
+            finally:
+                finished.set()
+                pending.result()
+        overlap = {
+            mode: [rows for begin, done, rows in flows if begin < end and done > start]
+            for mode, (start, end) in windows.items()
+        }
+        assert all(overlap.values()), "Each install command must overlap a UDP/TCP traffic round."
+    else:
+        assert not before.ikes
+        reports = install_reports()
+    assert all(
+        row["status"] == "PASS" and row["detail"].startswith("NOOP:") for row in reports.values()
+    ), reports
+    assert HOST.assert_daemon(names) == pid
+    after = inventory(HOST, model, pid)
+    assert after == before
+    assert record_hashes() == records
+    assert baseline_for(model) == baseline
+    assert HOST.package_state() == packages
+    children = {}
+    for old in before.ikes:
+        new = after.get(old.name)
+        assert all(a > b for a, b in zip(new.child.counts, old.child.counts, strict=True))
+        children[old.name] = {
+            "ike_id": old.unique_id,
+            "child_id": old.child.unique_id,
+            "in_spi": old.child.inbound.spi,
+            "out_spi": old.child.outbound.spi,
+            "counts_before": old.child.counts,
+            "counts_after": new.child.counts,
+        }
+    emit(
+        "I02" if model else "I01",
+        "Both install modes return PASS/NOOP with unchanged daemon, SA, packages and records.",
+        {
+            "install": reports,
+            "unchanged_daemon_pid": int(pid),
+            "active_children": children,
+            "unchanged_journal_sha256": records["journal.json"],
+            "unchanged_records": sorted(records),
+            "unchanged_baseline": sorted(baseline),
+            "unchanged_package_count": len(packages),
+            "overlapping_udp_tcp_rounds": {mode: len(rows) for mode, rows in overlap.items()},
+            "sample_overlapping_flows": {mode: rows[0] for mode, rows in overlap.items()},
+        },
+        action="install --dry-run; install --confirm; compare real daemon, SAD/SPD and host state",
+    )
+
+
+def assert_install_stop():
+    records = record_hashes()
+    reports = install_reports(expect=1)
+    assert all(report["decision"] == "STOP" for report in reports.values()), reports
+    assert record_hashes() == records
+    return reports
+
+
+def verify_foreign_ike_socket(model):
+    names = {link.name for link in model.links}
+    pid = HOST.assert_daemon(names)
+    live = inventory(HOST, model, pid)
+    listener = start_traffic(
+        (
+            sys.executable,
+            "-c",
+            "import signal, socket\n"
+            "with socket.socket(socket.AF_INET6, socket.SOCK_DGRAM) as sock:\n"
+            "    sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)\n"
+            "    sock.bind(('::1', 500))\n"
+            "    print('READY', flush=True)\n"
+            "    signal.pause()",
+        )
+    )
+    try:
+        ports = HOST.ike_ports()
+        assert f"pid={listener.pid}," in ports
+        reports = assert_install_stop()
+        assert all("exclusively own" in report["detail"] for report in reports.values()), reports
+        assert HOST.ike_ports() == ports and listener.poll() is None
+    finally:
+        stop_process(listener)
+    assert HOST.assert_daemon(names) == pid and inventory(HOST, model, pid) == live
+    emit(
+        "I03",
+        "Both install modes reject an unowned IKE listener and preserve the live daemon and SAs.",
+        {
+            "install": reports,
+            "foreign_listener_preserved_until_fixture_cleanup": True,
+            "unchanged_daemon_pid": int(pid),
+        },
+        action="bind an independent UDP/500 loopback listener inside the disposable Hub",
+    )
+
+
 def stable(model, predicate, seconds=12):
     end = time.monotonic() + seconds
     pid = HOST.assert_daemon({link.name for link in model.links})
@@ -1171,6 +1311,7 @@ def verify_foreign_ike(model):
             )
             identifier = ike_id(hub, foreign.name)
             assert identifier
+            installs = assert_install_stop()
             assert_write_stop(model)
             assert ike_id(hub, foreign.name) == identifier
             assert cli("status", expect=1)["decision"] == "STOP"
@@ -1182,7 +1323,7 @@ def verify_foreign_ike(model):
     emit(
         "F04",
         "An independently authenticated foreign IKE/CHILD stays intact while writes STOP.",
-        {"decision": "STOP", "foreign_if_id": foreign.if_id},
+        {"decision": "STOP", "foreign_if_id": foreign.if_id, "install": installs},
     )
 
 
@@ -1200,6 +1341,7 @@ def verify_foreign_policy(model):
     ip("xfrm", "policy", "add", *policy, "action", "block", "priority", "470000")
     try:
         before = ip("-o", "xfrm", "policy", "list", "nosock").stdout
+        installs = assert_install_stop()
         assert_write_stop(model)
         assert cli("status", expect=1)["decision"] == "STOP"
         assert ip("-o", "xfrm", "policy", "list", "nosock").stdout == before
@@ -1208,7 +1350,44 @@ def verify_foreign_policy(model):
     emit(
         "F05 F06",
         "Unowned kernel policy using a genuine if_id blocks writes.",
-        {"decision": "STOP", "original_policy_retained_until_fixture_cleanup": True},
+        {
+            "decision": "STOP",
+            "install": installs,
+            "original_policy_retained_until_fixture_cleanup": True,
+        },
+    )
+
+
+def verify_foreign_state(model):
+    state = ("src", "192.0.2.211", "dst", "192.0.2.212", "proto", "esp", "spi", "0x7f000005")
+    ip(
+        "xfrm",
+        "state",
+        "add",
+        *state,
+        "mode",
+        "tunnel",
+        "reqid",
+        "470000",
+        "if_id",
+        str(model.links[0].if_id),
+        "aead",
+        "rfc4106(gcm(aes))",
+        f"0x{secrets.token_hex(20)}",
+        "128",
+    )
+    try:
+        before = ip("-o", "xfrm", "state", "list", "nokeys").stdout
+        installs = assert_install_stop()
+        assert all(report.get("reason_code") == "UNOWNED_SA" for report in installs.values())
+        assert ip("-o", "xfrm", "state", "list", "nokeys").stdout == before
+    finally:
+        ip("xfrm", "state", "delete", *state)
+    emit(
+        "F05",
+        "Both install modes reject an unmapped SAD entry without removing it.",
+        {"install": installs, "original_state_retained_until_fixture_cleanup": True},
+        action="inject one isolated kernel ESP state without a VICI connection",
     )
 
 
@@ -1802,6 +1981,8 @@ def before_reboot():
         refusal["detail"],
         action="install --confirm in the disposable guest without marker",
     )
+    assert read_record(ACTIVE) is None
+    install_noop_evidence(None)
     create_profile()
     install_topology_unit()
     model = manifest()
@@ -1814,9 +1995,12 @@ def before_reboot():
     verify_routes(model)
     verify_traffic(model, first=True)
     verify_noop(model)
+    install_noop_evidence(model)
+    verify_foreign_ike_socket(model)
     verify_rekeys(model)
     verify_bad_negotiation(model)
     verify_foreign_ike(model)
+    verify_foreign_state(model)
     verify_foreign_policy(model)
     verify_maintenance(model)
     verify_mtu(model)

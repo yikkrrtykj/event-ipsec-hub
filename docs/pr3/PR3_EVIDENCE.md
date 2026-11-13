@@ -20,7 +20,7 @@
 
 - 两条独立 IKEv2/CHILD，Hub 有 4 个内核状态和 24 条 ESP 策略，每个 Peer 有 12 条策略。A/B 主动发起 UDP、TCP，四对授权 CIDR 双向覆盖。接收端原源地址、端口、逐包 nonce/序号及 SHA-256 一致。LAN、两个 Hub XFRM、外部 WAN 均有采集，两 XFRM 收发计数增长。
 - 本端、对端、同时 IKE/CHILD rekey 均执行。定时用例观察 IKE/CHILD ID 从 `[27,27]` 变为 `[29,31]`，耗时 `41.474s`，未发起操作员 rekey，前后双向负载通过。计时参数仅位于 fixture。
-- WAN 中断由 DPD 检出并目标化重连，实测检测及隔离耗时 `166.724s`。单侧 Peer daemon 重启后新 PID 及双向业务通过，另一条隧道独立核对。
+- S05 使用 `dpd_action=clear` 和 `start_action=none`，实测 DPD 检出并隔离 WAN 中断耗时 `166.724s`。随后显式执行目标站点 `initiate` 并验证业务恢复，无人值守自动重连为 `SKIP`。单侧 Peer daemon 重启后新 PID 及双向业务通过，另一条隧道独立核对。
 - 活 SA 同配置 apply 为 NOOP。维护更新、显式 rollback、真实路由权限/nft 语法/VICI 拒绝、SIGKILL 均保留 journal 和保护规则。人工恢复报告 `CONFIGURATION_RESTORED`，工具未发送端到端探针时 `data_path_restored=SKIP`，实验另行核验双向负载。
 - 错 PSK/ID、proposal、TS、真实外来 SA、同 if_id 未登记策略、伪造源 IP、未经授权 LAN、外部 DROP、默认路由变化和损坏备份均执行负面校验。预期拒绝为 case PASS，观察明确 STOP，外来对象与事务日志保留核对。
 

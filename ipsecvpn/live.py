@@ -57,7 +57,7 @@ def initiate_link(host, manifest, pid, link):
 
 
 def verify_initiate_config(client, manifest):
-    links = {item.name: item for item in manifest.links}
+    links = {item.name: item for item in manifest.links} if manifest else {}
     seen = set()
     for event in client.list_conns():
         for name, row in event.items():

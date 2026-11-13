@@ -26,11 +26,12 @@ from .live import (
     initiate_link,
     owned_resources,
     rekey_link,
+    verify_initiate_config,
 )
 from .profile import MAX_PROFILE_BYTES, load_profile, parse_profile
 from .renderer import build_manifest, canonical, digest, external_backup, resource_diff
 from .resources import Resources, link_specs, network_scope
-from .sa import inventory
+from .sa import inventory, session
 from .secureio import Stop, make_directory, read_file, read_keys, read_record, write_record
 
 LOCK = Path("/run/ipsecvpn.lock")
@@ -285,9 +286,12 @@ class Deployment:
 
     def install(self, confirmed):
         if read_record(INSTALLED):
-            installed_record()
-            active = snapshot(read_record(ACTIVE))
-            self.host.assert_exclusive_ike({name for name, _ in link_specs((active,))})
+            install = installed_record()
+            active = read_record(ACTIVE)
+            manifest, _, pid = owned_resources(self.host, install, active)
+            with session(pid) as client:
+                verify_initiate_config(client, manifest)
+            keys_for(active)
             return {"status": "PASS", "detail": "NOOP: owned strongSwan installation is present."}
         if read_record(ACTIVE):
             raise Stop("An active profile lacks its installation record.")

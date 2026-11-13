@@ -13,7 +13,9 @@ ipsecvpn rollback --to "$snapshot" --maintenance --confirm
 ipsecvpn uninstall --maintenance --confirm
 ```
 
-默认加载配置时保持 `start_action=none`。Hub 发起显式 `initiate`，对端按配置应答。成功后记录该站点和当前 profile 摘要，启动恢复先建立闭锁保护，再对各已登记站点执行一次有界协商。已有有效 CHILD 时 `initiate` 复用现有连接，掉线后可用同一命令目标化重连。协议级定时 rekey 由 daemon 管理。
+默认加载配置使用 `start_action=none` 和 `dpd_action=clear`。Hub 发起显式 `initiate`，对端按配置应答。成功后记录该站点和当前 profile 摘要，启动恢复先建立闭锁保护，再对各已登记站点执行一次有界协商。已有有效 CHILD 时 `initiate` 复用现有连接。S05 在 DPD 清除失效 SA 后显式执行 `initiate` 恢复目标站点，无人值守自动重连为 `SKIP`。协议级定时 rekey 由 daemon 管理。
+
+已安装时，`install --dry-run` 和 `install --confirm` 都核对安装记录、daemon、VICI、内核 SAD/SPD、活动配置、XFRM、路由及 nftables。归属验证通过后返回 `PASS/NOOP`，保留 daemon 和现有 SA。未知或外来对象仍触发 `STOP`。
 
 活动部署的同配置 apply 核对 profile、密钥摘要与实际 SA/网络状态后返回 `NOOP`。变更前用 dry-run 核对两条隧道都可能短时断开、保护前缀和回滚 ID。确认维护操作后，工具先阻断项目业务流量，只保留已授权 Peer 的 IKE 以接收终止回执。每次目标化终止后重新核对 VICI 和内核，确认仅指定 SA 离开，再关闭握手入口并按项目名称装载连接和凭据。允许新配置授权的 Peer 握手之后再尝试重建原有站点。重新开放业务仍须实际验证跨站路径。
 
