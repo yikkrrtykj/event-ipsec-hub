@@ -1,0 +1,44 @@
+rule_files:
+  - rules.yml
+evaluation_interval: 1m
+tests:
+  - interval: 1m
+    input_series:
+      - series: 'up{job="event-ipsec-hub"}'
+        values: '1 0 1 0 0 0 1'
+      - series: 'event_ipsec_site_ike_state{event_id="example",hub_id="hub",site_id="a"}'
+        values: '1 0 1 0 0 0 stale'
+      - series: 'event_ipsec_collector_healthy'
+        values: '1 1 1 1 1 1 0'
+      - series: 'event_ipsec_path_state{event_id="example",hub_id="hub",src_site_id="a",dst_site_id="b"}'
+        values: '1 -1 -1 -1 0 0 0 1'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: IpsecIkeDown
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: IpsecIkeDown
+        exp_alerts:
+          - exp_labels: {event_id: example, hub_id: hub, site_id: a, severity: critical}
+            exp_annotations: {summary: IpsecIkeDown on an event IPsec Hub}
+      - eval_time: 6m
+        alertname: IpsecIkeDown
+        exp_alerts: []
+      - eval_time: 3m
+        alertname: IpsecPathUnverified
+        exp_alerts:
+          - exp_labels: {event_id: example, hub_id: hub, src_site_id: a, dst_site_id: b, severity: info}
+            exp_annotations: {summary: IpsecPathUnverified on an event IPsec Hub}
+      - eval_time: 6m
+        alertname: IpsecPathDown
+        exp_alerts:
+          - exp_labels: {event_id: example, hub_id: hub, src_site_id: a, dst_site_id: b, severity: critical}
+            exp_annotations: {summary: IpsecPathDown on an event IPsec Hub}
+      - eval_time: 7m
+        alertname: IpsecPathDown
+        exp_alerts: []
+      - eval_time: 5m
+        alertname: HubExporterDown
+        exp_alerts:
+          - exp_labels: {job: event-ipsec-hub, severity: critical}
+            exp_annotations: {summary: HubExporterDown on an event IPsec Hub}

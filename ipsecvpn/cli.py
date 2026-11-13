@@ -115,6 +115,20 @@ def _parser():
     rendering = commands.add_parser("render", help="Render a redacted deployment manifest.")
     rendering.add_argument("-c", "--config", type=Path, required=True)
     rendering.add_argument("--json", action="store_true")
+    monitor = commands.add_parser("monitor", help="Optional observation of an authorized lab Hub.")
+    monitor_commands = monitor.add_subparsers(dest="monitor_action", required=True)
+    config = monitor_commands.add_parser("validate", help="Validate monitoring settings offline.")
+    config.add_argument("-c", "--config", type=Path, required=True)
+    config.add_argument("--json", action="store_true")
+    for action in ("snapshot", "doctor", "serve", "stop"):
+        operation = monitor_commands.add_parser(action)
+        operation.add_argument("--json", action="store_true")
+        if action in {"serve", "stop"}:
+            mode = operation.add_mutually_exclusive_group(required=True)
+            mode.add_argument("--dry-run", action="store_true")
+            mode.add_argument("--confirm", action="store_true")
+        if action == "serve":
+            operation.add_argument("--with-bridge", action="store_true")
     for action in HOST_ACTIONS:
         operation = commands.add_parser(
             action, help=f"{action.capitalize()} on an authorized lab VM."
@@ -139,6 +153,26 @@ def _parser():
 
 
 def _run(args):
+    if args.command == "monitor":
+        from .monitoring.collector import collect
+        from .monitoring.model import Settings
+        from .monitoring.service import change
+
+        if args.monitor_action == "validate":
+            settings = Settings.from_profile(load_profile(args.config))
+            return {
+                "status": "PASS",
+                "enabled": settings.enabled,
+                "detail": "Monitoring validated.",
+            }
+        if args.monitor_action in {"snapshot", "doctor"}:
+            report = collect()
+            return {
+                "status": "PASS" if report["collector_valid"] else "SKIP",
+                "detail": report["reason_code"],
+                "observation": report,
+            }
+        return change(args.monitor_action, args.confirm, getattr(args, "with_bridge", False))
     if args.command in HOST_ACTIONS:
         return Deployment().dispatch(
             args.command,
@@ -227,7 +261,7 @@ def main(argv=None):
             print(f"{status} {result['detail']}", file=sys.stderr)
             return 1
     except (Stop, OSError, KeyError, ValueError) as exc:
-        if args.command not in HOST_ACTIONS:
+        if args.command not in (*HOST_ACTIONS, "monitor"):
             raise
         detail = (
             str(exc)
