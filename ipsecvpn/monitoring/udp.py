@@ -11,7 +11,7 @@ from ipaddress import IPv4Address
 from pathlib import Path
 
 from ..secureio import Stop, read_file
-from .collector import ReadOnlyHost, authorized
+from .collector import ReadOnlyHost, authorize_endpoint
 
 FRAME_BYTES = 103
 
@@ -143,7 +143,7 @@ def main():
     parser.add_argument("--timeout", type=float, default=0.5)
     args = parser.parse_args()
     try:
-        authorized(ReadOnlyHost(), endpoint_only=True)
+        authorize_endpoint(ReadOnlyHost())
         key = read_file(Path("/etc/ipsecvpn/secrets/monitor-probe"), limit=32, parent_mode=0o700)
         if len(key) != 32:
             raise Stop("A dedicated 32-byte UDP test key is required.")

@@ -21,7 +21,7 @@ import verify as lab
 import yaml
 from topology import HERE, HOST, PROFILE, TOPO, addr, cli, command, in_ns, ip, require_lab
 
-from ipsecvpn.host import LAB_MARKER
+from ipsecvpn.host import LAB_MARKER, UNIT
 from ipsecvpn.monitoring.bridge import CONFIG, signature
 from ipsecvpn.monitoring.collector import collect
 from ipsecvpn.monitoring.model import PROBE_FILE, State
@@ -249,15 +249,31 @@ def startup_scrape():
     except AssertionError:
         text = scrape()
         reasons = [
-            row for row in text.splitlines() if row.startswith("event_ipsec_observation_reason{")
+            row
+            for row in text.splitlines()
+            if row.startswith(("event_ipsec_observation_reason{", "event_ipsec_observation_stage{"))
         ]
+        standalone = collect()
         emit(
             "COLLECTOR_STARTUP",
             "Initial collection becomes healthy.",
-            {"standalone": collect()["reason_code"], "exporter": reasons},
+            {
+                "standalone": {key: standalone.get(key) for key in ("stage", "reason_code")},
+                "exporter": reasons,
+                "exporter_security": security_status(EXPORTER),
+                "daemon_security": security_status(UNIT),
+            },
             status="FAIL",
         )
         raise
+
+
+def security_status(unit):
+    pid = int(HOST.service(unit, "MainPID"))
+    fields = dict(row.split(":", 1) for row in Path(f"/proc/{pid}/status").read_text().splitlines())
+    return {
+        key: int(fields[key].strip(), 16) for key in ("CapPrm", "CapEff", "CapBnd", "NoNewPrivs")
+    }
 
 
 def sample_child_down(*, ike_down=False):
@@ -603,6 +619,15 @@ def alert_tests(model):
                 {"deliveries": len(delivery), "flows": lab.pair("udp", 578)},
             )
             cli("monitor", "serve", "--with-bridge", "--confirm")
+            security = security_status(BRIDGE)
+            assert security == {"CapPrm": 0, "CapEff": 0, "CapBnd": 0, "NoNewPrivs": 1}
+            listeners = command("ss", "-H", "-ltn", f"sport = :{BRIDGE_PORT}").stdout.splitlines()
+            assert len(listeners) == 1 and listeners[0].split()[3] == f"127.0.0.1:{BRIDGE_PORT}"
+            emit(
+                "BRIDGE_BOUNDARY",
+                "The bridge starts without capabilities and binds only loopback.",
+                {"security": security, "listeners": listeners},
+            )
             receiver = HERE / "monitoring/alertmanager/receiver.example.yml"
             command("amtool", "check-config", str(receiver))
             rules = HERE / "monitoring/prometheus"

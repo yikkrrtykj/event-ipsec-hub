@@ -7,6 +7,23 @@ from enum import IntEnum
 ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,62}", re.ASCII)
 PROBE_FILE = "/var/lib/event-ipsec-hub-monitor/path.json"
 DIRECTORY = "/var/lib/event-ipsec-hub-monitor"
+STAGES = frozenset(
+    {
+        "HOST_PREFLIGHT",
+        "INSTALLATION",
+        "SYSTEMD",
+        "DAEMON",
+        "DAEMON_ENV",
+        "ACTIVE_PROFILE",
+        "OWNERSHIP",
+        "VICI",
+        "XFRM",
+        "ROUTING",
+        "NFTABLES",
+        "HOST_BASELINE",
+        "WORKER",
+    }
+)
 REASONS = frozenset(
     {
         "READY",
@@ -28,6 +45,13 @@ REASONS = frozenset(
         "UNVERIFIED_RUNTIME",
         "HUB_DOWN",
         "KERNEL_MISMATCH",
+        "PERMISSION_DENIED",
+        "COMMAND_FAILED",
+        "COMMAND_TIMEOUT",
+        "CHECK_FAILED",
+        "INVALID_DATA",
+        "VICI_REJECTED",
+        "VICI_TIMEOUT",
     }
 )
 
@@ -64,11 +88,12 @@ class Settings:
         )
 
 
-def unavailable(reason, *, daemon=State.UNKNOWN):
+def unavailable(reason, *, daemon=State.UNKNOWN, stage=None):
     return {
         "schema_version": 1,
         "collector_valid": False,
         "reason_code": reason if reason in REASONS else "UNVERIFIED_RUNTIME",
+        **({"stage": stage} if stage in STAGES else {}),
         "daemon": daemon,
         "profile_active": None,
         "sites": [],

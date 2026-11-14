@@ -49,6 +49,8 @@ def session(pid, path=VICI_PATH):
             yield Session(client)
     except CommandException:
         raise SAError("VICI_REJECTED", "The daemon rejected the requested operation.") from None
+    except TimeoutError:
+        raise SAError("VICI_TIMEOUT", "A local VICI request timed out.") from None
     except (
         OSError,
         SessionException,

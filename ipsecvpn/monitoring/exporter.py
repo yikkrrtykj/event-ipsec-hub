@@ -9,7 +9,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from threading import Event, Lock, Thread
 
 from .collector import runtime_settings
-from .model import State, unavailable
+from .model import STAGES, State, unavailable
 
 PREFIX = "event_ipsec_"
 
@@ -93,9 +93,9 @@ def sample(timeout):
         )
         return json.loads(result.stdout)
     except subprocess.TimeoutExpired:
-        return unavailable("COLLECTOR_TIMEOUT")
+        return unavailable("COLLECTOR_TIMEOUT", stage="WORKER")
     except (OSError, subprocess.CalledProcessError, ValueError):
-        return unavailable("COLLECTOR_ERROR")
+        return unavailable("COLLECTOR_ERROR", stage="WORKER")
 
 
 def refresh(cache, settings, done):
@@ -127,6 +127,12 @@ def metrics(snapshot):
         "Bounded current observation reason.",
         [({**dimensions, "reason_code": snapshot["reason_code"]}, 1)],
     )
+    if snapshot.get("stage") in STAGES:
+        family(
+            "observation_stage",
+            "Bounded stage of the failed observation.",
+            [({**dimensions, "stage": snapshot["stage"]}, 1)],
+        )
     for name, key in (
         ("collector_last_success_timestamp_seconds", "last_success"),
         ("snapshot_age_seconds", "age"),

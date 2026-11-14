@@ -242,7 +242,7 @@ class BridgeHandler(Handler):
 
 
 def serve():
-    settings = runtime_settings()
+    settings = runtime_settings(endpoint_only=True)
     if not settings.enabled:
         return
     config = json.loads(read_file(CONFIG, limit=4096, parent_mode=0o700))

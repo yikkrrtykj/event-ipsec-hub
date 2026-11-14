@@ -10,7 +10,7 @@ from ipaddress import IPv4Address, IPv4Network
 from pathlib import Path
 
 from .renderer import TABLE, canonical, digest
-from .secureio import Stop, read_file
+from .secureio import ObservationStop, Stop, read_file
 
 PATH = "/usr/sbin:/usr/bin:/sbin:/bin"
 UNIT = "strongswan.service"
@@ -28,8 +28,10 @@ HOST_TOOLS = ("ip", "nft", "ss", "systemctl", "sysctl", "modprobe", "dpkg-query"
 
 
 class CommandFailed(Stop):
-    def __init__(self, step, code):
+    def __init__(self, step, code, category="COMMAND_FAILED"):
         super().__init__(f"{step} failed ({code}). Command output was suppressed.")
+        self.step = step
+        self.category = category
 
 
 class Host:
@@ -55,10 +57,20 @@ class Host:
                 },
                 check=False,
             )
-        except (OSError, subprocess.TimeoutExpired):
+        except subprocess.TimeoutExpired:
+            raise CommandFailed(label, "unavailable or timed out", "COMMAND_TIMEOUT") from None
+        except PermissionError:
+            raise CommandFailed(label, "unavailable or timed out", "PERMISSION_DENIED") from None
+        except OSError:
             raise CommandFailed(label, "unavailable or timed out") from None
         if result.returncode not in allowed:
-            raise CommandFailed(label, result.returncode)
+            denied = any(
+                marker in result.stderr.lower()
+                for marker in (b"permission denied", b"operation not permitted", b"access denied")
+            )
+            raise CommandFailed(
+                label, result.returncode, "PERMISSION_DENIED" if denied else "COMMAND_FAILED"
+            )
         if mutate and self.step is not None:
             self.step(label, "DONE")
         return result.stdout.decode("utf-8", errors="replace")
@@ -228,18 +240,29 @@ class Host:
         self.assert_private_daemon(pid)
         vici = self.vici_listeners()
         if not vici or any(set(re.findall(r"pid=(\d+),", line)) != {pid} for line in ports + vici):
-            raise Stop("The daemon does not exclusively own the IKE and VICI sockets.")
+            raise ObservationStop(
+                "The daemon does not exclusively own the IKE and VICI sockets.",
+                "VICI",
+                "UNOWNED_DAEMON",
+            )
         output = self.vici("--version", "--daemon")
         if not re.search(r"\b5\.9\.\d+\b", output) or "charon-systemd" not in output:
             raise Stop("VICI did not report the expected strongSwan 5.9.x version.")
         if not self.vici_names().issubset(permitted):
-            raise Stop("Unowned VICI connections prevent safe changes.")
+            raise ObservationStop(
+                "Unowned VICI connections prevent safe changes.", "VICI", "UNOWNED_SA"
+            )
         return pid
 
     def assert_private_daemon(self, pid):
         if not pid.isdecimal() or int(pid) <= 0:
             raise Stop("The strongSwan service has no provable process identity.")
-        environment = Path(f"/proc/{pid}/environ").read_bytes().split(b"\0")
+        try:
+            environment = Path(f"/proc/{pid}/environ").read_bytes().split(b"\0")
+        except PermissionError:
+            raise ObservationStop(
+                "Cannot read the daemon environment.", "DAEMON_ENV", "PERMISSION_DENIED"
+            ) from None
         if f"STRONGSWAN_CONF={PRIVATE_CONF}".encode() not in environment:
             raise Stop("The running strongSwan process does not use the project configuration.")
 
