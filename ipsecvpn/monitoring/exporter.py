@@ -1,15 +1,14 @@
 """A bounded scheduler and a loopback-only Prometheus HTTP endpoint."""
 
-import json
-import subprocess
 import sys
 import time
 from collections import deque
 from http.server import BaseHTTPRequestHandler, HTTPServer
-from threading import Event, Lock, Thread
+from threading import Lock
 
+from ..secureio import Stop, read_record
 from .collector import runtime_settings
-from .model import STAGES, State, unavailable
+from .model import SNAPSHOT, STAGES, State, unavailable
 
 PREFIX = "event_ipsec_"
 
@@ -55,54 +54,49 @@ class Cache:
                 self.generations.clear()
             self.result = result
 
-    def view(self):
+    def record(self):
         with self.lock:
-            age = time.monotonic() - self.sample_clock if self.sample_clock is not None else None
-            result = self.result
-            if result["collector_valid"] and age >= self.ttl:
-                result = unavailable("STALE")
-            elif any(
-                "at" in row and not 0 <= time.time() - row["at"] < self.probe_ttl
-                for row in result["paths"]
-            ):
-                result = {
-                    **result,
-                    "business": State.UNKNOWN,
-                    "paths": [
-                        {
-                            "src_site_id": row["src_site_id"],
-                            "dst_site_id": row["dst_site_id"],
-                            "state": State.UNKNOWN,
-                            "reason_code": "STALE",
-                        }
-                        for row in result["paths"]
-                    ],
-                }
-            return {**self.scope, **result, "last_success": self.last_success, "age": age}
+            return {
+                **self.scope,
+                **self.result,
+                "last_success": self.last_success,
+                "sample_clock": self.sample_clock,
+            }
+
+    def view(self):
+        return age_snapshot(self.record(), self.ttl, self.probe_ttl)
 
 
-def sample(timeout):
+def age_snapshot(record, ttl, probe_ttl):
+    result = dict(record)
+    stamp = result.pop("sample_clock", None)
+    age = time.monotonic() - stamp if stamp is not None else None
+    if result["collector_valid"] and (age is None or not 0 <= age < ttl):
+        result.update(unavailable("STALE"))
+    elif any(
+        "at" in row and not 0 <= time.time() - row["at"] < probe_ttl for row in result["paths"]
+    ):
+        result["business"] = State.UNKNOWN
+        result["paths"] = [
+            {
+                "src_site_id": row["src_site_id"],
+                "dst_site_id": row["dst_site_id"],
+                "state": State.UNKNOWN,
+                "reason_code": "STALE",
+            }
+            for row in result["paths"]
+        ]
+    return {**result, "age": age}
+
+
+def current_snapshot(settings):
     try:
-        result = subprocess.run(
-            [sys.executable, "-I", "-m", "ipsecvpn.monitoring.collector"],
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            timeout=timeout,
-            check=True,
-        )
-        return json.loads(result.stdout)
-    except subprocess.TimeoutExpired:
-        return unavailable("COLLECTOR_TIMEOUT", stage="WORKER")
-    except (OSError, subprocess.CalledProcessError, ValueError):
-        return unavailable("COLLECTOR_ERROR", stage="WORKER")
-
-
-def refresh(cache, settings, done):
-    while not done.is_set():
-        started = time.monotonic()
-        cache.publish(sample(settings.timeout))
-        done.wait(max(0, settings.interval - (time.monotonic() - started)))
+        record = read_record(SNAPSHOT)
+        if record is None:
+            return {**unavailable("NO_SAMPLE"), "last_success": None, "age": None}
+        return age_snapshot(record, settings.ttl, settings.probe_ttl)
+    except (Stop, OSError, KeyError, TypeError, ValueError):
+        return {**unavailable("COLLECTOR_ERROR", stage="WORKER"), "last_success": None, "age": None}
 
 
 def metrics(snapshot):
@@ -215,7 +209,8 @@ class Handler(BaseHTTPRequestHandler):
         if self.path == "/healthz":
             self.reply(200, b"ok\n")
         elif self.path == "/metrics":
-            self.reply(200, metrics(self.server.cache.view()), "text/plain; version=0.0.4")
+            snapshot = current_snapshot(self.server.settings)
+            self.reply(200, metrics(snapshot), "text/plain; version=0.0.4")
         else:
             self.reply(404, b"not found\n")
 
@@ -243,19 +238,13 @@ class LoopbackServer(HTTPServer):
 def serve():
     from .service import notify_ready
 
-    settings = runtime_settings()
+    settings = runtime_settings(endpoint_only=True)
     if not settings.enabled:
         return
-    done = Event()
     with LoopbackServer(settings.port, Handler) as server:
-        server.cache = Cache(settings.ttl, settings.probe_ttl)
-        worker = Thread(target=refresh, args=(server.cache, settings, done), daemon=True)
-        worker.start()
-        try:
-            notify_ready()
-            server.serve_forever()
-        finally:
-            done.set()
+        server.settings = settings
+        notify_ready()
+        server.serve_forever()
 
 
 if __name__ == "__main__":

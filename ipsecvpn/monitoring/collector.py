@@ -32,11 +32,54 @@ COMMAND_STAGES = {
     "SSH listener snapshot": "HOST_BASELINE",
     "sysctl snapshot": "HOST_BASELINE",
 }
+READ_COMMANDS = {
+    "VM detection": ("systemd-detect-virt", "--vm"),
+    "XFRM interface support": ("modprobe", "-nq", "xfrm_interface"),
+    "IPv4 XFRM support": ("ip", "xfrm", "policy", "list"),
+    "XFRM state inventory": ("ip", "-o", "xfrm", "state", "list", "nokeys"),
+    "XFRM policy inventory": ("ip", "-o", "xfrm", "policy", "list", "nosock"),
+    "nftables support": ("nft", "-j", "list", "ruleset"),
+    "nftables inventory": ("nft", "-j", "list", "ruleset"),
+    "TCP management path probe": ("ss", "-H", "-nt", "state", "established"),
+    "Forwarding probe": ("sysctl", "-n", "net.ipv4.ip_forward"),
+    "VICI listener probe": ("ss", "-H", "-xlpn"),
+    "IKE socket probe": ("ss", "-H", "-ulnp", "( sport = :500 or sport = :4500 )"),
+    "SSH listener snapshot": ("ss", "-H", "-ltnp"),
+}
+
+
+def read_command(label, args):
+    if label in READ_COMMANDS:
+        return args == READ_COMMANDS[label]
+    if label == "systemd query":
+        return args[:2] == ("systemctl", "show")
+    if label == "VICI query":
+        return args[:2] in {
+            ("swanctl", "--version"),
+            ("swanctl", "--list-conns"),
+            ("swanctl", "--list-sas"),
+        }
+    if label == "sysctl snapshot":
+        return args[:2] == ("sysctl", "-n") and len(args) == 3 and "=" not in args[2]
+    if label == "ip query":
+        query = tuple(arg for arg in args[3:] if not arg.startswith("-"))
+        return args[:3] == ("ip", "-j", "-N") and (
+            query[:2]
+            in {
+                ("address", "show"),
+                ("addr", "show"),
+                ("link", "show"),
+                ("rule", "show"),
+                ("route", "show"),
+                ("route", "get"),
+            }
+        )
+    return False
 
 
 class ReadOnlyHost(Host):
     def command(self, label, *args, content=None, allowed=(0,), timeout=30, mutate=False):
-        if mutate or content is not None:
+        if mutate or content is not None or not read_command(label, args):
             raise Stop("The monitor only supports read operations.")
         try:
             return super().command(label, *args, allowed=allowed, timeout=min(timeout, 2))

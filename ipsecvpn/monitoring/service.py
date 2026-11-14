@@ -10,7 +10,7 @@ from .collector import ReadOnlyHost, authorized, runtime_settings
 
 DIRECTORY = Path("/var/lib/event-ipsec-hub-monitor")
 SYSTEMD = Path("/etc/systemd/system")
-SERVICES = {"exporter": "exporter", "feishu": "bridge"}
+SERVICES = {"sampler": "sampler", "exporter": "exporter", "feishu": "bridge"}
 
 
 def notify_ready():
@@ -23,9 +23,19 @@ def notify_ready():
 
 
 def unit(component, python):
-    write_access = f"ReadWritePaths={DIRECTORY}\n" if component == "feishu" else ""
-    capabilities = "CAP_DAC_READ_SEARCH CAP_NET_ADMIN" if component == "exporter" else ""
-    families = "AF_UNIX AF_INET AF_INET6" + (" AF_NETLINK" if component == "exporter" else "")
+    if component == "sampler":
+        # procfs checks require a superset of charon's permitted capabilities.
+        # The sampler has no IP or packet sockets and exposes no listener.
+        capabilities = "CAP_DAC_OVERRIDE CAP_NET_ADMIN CAP_NET_RAW"
+        families = "AF_UNIX AF_NETLINK"
+        write_access = (
+            "RuntimeDirectory=event-ipsec-hub-sampler\nRuntimeDirectoryMode=0700\n"
+            "SocketBindDeny=any\n"
+        )
+    else:
+        capabilities = ""
+        families = "AF_UNIX AF_INET AF_INET6"
+        write_access = f"ReadWritePaths={DIRECTORY}\n" if component == "feishu" else ""
     return f"""[Unit]
 Description=Event IPsec Hub monitoring ({component})
 After=local-fs.target
@@ -107,7 +117,11 @@ def change(action, confirmed, with_bridge=False):
     if action == "serve" and not runtime_settings().enabled:
         return {"status": "SKIP", "detail": "Monitoring is disabled or no profile is active."}
     python = trusted_python()
-    components = ("exporter", "feishu") if with_bridge or action == "stop" else ("exporter",)
+    components = (
+        ("sampler", "exporter", "feishu")
+        if with_bridge or action == "stop"
+        else ("sampler", "exporter")
+    )
     units = {
         SYSTEMD / f"event-ipsec-hub-{component}.service": unit(component, python)
         for component in components

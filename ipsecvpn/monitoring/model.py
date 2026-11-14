@@ -3,10 +3,12 @@
 import re
 from dataclasses import dataclass
 from enum import IntEnum
+from pathlib import Path
 
 ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,62}", re.ASCII)
 PROBE_FILE = "/var/lib/event-ipsec-hub-monitor/path.json"
 DIRECTORY = "/var/lib/event-ipsec-hub-monitor"
+SNAPSHOT = Path("/run/event-ipsec-hub-sampler/snapshot.json")
 STAGES = frozenset(
     {
         "HOST_PREFLIGHT",

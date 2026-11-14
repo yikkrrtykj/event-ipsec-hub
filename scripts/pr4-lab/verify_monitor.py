@@ -34,6 +34,7 @@ from ipsecvpn.transaction import INSTALLED
 
 SUMMARY = Path("/var/tmp/ipsecvpn-pr4-acceptance.jsonl")
 EXPORTER = "event-ipsec-hub-exporter.service"
+SAMPLER = "event-ipsec-hub-sampler.service"
 BRIDGE = "event-ipsec-hub-feishu.service"
 SECRETS = Path("/etc/ipsecvpn/secrets")
 METRICS, BRIDGE_PORT, MOCK, ALERTMANAGER = 9814, 9815, 9816, 9817
@@ -136,6 +137,7 @@ def exporter_tests(model):
     assert not HOST.service(EXPORTER, "FragmentPath")
     cli("monitor", "serve", "--confirm")
     snapshot = startup_scrape()
+    assert security_status(EXPORTER) == {"CapPrm": 0, "CapEff": 0, "CapBnd": 0, "NoNewPrivs": 1}
     assert line(snapshot, "business_state", -1)
     listeners = command("ss", "-H", "-ltn", f"sport = :{METRICS}").stdout.splitlines()
     assert len(listeners) == 1 and listeners[0].split()[3] == f"127.0.0.1:{METRICS}"
@@ -261,6 +263,7 @@ def startup_scrape():
                 "standalone": {key: standalone.get(key) for key in ("stage", "reason_code")},
                 "exporter": reasons,
                 "exporter_security": security_status(EXPORTER),
+                "sampler_security": security_status(SAMPLER),
                 "daemon_security": security_status(UNIT),
             },
             status="FAIL",
@@ -502,6 +505,7 @@ def probe_edges(model):
 
 def runtime_faults(model):
     exporter_pid = int(HOST.service(EXPORTER, "MainPID"))
+    sampler_pid = int(HOST.service(SAMPLER, "MainPID"))
     vpn_pid = HOST.assert_daemon({link.name for link in model.links})
     baseline = lab.baseline_for(model)
     before = inventory(HOST, model, vpn_pid)
@@ -517,7 +521,7 @@ def runtime_faults(model):
     emit("M06", "Missing VICI socket invalidates cached healthy facts.", {"collector_healthy": 0})
 
     def collector_pid():
-        children = Path(f"/proc/{exporter_pid}/task")
+        children = Path(f"/proc/{sampler_pid}/task")
         for task in children.iterdir():
             try:
                 pids = (task / "children").read_text().split()
@@ -812,7 +816,7 @@ def after_reboot():
     wait_for(
         lambda: all(
             HOST.service(unit, "ActiveState") == "active"
-            for unit in ("ipsecvpn-guard.service", "ipsecvpn-restore.service", EXPORTER)
+            for unit in ("ipsecvpn-guard.service", "ipsecvpn-restore.service", SAMPLER, EXPORTER)
         )
     )
     wait_for(healthy_scrape)
@@ -823,7 +827,7 @@ def after_reboot():
     assert baseline == json.loads(lab.BASELINE.read_text(encoding="utf-8"))
     cli("monitor", "stop", "--dry-run")
     cli("monitor", "stop", "--confirm")
-    assert all(not HOST.service(unit, "FragmentPath") for unit in (EXPORTER, BRIDGE))
+    assert all(not HOST.service(unit, "FragmentPath") for unit in (SAMPLER, EXPORTER, BRIDGE))
     assert HOST.assert_daemon({link.name for link in model.links}) == pid
     assert inventory(HOST, model, pid) == sas and lab.baseline_for(model) == baseline
     emit(
