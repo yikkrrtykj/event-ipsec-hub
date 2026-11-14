@@ -53,6 +53,22 @@ def test_read_only_adapter_stops_before_mutation():
         collector.ReadOnlyHost().command("test", "unused", mutate=True)
 
 
+def test_socket_activated_ssh_listeners_require_a_match(monkeypatch):
+    host = collector.ReadOnlyHost()
+    monkeypatch.setattr(host, "service", lambda *_: "ssh.service")
+    monkeypatch.setattr(
+        host, "command", lambda *_: "LISTEN 0 32 0.0.0.0:22 0.0.0.0:*\nLISTEN 0 32 *:22 *:*"
+    )
+    ssh = {
+        "ssh.service": "active",
+        "ssh.socket": "active",
+        "socket": "0.0.0.0:22 (Stream)\n[::]:22 (Stream)",
+    }
+    assert host.ssh_listeners(ssh) == ["*:22", "0.0.0.0:22"]
+    with pytest.raises(Stop, match="listener is missing"):
+        host.ssh_listeners({**ssh, "socket": "0.0.0.0:2200 (Stream)"})
+
+
 @pytest.mark.parametrize(
     ("label", "command", "stage"),
     [

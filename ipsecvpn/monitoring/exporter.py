@@ -70,8 +70,9 @@ class Cache:
 def age_snapshot(record, ttl, probe_ttl):
     result = dict(record)
     stamp = result.pop("sample_clock", None)
-    age = time.monotonic() - stamp if stamp is not None else None
-    if result["collector_valid"] and (age is None or not 0 <= age < ttl):
+    now = time.monotonic()
+    age = now - stamp if stamp is not None else None
+    if result["collector_valid"] and (stamp is None or age < 0 or now >= stamp + ttl):
         result.update(unavailable("STALE"))
     elif any(
         "at" in row and not 0 <= time.time() - row["at"] < probe_ttl for row in result["paths"]

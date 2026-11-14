@@ -3,6 +3,7 @@
 import json
 import os
 import platform
+import re
 import sys
 import time
 from pathlib import Path
@@ -100,6 +101,28 @@ class ReadOnlyHost(Host):
             "listeners_with_process": sum("users:" in row for row in rows),
             "ssh_process_listeners": sum('("sshd",' in row for row in rows),
         }
+
+    def ssh_listeners(self, ssh):
+        rows = self.command("SSH listener snapshot", "ss", "-H", "-ltnp").splitlines()
+        attributed = sorted(row.split()[3] for row in rows if '("sshd",' in row)
+        if attributed or ssh["ssh.service"] != "active" or ssh["ssh.socket"] != "active":
+            return attributed
+        # Ubuntu socket activation supplies an independent listener description.
+        # The full resulting baseline must still match the committed digest.
+        declared = re.findall(r"(\S+) \(Stream\)", ssh["socket"])
+        if not declared or self.service("ssh.socket", "Triggers") != "ssh.service":
+            raise ObservationStop("The SSH socket cannot be attributed.", "SSH_BASELINE")
+        observed = [row.split()[3] for row in rows]
+        listeners = []
+        for address in declared:
+            wildcard = "*:" + address.rsplit(":", 1)[1]
+            if address in observed:
+                listeners.append(address)
+            elif address.startswith("[::]:") and wildcard in observed:
+                listeners.append(wildcard)
+            else:
+                raise ObservationStop("A systemd SSH listener is missing.", "SSH_BASELINE")
+        return sorted(listeners)
 
 
 def authorize_endpoint(host):

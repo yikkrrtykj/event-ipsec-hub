@@ -379,11 +379,7 @@ class Host:
             for service in ("ssh.service", "ssh.socket")
         }
         ssh["socket"] = self.service("ssh.socket", "Listen")
-        ssh["listeners"] = sorted(
-            line.split()[3]
-            for line in self.command("SSH listener snapshot", "ss", "-H", "-ltnp").splitlines()
-            if '("sshd",' in line
-        )
+        ssh["listeners"] = self.ssh_listeners(ssh)
         return {
             "rules": fingerprint(rules),
             "default_routes": fingerprint([row for row in routes if row.get("dst") == "default"]),
@@ -419,6 +415,13 @@ class Host:
                 }
             ),
         }
+
+    def ssh_listeners(self, _ssh):
+        return sorted(
+            line.split()[3]
+            for line in self.command("SSH listener snapshot", "ss", "-H", "-ltnp").splitlines()
+            if '("sshd",' in line
+        )
 
 
 def xfrm_id(row):
