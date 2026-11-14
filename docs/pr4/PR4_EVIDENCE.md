@@ -16,5 +16,10 @@
 | `359304d` | 批处理降低查询开销，但 systemd 重复的 Listen 字段被折叠，SSH 摘要不匹配。 | [JSONL](https://github.com/yikkrrtykj/event-ipsec-hub/actions/runs/43575969753/artifacts/14106129535) |
 | `5c9f555` | 采集启动、双向真实 UDP 及 TTL 失效通过。隔离 LAN 的单向丢包夹具在载入 nft 规则时失败。 | [JSONL](https://github.com/yikkrrtykj/event-ipsec-hub/actions/runs/43576748484/artifacts/14107540646) |
 | `ab1db84` | 独立采集为 READY。systemd 采集耗尽四秒总预算，最后阶段为 ROUTING。此证据没有单条命令耗时。 | [JSONL](https://github.com/yikkrrtykj/event-ipsec-hub/actions/runs/43577551928/artifacts/14107686820) |
+| `e9180d8` | systemd 三轮采样均在六秒内成功，随后双向 UDP 路径断言 FAIL。 | [JSONL](https://github.com/yikkrrtykj/event-ipsec-hub/actions/runs/43617974906/artifacts/14123776085) |
+
+## 采样时限
+
+`e9180d8` 三轮实测分别为 4.853、4.733、4.765 秒，每轮 35 个外部命令。systemd 查询 9 次、合计 1.090–1.157 秒，VICI 进程和协议读取合计 0.791–0.852 秒，路由查询 13 次、合计 0.761–0.857 秒。路由是旧运行超时所处的阶段，耗时分布显示整个串行采样超出了四秒。测试配置使用六秒总时限、八秒周期和十八秒 TTL，并分别验证超时撤销和证据过期。
 
 现场设备、真实公网、真实备用网关、真实飞书 Webhook 与生产部署保持 SKIP。DPD 无人值守自动重连未验证。

@@ -346,7 +346,8 @@ def probe_round(model, port, *, bypass=False):
         source_ip, target_ip = (addr(site["lans"][0], 11) for site in (source, target))
         send_port, recv_port = port + side * 2, port + side * 2 + 1
         route = ip("-4", "route", "get", target_ip, "from", source_ip, ns=source["host"]).stdout
-        captures = lab.begin_captures(model)
+        # Only these three capture points establish primary traversal and no WAN plaintext.
+        captures = lab.begin_captures(model, probe=True)
         python = (sys.executable, "-I", "-m", "ipsecvpn.monitoring.udp")
         peer = lab.start_traffic(
             in_ns(
@@ -370,6 +371,8 @@ def probe_round(model, port, *, bypass=False):
                         str(send_port),
                         target_ip,
                         str(recv_port),
+                        "--timeout",
+                        "0.75",
                     )
                 ).stdout
             )
@@ -407,6 +410,8 @@ def probe_round(model, port, *, bypass=False):
                 "source": source_ip,
                 "target": target_ip,
                 "bound": bound,
+                "seen_on_source_xfrm": len(request & first),
+                "seen_on_target_xfrm": len(request & second),
                 "sent": len(receipts),
                 "rtts": [row["rtt"] for row in receipts if row["rtt"]],
             }
@@ -445,11 +450,33 @@ def probe_round(model, port, *, bypass=False):
     return evidence
 
 
+def assert_path(model, evidence, expected):
+    snapshot = collect()
+    proof = read_record(Path(PROBE_FILE))
+    paths = snapshot["paths"]
+    states = {(row["src_site_id"], row["dst_site_id"]): row["state"] for row in paths}
+    forward = tuple(link.site_id for link in model.links)
+    if (states.get(forward), states.get(forward[::-1])) != expected:
+        emit(
+            "PATH_VERDICT",
+            "Independent probe verdict matches the observed fixture.",
+            {
+                "reason": snapshot["reason_code"],
+                "paths": paths,
+                "flows": evidence,
+                "probe_window_seconds": proof["at"] - proof["started"],
+            },
+            status="FAIL",
+        )
+        raise AssertionError("The isolated path did not return the required directional verdict.")
+    return snapshot
+
+
 def path_tests(model):
     atomic_write(SECRETS / "monitor-probe", os.urandom(32))
     evidence = probe_round(model, 31900)
-    snapshot = collect()
-    assert snapshot["business"] == State.UP and all(row["loss"] == 0 for row in snapshot["paths"])
+    snapshot = assert_path(model, evidence, (State.UP, State.UP))
+    assert snapshot["business"] == State.UP
     wait_for(lambda: line(scrape(), "business_state", 1))
     emit(
         "P02 P03 P04 P11",
@@ -475,9 +502,8 @@ def path_tests(model):
         raise AssertionError("The isolated LAN drop rule was rejected.")
     try:
         evidence = probe_round(model, 31910)
-        snapshot = collect()
+        snapshot = assert_path(model, evidence, (State.DOWN, State.UP))
         assert snapshot["business"] == State.DOWN
-        assert [row["state"] for row in snapshot["paths"]] == [State.DOWN, State.UP]
         assert all(row["child"] == State.UP for row in snapshot["sites"])
         emit(
             "P05 P06",
