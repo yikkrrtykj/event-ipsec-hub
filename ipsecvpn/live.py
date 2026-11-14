@@ -16,7 +16,13 @@ def assert_baseline(active, baseline):
         changed = {
             key for key, value in active["host_baseline"].items() if baseline.get(key) != value
         }
-        stage = "NFTABLES" if changed == {"foreign_nft"} else "HOST_BASELINE"
+        stage = {
+            "foreign_nft": "NFTABLES",
+            "ssh": "SSH_BASELINE",
+            "default_routes": "ROUTING",
+            "foreign_routes": "ROUTING",
+            "sysctl": "SYSCTL_BASELINE",
+        }.get(next(iter(changed)) if len(changed) == 1 else "", "HOST_BASELINE")
         raise ObservationStop(
             "The recorded SSH, routing or foreign firewall baseline has changed.", stage
         )

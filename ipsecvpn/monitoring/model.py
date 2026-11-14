@@ -23,6 +23,8 @@ STAGES = frozenset(
         "ROUTING",
         "NFTABLES",
         "HOST_BASELINE",
+        "SSH_BASELINE",
+        "SYSCTL_BASELINE",
         "WORKER",
     }
 )

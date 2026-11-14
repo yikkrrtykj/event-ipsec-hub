@@ -93,6 +93,14 @@ class ReadOnlyHost(Host):
         except CommandFailed as exc:
             raise ObservationStop("A monitoring command failed.", stage, exc.category) from None
 
+    def ssh_observation(self):
+        rows = self.command("SSH listener snapshot", "ss", "-H", "-ltnp").splitlines()
+        return {
+            "observed_listeners": len(rows),
+            "listeners_with_process": sum("users:" in row for row in rows),
+            "ssh_process_listeners": sum('("sshd",' in row for row in rows),
+        }
+
 
 def authorize_endpoint(host):
     if platform.system() != "Linux" or os.getuid() != 0 or os.geteuid() != 0:
@@ -204,7 +212,13 @@ def collect(host=None):
                 "SA_UNVERIFIED": "XFRM",
             }.get(reason, stage),
         )
-        return unavailable(reason, stage=stage)
+        report = unavailable(reason, stage=stage)
+        if stage == "SSH_BASELINE" and isinstance(host, ReadOnlyHost):
+            try:
+                report["ssh_observation"] = host.ssh_observation()
+            except Stop:
+                pass
+        return report
 
 
 def runtime_settings(*, endpoint_only=False):

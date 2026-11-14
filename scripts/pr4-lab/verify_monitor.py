@@ -23,8 +23,8 @@ from topology import HERE, HOST, PROFILE, TOPO, addr, cli, command, in_ns, ip, r
 
 from ipsecvpn.host import LAB_MARKER, UNIT
 from ipsecvpn.monitoring.bridge import CONFIG, signature
-from ipsecvpn.monitoring.collector import collect
-from ipsecvpn.monitoring.model import PROBE_FILE, State
+from ipsecvpn.monitoring.collector import ReadOnlyHost, collect
+from ipsecvpn.monitoring.model import PROBE_FILE, SNAPSHOT, State
 from ipsecvpn.monitoring.probes import generation
 from ipsecvpn.monitoring.udp import FRAME_BYTES, frame
 from ipsecvpn.profile import load_profile
@@ -265,6 +265,7 @@ def startup_scrape():
             if row.startswith(("event_ipsec_observation_reason{", "event_ipsec_observation_stage{"))
         ]
         standalone = collect()
+        sampler = read_record(SNAPSHOT) or {}
         emit(
             "COLLECTOR_STARTUP",
             "Initial collection becomes healthy.",
@@ -274,6 +275,8 @@ def startup_scrape():
                 "exporter_security": security_status(EXPORTER),
                 "sampler_security": security_status(SAMPLER),
                 "daemon_security": security_status(UNIT),
+                "sampler_ssh": sampler.get("ssh_observation"),
+                "standalone_ssh": ReadOnlyHost().ssh_observation(),
             },
             status="FAIL",
         )
