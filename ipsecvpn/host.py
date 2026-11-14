@@ -336,7 +336,7 @@ class Host:
                 or link.wan in owned_links
             ):
                 raise Stop("The existing peer route does not match the specified WAN path.")
-        if self.command("Forwarding probe", "sysctl", "-n", "net.ipv4.ip_forward").strip() != "1":
+        if self.ipv4_setting("ip_forward", label="Forwarding probe") != "1":
             raise Stop(
                 "Preconfigure IPv4 forwarding on the VM before apply; no sysctl was changed."
             )
@@ -410,11 +410,14 @@ class Host:
             "ssh": fingerprint(ssh),
             "sysctl": fingerprint(
                 {
-                    key: self.command("sysctl snapshot", "sysctl", "-n", f"net.ipv4.{key}").strip()
+                    key: self.ipv4_setting(key)
                     for key in ("ip_forward", "conf.all.rp_filter", "conf.default.rp_filter")
                 }
             ),
         }
+
+    def ipv4_setting(self, key, *, label="sysctl snapshot"):
+        return self.command(label, "sysctl", "-n", f"net.ipv4.{key}").strip()
 
     def ssh_listeners(self, _ssh):
         return sorted(

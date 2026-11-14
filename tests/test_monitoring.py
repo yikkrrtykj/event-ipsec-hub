@@ -84,11 +84,11 @@ def test_safe_command_diagnostics(monkeypatch, label, command, stage):
     def rejected(*args, **kwargs):
         raise CommandFailed("sensitive diagnostic input", 1, "PERMISSION_DENIED")
 
-    def inspect(host):
+    def inspect(host, **kwargs):
         host.command(label, *command)
 
     monkeypatch.setattr(Host, "command", rejected)
-    monkeypatch.setattr(collector, "authorized", inspect)
+    monkeypatch.setattr(collector, "authorize_endpoint", inspect)
     report = collector.collect()
     assert report["stage"] == stage and report["reason_code"] == "PERMISSION_DENIED"
     assert not report["collector_valid"] and "sensitive" not in json.dumps(report)

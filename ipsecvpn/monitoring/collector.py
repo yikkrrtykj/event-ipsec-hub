@@ -102,6 +102,20 @@ class ReadOnlyHost(Host):
             "ssh_process_listeners": sum('("sshd",' in row for row in rows),
         }
 
+    def ipv4_setting(self, key, *, label="sysctl snapshot"):
+        if key not in {"ip_forward", "conf.all.rp_filter", "conf.default.rp_filter"}:
+            raise ObservationStop("Unknown IPv4 setting.", "SYSCTL_BASELINE")
+        if self.progress:
+            self.progress("SYSCTL_BASELINE")
+        try:
+            return Path("/proc/sys/net/ipv4", *key.split(".")).read_text(encoding="ascii").strip()
+        except OSError as exc:
+            raise ObservationStop(
+                "IPv4 setting could not be read.",
+                "SYSCTL_BASELINE",
+                "PERMISSION_DENIED" if isinstance(exc, PermissionError) else "CHECK_FAILED",
+            ) from None
+
     def ssh_listeners(self, ssh):
         rows = self.command("SSH listener snapshot", "ss", "-H", "-ltnp").splitlines()
         attributed = sorted(row.split()[3] for row in rows if '("sshd",' in row)
@@ -125,7 +139,7 @@ class ReadOnlyHost(Host):
         return sorted(listeners)
 
 
-def authorize_endpoint(host):
+def authorize_endpoint(host, *, require_systemd=False):
     if platform.system() != "Linux" or os.getuid() != 0 or os.geteuid() != 0:
         raise Stop("Monitoring runtime requires root on an authorized Ubuntu 24.04 VM.")
     fields = dict(
@@ -135,6 +149,8 @@ def authorize_endpoint(host):
     )
     if fields.get("ID") != "ubuntu" or fields.get("VERSION_ID", "").strip('"') != "24.04":
         raise Stop("Monitoring runtime requires Ubuntu 24.04.")
+    if require_systemd and not Path("/run/systemd/system").is_dir():
+        raise Stop("Monitoring requires a systemd-managed isolated VM.")
     if read_file(LAB_MARKER, limit=64, parent_mode=0o700) != b"ipsecvpn-lab-v1\n":
         raise Stop("The root-only isolated VM authorization marker is invalid.")
     virtual = host.command("VM detection", "systemd-detect-virt", "--vm").strip()
@@ -151,7 +167,9 @@ def collect(host=None):
     host = host or ReadOnlyHost()
     stage = "HOST_PREFLIGHT"
     try:
-        authorized(host)
+        # Verify the lab identity here. The joint ownership proof below already
+        # reads the actual nftables rules, SAD, SPD and XFRM links.
+        authorize_endpoint(host, require_systemd=True)
         stage = "INSTALLATION"
         if read_record(INSTALLED) is None:
             return unavailable("NO_PROFILE")
@@ -245,7 +263,11 @@ def collect(host=None):
 
 
 def runtime_settings(*, endpoint_only=False):
-    (authorize_endpoint if endpoint_only else authorized)(ReadOnlyHost())
+    host = ReadOnlyHost()
+    if endpoint_only:
+        authorize_endpoint(host, require_systemd=True)
+    else:
+        authorized(host)
     active = read_record(ACTIVE)
     return Settings.from_profile(active["profile"] if active else {})
 
