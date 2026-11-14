@@ -89,6 +89,9 @@ class Host:
             "systemd query", "systemctl", "show", unit, "-p", prop, "--value"
         ).strip()
 
+    def service_properties(self, unit, *props):
+        return {prop: self.service(unit, prop) for prop in props}
+
     def vici(self, action, *options):
         return self.command("VICI query", "swanctl", action, *options, "--uri", SOCKET)
 
@@ -226,14 +229,16 @@ class Host:
 
     def assert_daemon(self, permitted=()):
         self.assert_no_starter()
-        if self.service(UNIT, "FragmentPath") not in VENDOR_UNITS:
+        properties = self.service_properties(
+            UNIT, "FragmentPath", "DropInPaths", "ExecStart", "ActiveState", "MainPID"
+        )
+        if properties["FragmentPath"] not in VENDOR_UNITS:
             raise Stop("The strongSwan unit is not the expected Ubuntu unit.")
-        if self.service(UNIT, "DropInPaths") != str(DROPIN):
+        if properties["DropInPaths"] != str(DROPIN):
             raise Stop("The strongSwan unit has unexpected overrides.")
-        if "charon-systemd" not in self.service(UNIT, "ExecStart"):
+        if "charon-systemd" not in properties["ExecStart"]:
             raise Stop("The active unit does not use charon-systemd.")
-        state = self.service(UNIT, "ActiveState")
-        pid = self.service(UNIT, "MainPID")
+        state, pid = properties["ActiveState"], properties["MainPID"]
         ports = self.ike_ports().splitlines()
         if state != "active" or not pid.isdecimal() or int(pid) <= 0 or not ports:
             raise Stop("The owned charon-systemd service and IKE sockets are not active.")
@@ -318,15 +323,16 @@ class Host:
                 raise Stop(
                     "An established TCP management or application path overlaps a managed LAN."
                 )
+        if any(link.wan == "auto" for link in manifest.links):
+            raise Stop("outer_path.interface auto is an offline placeholder.")
+        lookups = self.route_lookups((link.peer, link.source) for link in manifest.links)
         for link in manifest.links:
-            if link.wan == "auto":
-                raise Stop("outer_path.interface auto is an offline placeholder.")
             addresses = self.ip("-4", "addr", "show", "dev", link.wan)
             if not any(
                 addr.get("local") == link.source for row in addresses for addr in row["addr_info"]
             ):
                 raise Stop("The IKE source address is not assigned to the specified WAN interface.")
-            lookup = self.ip("-4", "route", "get", link.peer, "from", link.source)
+            lookup = lookups[link.peer, link.source]
             if (
                 len(lookup) != 1
                 or lookup[0].get("dev") != link.wan
@@ -374,11 +380,12 @@ class Host:
 
     def baseline(self, rules, routes, links, foreign_nft, owned_routes, owned_links):
         addresses = self.ip("address", "show")
+        ssh_socket = self.service_properties("ssh.socket", "ActiveState", "Listen")
         ssh = {
-            service: self.service(service, "ActiveState")
-            for service in ("ssh.service", "ssh.socket")
+            "ssh.service": self.service("ssh.service", "ActiveState"),
+            "ssh.socket": ssh_socket["ActiveState"],
+            "socket": ssh_socket["Listen"],
         }
-        ssh["socket"] = self.service("ssh.socket", "Listen")
         ssh["listeners"] = self.ssh_listeners(ssh)
         return {
             "rules": fingerprint(rules),
@@ -418,6 +425,14 @@ class Host:
 
     def ipv4_setting(self, key, *, label="sysctl snapshot"):
         return self.command(label, "sysctl", "-n", f"net.ipv4.{key}").strip()
+
+    def route_lookups(self, targets):
+        return {
+            (target, source): self.ip(
+                "-4", "route", "get", target, *(("from", source) if source else ())
+            )
+            for target, source in targets
+        }
 
     def ssh_listeners(self, _ssh):
         return sorted(

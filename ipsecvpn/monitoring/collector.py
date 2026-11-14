@@ -1,5 +1,6 @@
 """Collect a stable, redacted snapshot without acquiring deployment write authority."""
 
+import ipaddress
 import json
 import os
 import platform
@@ -94,6 +95,51 @@ class ReadOnlyHost(Host):
         except CommandFailed as exc:
             raise ObservationStop("A monitoring command failed.", stage, exc.category) from None
 
+    def route_lookups(self, targets):
+        keys = list(dict.fromkeys(targets))
+        if len(keys) < 2:
+            return super().route_lookups(keys)
+        lines = []
+        for target, source in keys:
+            endpoint = str(ipaddress.IPv4Address(target))
+            origin = " from " + str(ipaddress.IPv4Address(source)) if source else ""
+            lines.append(f"route get {endpoint}{origin}\n")
+        if self.progress:
+            self.progress("ROUTING")
+        # The batch text is constructed exclusively from canonical IPv4 addresses.
+        try:
+            output = super().command(
+                "Route lookup batch",
+                "ip",
+                "-j",
+                "-N",
+                "-4",
+                "-batch",
+                "-",
+                content="".join(lines).encode("ascii"),
+                timeout=2,
+            )
+        except CommandFailed as exc:
+            raise ObservationStop(
+                "The route lookup batch failed.", "ROUTING", exc.category
+            ) from None
+        decoder = json.JSONDecoder()
+        rows = []
+        try:
+            while output.strip():
+                value, end = decoder.raw_decode(output.lstrip())
+                if not isinstance(value, list):
+                    raise ValueError
+                rows.append(value)
+                output = output.lstrip()[end:]
+            if len(rows) != len(keys):
+                raise ValueError
+        except ValueError:
+            raise ObservationStop(
+                "Invalid route lookup output.", "ROUTING", "INVALID_DATA"
+            ) from None
+        return dict(zip(keys, rows, strict=True))
+
     def ssh_observation(self):
         rows = self.command("SSH listener snapshot", "ss", "-H", "-ltnp").splitlines()
         return {
@@ -101,6 +147,23 @@ class ReadOnlyHost(Host):
             "listeners_with_process": sum("users:" in row for row in rows),
             "ssh_process_listeners": sum('("sshd",' in row for row in rows),
         }
+
+    def service_properties(self, unit, *props):
+        if len(props) == 1:
+            return super().service_properties(unit, *props)
+        output = self.command(
+            "systemd query",
+            "systemctl",
+            "show",
+            "--all",
+            "--no-pager",
+            *("--property=" + prop for prop in props),
+            unit,
+        )
+        values = dict(line.split("=", 1) for line in output.splitlines() if "=" in line)
+        if set(values) != set(props):
+            raise ObservationStop("Missing systemd properties.", "SYSTEMD", "INVALID_DATA")
+        return values
 
     def ipv4_setting(self, key, *, label="sysctl snapshot"):
         if key not in {"ip_forward", "conf.all.rp_filter", "conf.default.rp_filter"}:

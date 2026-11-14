@@ -267,9 +267,12 @@ class Resources:
                 observed = re.findall(rf"^    {direction}:\s+(.+)$", listing, re.M)
                 if len(observed) != 1 or set(observed[0].split()) != set(selectors):
                     raise Stop("The loaded VICI selectors differ from the authorized CIDRs.")
+        lookups = self.host.route_lookups(
+            (spec[0].split("/")[0], None) for spec in sorted(routes) if spec[1] == "unicast"
+        )
         for spec in sorted(routes):
             if spec[1] == "unicast":
-                lookup = self.host.ip("-4", "route", "get", spec[0].split("/")[0])
+                lookup = lookups[spec[0].split("/")[0], None]
                 if len(lookup) != 1 or lookup[0].get("dev") != spec[2]:
                     raise ObservationStop(
                         "The kernel did not resolve a protected network through its XFRM.",
