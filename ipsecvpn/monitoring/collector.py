@@ -160,7 +160,11 @@ class ReadOnlyHost(Host):
             *("--property=" + prop for prop in props),
             unit,
         )
-        values = dict(line.split("=", 1) for line in output.splitlines() if "=" in line)
+        values = {}
+        for line in output.splitlines():
+            key, separator, value = line.partition("=")
+            if separator and key in props:
+                values[key] = values[key] + "\n" + value if key in values else value
         if set(values) != set(props):
             raise ObservationStop("Missing systemd properties.", "SYSTEMD", "INVALID_DATA")
         return values
@@ -187,7 +191,8 @@ class ReadOnlyHost(Host):
         # Ubuntu socket activation supplies an independent listener description.
         # The full resulting baseline must still match the committed digest.
         declared = re.findall(r"(\S+) \(Stream\)", ssh["socket"])
-        if not declared or self.service("ssh.socket", "Triggers") != "ssh.service":
+        triggers = self.service("ssh.socket", "Triggers").split()
+        if not declared or "ssh.service" not in triggers:
             raise ObservationStop("The SSH socket cannot be attributed.", "SSH_BASELINE")
         observed = [row.split()[3] for row in rows]
         listeners = []

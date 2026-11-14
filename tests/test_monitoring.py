@@ -69,6 +69,19 @@ def test_socket_activated_ssh_listeners_require_a_match(monkeypatch):
         host.ssh_listeners({**ssh, "socket": "0.0.0.0:2200 (Stream)"})
 
 
+def test_batched_systemd_properties_keep_every_listen_value(monkeypatch):
+    host = collector.ReadOnlyHost()
+    monkeypatch.setattr(
+        host,
+        "command",
+        lambda *_: "Listen=0.0.0.0:22 (Stream)\nListen=[::]:22 (Stream)\nActiveState=active\n",
+    )
+    assert host.service_properties("ssh.socket", "Listen", "ActiveState") == {
+        "Listen": "0.0.0.0:22 (Stream)\n[::]:22 (Stream)",
+        "ActiveState": "active",
+    }
+
+
 @pytest.mark.parametrize(
     ("label", "command", "stage"),
     [
