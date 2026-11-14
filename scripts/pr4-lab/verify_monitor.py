@@ -437,9 +437,19 @@ def path_tests(model):
     assert "event_ipsec_path_probe_loss_ratio{" not in scrape()
     emit("P09", "Expired UDP proof removes previous success and numeric loss.", {"ttl_seconds": 15})
     node = TOPO["sites"][1]["host"]
-    program = "table ip pr4_probe_drop { chain input { type filter hook input priority -10; "
-    program += "udp dport 31911 drop; } }"
-    command(*in_ns(node, "nft", "-f", "-"), input=program)
+    program = """table ip pr4_probe_drop {
+    chain input {
+        type filter hook input priority -10; policy accept;
+        udp dport 31911 drop
+    }
+}
+"""
+    rule = command(*in_ns(node, "nft", "-f", "-"), input=program, allowed=(0, 1))
+    if rule.returncode:
+        emit(
+            "P05", "Load the isolated LAN drop rule.", {"nft_exit": rule.returncode}, status="FAIL"
+        )
+        raise AssertionError("The isolated LAN drop rule was rejected.")
     try:
         evidence = probe_round(model, 31910)
         snapshot = collect()

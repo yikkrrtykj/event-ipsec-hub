@@ -25,7 +25,9 @@ sudo ipsecvpn monitor stop --dry-run
 sudo ipsecvpn monitor stop --confirm
 ```
 
-监控服务使用独立的 systemd 单元。采集子进程有总时限，采集失败立即撤下旧健康值。回环 scrape 可交给同机 Prometheus，隔离管理端也可经已授权的 SSH 转发读取。发生异常时查看监控单元的 journal，先停监控，再使用原有 `status`、`doctor` 和 [活动隧道手册](../pr3/LIVE_OPERATIONS.md)核对 VPN。S05 的 DPD 恢复仍需要显式 `initiate`，无人值守自动重连为 SKIP。
+采样、HTTP exporter 和飞书桥各自使用独立的 systemd 单元。只有采样器读取 VICI、SAD/SPD、XFRM、路由及防火墙。它禁止 IP socket，只将脱敏快照写入私有运行目录。两个 HTTP 服务均无 Linux capabilities，绑定回环地址。采集超时、失败或快照过期都会撤下旧健康值。
+
+`monitor snapshot --json` 的 `stage` 和 `reason_code` 可定位错误。HTTP 指标 `event_ipsec_observation_stage` 与 `event_ipsec_observation_reason` 使用固定枚举。异常时可用原有 `status`、`doctor` 和 [活动隧道手册](../pr3/LIVE_OPERATIONS.md)核对 VPN。S05 的 DPD 恢复仍需要显式 `initiate`，无人值守自动重连为 SKIP。
 
 ## 业务与告警
 
