@@ -7,6 +7,7 @@ import platform
 import re
 import sys
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 from ..diagnostics import inspect_owned
@@ -88,10 +89,24 @@ class ReadOnlyHost(Host):
         if mutate or content is not None or not read_command(label, args):
             raise Stop("The monitor only supports read operations.")
         stage = COMMAND_STAGES.get(label, "HOST_PREFLIGHT")
+        return self.observed_command(stage, label, args, allowed=allowed, timeout=timeout)
+
+    @contextmanager
+    def span(self, stage, kind):
         if self.progress:
-            self.progress(stage)
+            self.progress((stage, kind, True))
         try:
-            return super().command(label, *args, allowed=allowed, timeout=min(timeout, 2))
+            yield
+        finally:
+            if self.progress:
+                self.progress((stage, kind, False))
+
+    def observed_command(self, stage, label, args, *, allowed=(0,), timeout=2, content=None):
+        try:
+            with self.span(stage, "command"):
+                return super().command(
+                    label, *args, content=content, allowed=allowed, timeout=min(timeout, 2)
+                )
         except CommandFailed as exc:
             raise ObservationStop("A monitoring command failed.", stage, exc.category) from None
 
@@ -104,25 +119,20 @@ class ReadOnlyHost(Host):
             endpoint = str(ipaddress.IPv4Address(target))
             origin = " from " + str(ipaddress.IPv4Address(source)) if source else ""
             lines.append(f"route get {endpoint}{origin}\n")
-        if self.progress:
-            self.progress("ROUTING")
         # The batch text is constructed exclusively from canonical IPv4 addresses.
-        try:
-            output = super().command(
-                "Route lookup batch",
-                "ip",
-                "-j",
-                "-N",
-                "-4",
-                "-batch",
-                "-",
-                content="".join(lines).encode("ascii"),
-                timeout=2,
-            )
-        except CommandFailed as exc:
-            raise ObservationStop(
-                "The route lookup batch failed.", "ROUTING", exc.category
-            ) from None
+        return dict(zip(keys, self.ip_batch("".join(lines), len(keys)), strict=True))
+
+    def routing(self):
+        rules, routes = self.ip_batch("rule show\nroute show table all\n", 2)
+        self.verify_routing_rules(rules)
+        links = self.ip("-details", "link", "show")
+        return rules, routes, links
+
+    def ip_batch(self, batch, count):
+        args = ("ip", "-j", "-N", "-4", "-batch", "-")
+        output = self.observed_command(
+            "ROUTING", "Read-only network batch", args, content=batch.encode("ascii")
+        )
         decoder = json.JSONDecoder()
         rows = []
         try:
@@ -132,13 +142,20 @@ class ReadOnlyHost(Host):
                     raise ValueError
                 rows.append(value)
                 output = output.lstrip()[end:]
-            if len(rows) != len(keys):
+            if len(rows) != count:
                 raise ValueError
         except ValueError:
             raise ObservationStop(
                 "Invalid route lookup output.", "ROUTING", "INVALID_DATA"
             ) from None
-        return dict(zip(keys, rows, strict=True))
+        return rows
+
+    @contextmanager
+    def vici_inventory(self, pid):
+        from ..sa import session
+
+        with session(pid) as client:
+            yield MonitoredVici(client, self)
 
     def ssh_observation(self):
         rows = self.command("SSH listener snapshot", "ss", "-H", "-ltnp").splitlines()
@@ -172,10 +189,11 @@ class ReadOnlyHost(Host):
     def ipv4_setting(self, key, *, label="sysctl snapshot"):
         if key not in {"ip_forward", "conf.all.rp_filter", "conf.default.rp_filter"}:
             raise ObservationStop("Unknown IPv4 setting.", "SYSCTL_BASELINE")
-        if self.progress:
-            self.progress("SYSCTL_BASELINE")
         try:
-            return Path("/proc/sys/net/ipv4", *key.split(".")).read_text(encoding="ascii").strip()
+            with self.span("SYSCTL_BASELINE", "read"):
+                return (
+                    Path("/proc/sys/net/ipv4", *key.split(".")).read_text(encoding="ascii").strip()
+                )
         except OSError as exc:
             raise ObservationStop(
                 "IPv4 setting could not be read.",
@@ -205,6 +223,16 @@ class ReadOnlyHost(Host):
             else:
                 raise ObservationStop("A systemd SSH listener is missing.", "SSH_BASELINE")
         return sorted(listeners)
+
+
+class MonitoredVici:
+    def __init__(self, client, host):
+        self.client = client
+        self.host = host
+
+    def list_sas(self):
+        with self.host.span("VICI", "read"):
+            return list(self.client.list_sas())
 
 
 def authorize_endpoint(host, *, require_systemd=False):

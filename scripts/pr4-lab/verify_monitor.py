@@ -101,7 +101,7 @@ def configure():
     profile = load_profile(PROFILE)
     profile["monitoring"] = {
         "enabled": True,
-        "exporter": {"interval_seconds": 5, "timeout_seconds": 4, "ttl_seconds": 12},
+        "exporter": {"interval_seconds": 8, "timeout_seconds": 6, "ttl_seconds": 18},
         "udp_path": {"enabled": True, "ttl_seconds": 15},
     }
     lab.write_profile(profile, PROFILE)
@@ -141,6 +141,7 @@ def exporter_tests(model):
     sampler_security = security_status(SAMPLER)
     assert sampler_security["CapEff"] == security_status(UNIT)["CapPrm"]
     assert sampler_security["NoNewPrivs"] == 1
+    profile_samples()
     assert line(snapshot, "business_state", -1)
     listeners = command("ss", "-H", "-ltn", f"sport = :{METRICS}").stdout.splitlines()
     assert len(listeners) == 1 and listeners[0].split()[3] == f"127.0.0.1:{METRICS}"
@@ -276,11 +277,33 @@ def startup_scrape():
                 "sampler_security": security_status(SAMPLER),
                 "daemon_security": security_status(UNIT),
                 "sampler_ssh": sampler.get("ssh_observation"),
+                "timing": sampler.get("timing"),
                 "standalone_ssh": ReadOnlyHost().ssh_observation(),
             },
             status="FAIL",
         )
         raise
+
+
+def profile_samples():
+    samples = {}
+
+    def collect_next():
+        row = read_record(SNAPSHOT)
+        if row and row["collector_valid"]:
+            timing = row["timing"]
+            assert timing["elapsed_seconds"] < timing["budget_seconds"]
+            assert timing["commands"] == sum(x["commands"] for x in timing["stages"].values())
+            assert {"VICI", "XFRM", "ROUTING", "NFTABLES"} <= timing["stages"].keys()
+            samples[row["last_success"]] = timing
+        return len(samples) >= 3
+
+    wait_for(collect_next, 35)
+    emit(
+        "COLLECTOR_TIMING",
+        "Three systemd samples record budget, stage time and command counts.",
+        {"samples": list(samples.values())},
+    )
 
 
 def security_status(unit):
@@ -567,6 +590,11 @@ def runtime_faults(model):
     assert http(METRICS, "/healthz")[0] == 200
     elapsed = time.monotonic() - start
     wait_for(lambda: "COLLECTOR_TIMEOUT" in scrape())
+    failed = read_record(SNAPSHOT)
+    assert failed["reason_code"] == "COLLECTOR_TIMEOUT" and not failed["collector_valid"]
+    assert line(scrape(), "collector_healthy", 0) and line(scrape(), "business_state", -1)
+    assert "event_ipsec_site_ike_state{" not in scrape()
+    assert "event_ipsec_site_child_state{" not in scrape()
     wait_for(healthy_scrape)
     status = Path(f"/proc/{exporter_pid}/status").read_text()
     assert "VmRSS:" in status
@@ -578,6 +606,7 @@ def runtime_faults(model):
             "health_seconds": elapsed,
             "rss_kib": int(status.split("VmRSS:")[1].split()[0]),
             "cpu_ticks": int(proc_stat[11]) + int(proc_stat[12]),
+            "timeout_timing": failed["timing"],
         },
     )
 

@@ -95,6 +95,11 @@ class Host:
     def vici(self, action, *options):
         return self.command("VICI query", "swanctl", action, *options, "--uri", SOCKET)
 
+    def vici_inventory(self, pid):
+        from .sa import session
+
+        return session(pid)
+
     def vici_names(self):
         return set(self.vici_connections())
 
@@ -273,6 +278,13 @@ class Host:
 
     def routing(self):
         rules = self.ip("-4", "rule", "show")
+        self.verify_routing_rules(rules)
+        routes = self.ip("-4", "route", "show", "table", "all")
+        links = self.ip("-details", "link", "show")
+        return rules, routes, links
+
+    @staticmethod
+    def verify_routing_rules(rules):
         expected = {(0, "255"), (32766, "254"), (32767, "253")}
         if (
             {(row.get("priority"), table_id(row.get("table"))) for row in rules} != expected
@@ -283,9 +295,6 @@ class Host:
             )
         ):
             raise Stop("IPv4 policy routing differs from the default rule set.")
-        routes = self.ip("-4", "route", "show", "table", "all")
-        links = self.ip("-details", "link", "show")
-        return rules, routes, links
 
     def check_paths(self, manifest, routes, owned_routes, links, owned_links):
         if not manifest:

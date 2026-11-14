@@ -310,7 +310,7 @@ def correlate(snapshot, manifest, states, policies):
 def inventory(host, manifest, pid, *, attempts=4, delay=0.2):
     for attempt in range(attempts):
         try:
-            with session(pid) as client:
+            with host.vici_inventory(pid) as client:
                 before = parse_vici(list(client.list_sas()), manifest)
                 states = kernel_states(
                     host.command(

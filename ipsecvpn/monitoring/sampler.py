@@ -20,26 +20,70 @@ def observe(sender):
         sender.send(collect(ReadOnlyHost(progress=sender.send)))
 
 
+class SampleTiming:
+    def __init__(self, started, timeout):
+        self.started = started
+        self.timeout = timeout
+        self.active = None
+        self.stage = "WORKER"
+        self.stages = {}
+
+    def update(self, event, now):
+        stage, kind, started = event
+        if stage not in STAGES or kind not in {"command", "read"}:
+            raise ValueError
+        if started:
+            self.stage = stage
+            self.active = (stage, kind, now)
+        elif self.active and self.active[:2] == (stage, kind):
+            self.finish(now)
+        else:
+            raise ValueError
+
+    def finish(self, now):
+        if self.active:
+            stage, kind, started = self.active
+            counts = self.stages.setdefault(stage, {"seconds": 0.0, "commands": 0, "reads": 0})
+            counts["seconds"] += now - started
+            counts["commands" if kind == "command" else "reads"] += 1
+            self.active = None
+
+    def result(self, observation):
+        now = time.monotonic()
+        interrupted = self.active is not None
+        self.finish(now)
+        return {
+            **observation,
+            "timing": {
+                "budget_seconds": self.timeout,
+                "elapsed_seconds": round(now - self.started, 6),
+                "commands": sum(row["commands"] for row in self.stages.values()),
+                "interrupted_operation": interrupted,
+                "stages": self.stages,
+            },
+        }
+
+
 def sample(timeout):
     context = get_context("fork")
     reader, writer = context.Pipe(duplex=False)
     child = context.Process(target=observe, args=(writer,))
-    stage = "WORKER"
-    deadline = time.monotonic() + timeout
+    started = time.monotonic()
+    timing = SampleTiming(started, timeout)
+    deadline = started + timeout
     try:
         child.start()
         writer.close()
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0 or not wait([reader], timeout=remaining):
-                return unavailable("COLLECTOR_TIMEOUT", stage=stage)
+                return timing.result(unavailable("COLLECTOR_TIMEOUT", stage=timing.stage))
             message = reader.recv()
             if isinstance(message, dict):
-                return message
-            if message in STAGES:
-                stage = message
+                return timing.result(message)
+            timing.update(message, time.monotonic())
     except (OSError, EOFError, ValueError):
-        return unavailable("COLLECTOR_ERROR", stage=stage)
+        return timing.result(unavailable("COLLECTOR_ERROR", stage=timing.stage))
     finally:
         reader.close()
         writer.close()
@@ -62,7 +106,8 @@ def serve():
     notify_ready()
     while True:
         started = time.monotonic()
-        cache.publish(sample(settings.timeout))
+        observation = sample(settings.timeout)
+        cache.publish(observation)
         write_record(SNAPSHOT, cache.record())
         time.sleep(max(0, settings.interval - (time.monotonic() - started)))
 
