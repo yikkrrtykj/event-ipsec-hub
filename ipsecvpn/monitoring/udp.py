@@ -124,6 +124,8 @@ def probe(key, local, peer, *, count=3, timeout=0.5):
                     "request_sha256": hashlib.sha256(packet).hexdigest(),
                     "reply_sha256": hashlib.sha256(expected).hexdigest(),
                     "rtt": rtt,
+                    "sent_at": timestamp / 1000,
+                    "completed_at": time.time(),
                 }
             )
             time.sleep(max(0, start + 0.125 - time.monotonic()))

@@ -339,7 +339,6 @@ def captured_payloads(path):
 def probe_round(model, port, *, bypass=False):
     pid = HOST.assert_daemon({link.name for link in model.links})
     before = inventory(HOST, model, pid)
-    started = time.time()
     directions, evidence = [], []
     for side in range(2):
         source, target = TOPO["sites"][side], TOPO["sites"][1 - side]
@@ -442,8 +441,8 @@ def probe_round(model, port, *, bypass=False):
             "owner": read_record(INSTALLED)["token"],
             "event_id": model.event_id,
             "generations": generation(after, model),
-            "started": started,
-            "at": time.time(),
+            "started": min(row["sent_at"] for item in evidence for row in item["receipts"]),
+            "at": max(row["completed_at"] for item in evidence for row in item["receipts"]),
             "directions": directions,
         },
     )
