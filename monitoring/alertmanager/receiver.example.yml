@@ -1,0 +1,15 @@
+route:
+  receiver: event-ipsec-hub
+  group_by: [alertname, event_id, hub_id, site_id, src_site_id, dst_site_id]
+  group_wait: 15s
+  group_interval: 1m
+  repeat_interval: 4h
+receivers:
+  - name: event-ipsec-hub
+    webhook_configs:
+      - url: http://127.0.0.1:9815/alertmanager
+        send_resolved: true
+        max_alerts: 8
+        http_config:
+          authorization:
+            credentials_file: /etc/ipsecvpn/secrets/monitor-bearer

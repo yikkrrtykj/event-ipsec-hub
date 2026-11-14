@@ -14,6 +14,15 @@ class Stop(RuntimeError):
     """A safety condition prevents continuing."""
 
 
+class ObservationStop(Stop):
+    """A failed observation with fixed, non-sensitive diagnostic codes."""
+
+    def __init__(self, detail, stage, reason="CHECK_FAILED"):
+        super().__init__(detail)
+        self.stage = stage
+        self.reason = reason
+
+
 def trusted_dir(path, mode=None):
     path = Path(path)
     if not path.is_absolute():

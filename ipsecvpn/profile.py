@@ -269,6 +269,11 @@ def _validate_optional_paths(profile):
                 raise ProfileError("Backup route priority must be less preferred than primary.")
 
     monitoring = profile.get("monitoring", {})
+    exporter = monitoring.get("exporter", {})
+    interval = exporter.get("interval_seconds", 15)
+    timeout = exporter.get("timeout_seconds", 5)
+    if interval + timeout >= exporter.get("ttl_seconds", 30) or timeout >= interval:
+        raise ProfileError("Monitoring requires timeout < interval and interval + timeout < TTL.")
     if any(
         isinstance(value, float) and not math.isfinite(value)
         for value in monitoring.get("thresholds", {}).values()

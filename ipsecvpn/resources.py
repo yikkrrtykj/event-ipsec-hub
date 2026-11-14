@@ -14,7 +14,15 @@ from .renderer import (
     swanctl_config,
 )
 from .sa import Snapshot
-from .secureio import Stop, atomic_write, make_directory, remove_file, sync_dir, trusted_dir
+from .secureio import (
+    ObservationStop,
+    Stop,
+    atomic_write,
+    make_directory,
+    remove_file,
+    sync_dir,
+    trusted_dir,
+)
 
 SWANCTL_DIR = Path("/etc/swanctl")
 
@@ -88,7 +96,9 @@ class Resources:
         if owned_nft and not any(
             item.get("chain", {}).get("name") == f"owner_{self.token}" for item in owned_nft
         ):
-            raise Stop("The private nftables table is not owned by this installation.")
+            raise ObservationStop(
+                "The private nftables table is not owned by this installation.", "NFTABLES"
+            )
         return rules, routes, links, owned_routes, owned_links, owned_nft, foreign_nft
 
     def preflight(self, target):
@@ -233,12 +243,18 @@ class Resources:
         wanted = {name for name, _ in link_specs((expected,))}
         up = {row["ifname"] for row in links if row["ifname"] in names and "UP" in row["flags"]}
         if names != wanted or up != wanted or routes != route_specs((expected,)):
-            raise Stop("Observed XFRM interfaces or exact routes differ from the manifest.")
+            raise ObservationStop(
+                "Observed XFRM interfaces or exact routes differ from the manifest.", "ROUTING"
+            )
         if bool(table) != bool(expected) or (nft_sha and nft_sha != fingerprint(table)):
-            raise Stop("Observed project nftables rules differ from the expected state.")
+            raise ObservationStop(
+                "Observed project nftables rules differ from the expected state.", "NFTABLES"
+            )
         connections = self.host.vici_connections()
         if set(connections) != wanted or (live is None and self.host.vici("--list-sas").strip()):
-            raise Stop("The daemon did not report exactly the intended VICI connections.")
+            raise ObservationStop(
+                "The daemon did not report exactly the intended VICI connections.", "VICI"
+            )
         for link in expected.links if expected else ():
             listing = "\n".join(connections[link.name])
             if (
@@ -251,11 +267,17 @@ class Resources:
                 observed = re.findall(rf"^    {direction}:\s+(.+)$", listing, re.M)
                 if len(observed) != 1 or set(observed[0].split()) != set(selectors):
                     raise Stop("The loaded VICI selectors differ from the authorized CIDRs.")
+        lookups = self.host.route_lookups(
+            (spec[0].split("/")[0], None) for spec in sorted(routes) if spec[1] == "unicast"
+        )
         for spec in sorted(routes):
             if spec[1] == "unicast":
-                lookup = self.host.ip("-4", "route", "get", spec[0].split("/")[0])
+                lookup = lookups[spec[0].split("/")[0], None]
                 if len(lookup) != 1 or lookup[0].get("dev") != spec[2]:
-                    raise Stop("The kernel did not resolve a protected network through its XFRM.")
+                    raise ObservationStop(
+                        "The kernel did not resolve a protected network through its XFRM.",
+                        "ROUTING",
+                    )
         current = self.baseline()
         if current != baseline:
             changed = ", ".join(

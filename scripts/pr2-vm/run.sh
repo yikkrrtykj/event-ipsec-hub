@@ -6,6 +6,7 @@ suite="${1:-pr2}"
 case "$suite" in
     pr2) extra_packages=() ;;
     pr3) extra_packages=(tcpdump) ;;
+    pr4) extra_packages=(tcpdump prometheus prometheus-alertmanager) ;;
     *) printf '%s\n' 'Unknown isolated VM suite.' >&2; exit 2 ;;
 esac
 work="$(mktemp -d)"
@@ -24,6 +25,8 @@ cleanup() {
         evidence=/var/tmp/ipsecvpn-pr3-acceptance.jsonl
         guest 'sudo /opt/ipsecvpn-lab/venv/bin/python /opt/ipsecvpn-lab/verify.py summarize' \
             >/dev/null 2>&1 || true
+    elif [[ "$suite" == pr4 ]]; then
+        evidence=/var/tmp/ipsecvpn-pr4-acceptance.jsonl
     fi
     if guest "sudo cat $evidence" > "$work/acceptance.jsonl" 2>/dev/null; then
         cat "$work/acceptance.jsonl"
@@ -45,11 +48,15 @@ sudo apt-get "${apt_network[@]}" -qq install -y --no-install-recommends \
 mkdir -p "$work/payload/apt" "$work/payload/wheels" "$work/apt-archives"
 python -m pip wheel --wheel-dir "$work/payload/wheels" "$root"
 cp "$root"/scripts/pr2-vm/guest.sh "$work/payload/"
-if [[ "$suite" == pr3 ]]; then
+if [[ "$suite" == pr3 || "$suite" == pr4 ]]; then
     cp "$root"/scripts/pr3-lab/{verify.py,topology.py,traffic.py,topology.json} "$work/payload/"
     git -C "$root" rev-parse HEAD > "$work/payload/head-sha"
 else
     cp "$root"/scripts/pr2-vm/verify.py "$work/payload/"
+fi
+if [[ "$suite" == pr4 ]]; then
+    cp "$root"/scripts/pr4-lab/verify_monitor.py "$work/payload/"
+    cp -r "$root/monitoring" "$work/payload/"
 fi
 cp "$root/config/event.example.yaml" "$work/payload/example.yaml"
 
@@ -64,7 +71,9 @@ qemu-img resize "$work/$image" 10G
 ssh-keygen -q -t ed25519 -N '' -f "$work/key"
 printf '#cloud-config\nssh_authorized_keys:\n  - %s\npackage_update: false\npackage_upgrade: false\n' \
     "$(cat "$work/key.pub")" > "$work/user-data"
-printf 'instance-id: ipsecvpn-%s-lab\nlocal-hostname: ipsecvpn-%s-lab\n' "$suite" "$suite" > "$work/meta-data"
+guest_suite="$suite"
+if [[ "$suite" == pr4 ]]; then guest_suite=pr3; fi
+printf 'instance-id: ipsecvpn-%s-lab\nlocal-hostname: ipsecvpn-%s-lab\n' "$suite" "$guest_suite" > "$work/meta-data"
 cat > "$work/network-config" <<'EOF'
 version: 2
 ethernets:
@@ -119,4 +128,6 @@ if [[ -z "$after" || "$before" == "$after" ]]; then
     printf '%s\n' 'FAIL V17: an actual guest reboot was not observed.' >&2
     exit 1
 fi
-guest 'sudo /opt/ipsecvpn-lab/venv/bin/python /opt/ipsecvpn-lab/verify.py after-reboot'
+driver=verify.py
+if [[ "$suite" == pr4 ]]; then driver=verify_monitor.py; fi
+guest "sudo /opt/ipsecvpn-lab/venv/bin/python /opt/ipsecvpn-lab/$driver after-reboot"
