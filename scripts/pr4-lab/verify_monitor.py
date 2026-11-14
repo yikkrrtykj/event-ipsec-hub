@@ -579,16 +579,33 @@ def runtime_faults(model):
     vpn_pid = HOST.assert_daemon({link.name for link in model.links})
     baseline = lab.baseline_for(model)
     before = inventory(HOST, model, vpn_pid)
-    saved = Path("/run/charon.vici").with_suffix(".pr4")
-    original = Path("/run/charon.vici")
-    original.rename(saved)
+    # Hide VICI only in the sampler's mount namespace. The real daemon, socket
+    # inode, and standalone management path stay untouched during the fault.
+    scoped = ("nsenter", "--target", str(sampler_pid), "--mount", "--")
+    socket_path = "/run/charon.vici"
+    hidden = f"/proc/{sampler_pid}/root{socket_path}"
+    socket_inode = Path(socket_path).stat().st_ino
+    assert os.readlink(f"/proc/{sampler_pid}/ns/mnt") != os.readlink("/proc/self/ns/mnt")
+    command(*scoped, "mount", "--bind", "/dev/null", socket_path)
     try:
         wait_for(lambda: line(scrape(), "collector_healthy", 0))
         assert line(scrape(), "business_state", -1)
+
+        def vici_failure():
+            row = read_record(SNAPSHOT)
+            return row if row and row.get("stage") == "VICI" else None
+
+        failed = wait_for(vici_failure)
+        assert failed["stage"] == "VICI", failed["reason_code"]
+        assert not Path(hidden).is_socket() and Path(socket_path).stat().st_ino == socket_inode
     finally:
-        saved.rename(original)
-    wait_for(healthy_scrape)
-    emit("M06", "Missing VICI socket invalidates cached healthy facts.", {"collector_healthy": 0})
+        command(*scoped, "umount", socket_path)
+    startup_scrape()
+    emit(
+        "M06",
+        "Sampler-only VICI fault invalidates cached facts and recovers after removal.",
+        {"collector_healthy": 0, "reason": failed["reason_code"], "timing": failed["timing"]},
+    )
 
     def collector_pid():
         children = Path(f"/proc/{sampler_pid}/task")

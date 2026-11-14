@@ -18,6 +18,7 @@
 | `ab1db84` | 独立采集为 READY。systemd 采集耗尽四秒总预算，最后阶段为 ROUTING。此证据没有单条命令耗时。 | [JSONL](https://github.com/yikkrrtykj/event-ipsec-hub/actions/runs/43577551928/artifacts/14107686820) |
 | `e9180d8` | systemd 三轮采样均在六秒内成功，随后双向 UDP 路径断言 FAIL。 | [JSONL](https://github.com/yikkrrtykj/event-ipsec-hub/actions/runs/43617974906/artifacts/14123776085) |
 | `9835a53` | 正常双向 UDP 和 TTL 通过。单向丢包和反向成功都实际发生，但原夹具的 12.119 秒窗口包含启动和核验开销，证据按预期判为 UNKNOWN。 | [JSONL](https://github.com/yikkrrtykj/event-ipsec-hub/actions/runs/43619324869/artifacts/14123459208) |
+| `c17f942` | 双向 UDP、单向丢包、路径旁路及 TTL 通过。VICI 故障夹具恢复路径后，采集未在等待窗口内恢复。 | [JSONL](https://github.com/yikkrrtykj/event-ipsec-hub/actions/runs/43620514618/artifacts/14124840032) |
 
 ## 采样时限
 
