@@ -2,7 +2,6 @@
 
 import hashlib
 import hmac
-import http.client
 import json
 import os
 import secrets
@@ -12,6 +11,7 @@ import subprocess
 import sys
 import time
 from datetime import UTC, datetime
+from http.client import HTTPConnection
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from ipaddress import IPv4Interface
 from pathlib import Path
@@ -63,7 +63,7 @@ def emit(cases, expected, observed, status="PASS"):
 
 
 def http(port, path="/metrics", data=None, headers=None):
-    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=12)
+    conn = HTTPConnection("127.0.0.1", port, timeout=12)
     try:
         conn.request("GET" if data is None else "POST", path, data, headers or {})
         response = conn.getresponse()
@@ -135,7 +135,7 @@ def exporter_tests(model):
     assert cli("monitor", "serve", "--dry-run")["status"] == "PASS"
     assert not HOST.service(EXPORTER, "FragmentPath")
     cli("monitor", "serve", "--confirm")
-    snapshot = wait_for(healthy_scrape)
+    snapshot = startup_scrape()
     assert line(snapshot, "business_state", -1)
     listeners = command("ss", "-H", "-ltn", f"sport = :{METRICS}").stdout.splitlines()
     assert len(listeners) == 1 and listeners[0].split()[3] == f"127.0.0.1:{METRICS}"
@@ -241,6 +241,23 @@ def exporter_tests(model):
 def healthy_scrape():
     snapshot = scrape()
     return snapshot if line(snapshot, "collector_healthy", 1) else None
+
+
+def startup_scrape():
+    try:
+        return wait_for(healthy_scrape)
+    except AssertionError:
+        text = scrape()
+        reasons = [
+            row for row in text.splitlines() if row.startswith("event_ipsec_observation_reason{")
+        ]
+        emit(
+            "COLLECTOR_STARTUP",
+            "Initial collection becomes healthy.",
+            {"standalone": collect()["reason_code"], "exporter": reasons},
+            status="FAIL",
+        )
+        raise
 
 
 def sample_child_down(*, ike_down=False):

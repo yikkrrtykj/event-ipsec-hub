@@ -24,6 +24,7 @@ def notify_ready():
 
 def unit(component, python):
     write_access = f"ReadWritePaths={DIRECTORY}\n" if component == "feishu" else ""
+    capabilities = "CAP_DAC_READ_SEARCH CAP_NET_ADMIN" if component == "exporter" else ""
     return f"""[Unit]
 Description=Event IPsec Hub monitoring ({component})
 After=local-fs.target
@@ -42,7 +43,8 @@ PrivateDevices=yes
 ProtectKernelTunables=yes
 ProtectControlGroups=yes
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
-CapabilityBoundingSet=CAP_DAC_READ_SEARCH CAP_NET_ADMIN
+CapabilityBoundingSet={capabilities}
+SystemCallFilter=~@debug @mount @module @reboot
 IPAddressDeny=any
 IPAddressAllow=localhost
 UMask=0077
