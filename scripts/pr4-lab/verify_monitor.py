@@ -193,7 +193,7 @@ def exporter_tests(model):
     )
     generation_after = collect()
     assert generation_before["sites"][0]["generation"] != generation_after["sites"][0]["generation"]
-    assert "# TYPE event_ipsec_site_sa_rx_bytes gauge" in healthy_scrape()
+    assert "# TYPE event_ipsec_site_sa_rx_bytes gauge" in wait_for(healthy_scrape)
     emit(
         "M09 R04",
         "Real CHILD rekey and concurrent exporter retain bidirectional business.",
