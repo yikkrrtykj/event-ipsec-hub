@@ -78,17 +78,20 @@ def read_command(label, args):
 
 
 class ReadOnlyHost(Host):
+    def __init__(self, progress=None):
+        super().__init__()
+        self.progress = progress
+
     def command(self, label, *args, content=None, allowed=(0,), timeout=30, mutate=False):
         if mutate or content is not None or not read_command(label, args):
             raise Stop("The monitor only supports read operations.")
+        stage = COMMAND_STAGES.get(label, "HOST_PREFLIGHT")
+        if self.progress:
+            self.progress(stage)
         try:
             return super().command(label, *args, allowed=allowed, timeout=min(timeout, 2))
         except CommandFailed as exc:
-            raise ObservationStop(
-                "A monitoring command failed.",
-                COMMAND_STAGES.get(label, "HOST_PREFLIGHT"),
-                exc.category,
-            ) from None
+            raise ObservationStop("A monitoring command failed.", stage, exc.category) from None
 
 
 def authorize_endpoint(host):

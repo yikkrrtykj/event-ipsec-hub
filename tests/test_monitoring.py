@@ -53,6 +53,31 @@ def test_read_only_adapter_stops_before_mutation():
         collector.ReadOnlyHost().command("test", "unused", mutate=True)
 
 
+@pytest.mark.parametrize(
+    ("label", "command", "stage"),
+    [
+        ("VICI query", ("swanctl", "--list-sas"), "VICI"),
+        ("XFRM policy inventory", ("ip", "-o", "xfrm", "policy", "list", "nosock"), "XFRM"),
+        ("ip query", ("ip", "-j", "-N", "-4", "route", "get", "192.0.2.1"), "ROUTING"),
+        ("nftables support", ("nft", "-j", "list", "ruleset"), "NFTABLES"),
+    ],
+)
+def test_safe_command_diagnostics(monkeypatch, label, command, stage):
+    from ipsecvpn.host import CommandFailed, Host
+
+    def rejected(*args, **kwargs):
+        raise CommandFailed("sensitive diagnostic input", 1, "PERMISSION_DENIED")
+
+    def inspect(host):
+        host.command(label, *command)
+
+    monkeypatch.setattr(Host, "command", rejected)
+    monkeypatch.setattr(collector, "authorized", inspect)
+    report = collector.collect()
+    assert report["stage"] == stage and report["reason_code"] == "PERMISSION_DENIED"
+    assert not report["collector_valid"] and "sensitive" not in json.dumps(report)
+
+
 def healthy_sample():
     return {
         **unavailable("READY", daemon=State.UP),

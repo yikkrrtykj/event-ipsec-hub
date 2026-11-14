@@ -138,6 +138,9 @@ def exporter_tests(model):
     cli("monitor", "serve", "--confirm")
     snapshot = startup_scrape()
     assert security_status(EXPORTER) == {"CapPrm": 0, "CapEff": 0, "CapBnd": 0, "NoNewPrivs": 1}
+    sampler_security = security_status(SAMPLER)
+    assert sampler_security["CapEff"] == security_status(UNIT)["CapPrm"]
+    assert sampler_security["NoNewPrivs"] == 1
     assert line(snapshot, "business_state", -1)
     listeners = command("ss", "-H", "-ltn", f"sport = :{METRICS}").stdout.splitlines()
     assert len(listeners) == 1 and listeners[0].split()[3] == f"127.0.0.1:{METRICS}"
@@ -174,7 +177,13 @@ def exporter_tests(model):
     emit(
         "M01 M02 M03 P01",
         "Local-only scrape reports owned SAs and unknown without UDP proof.",
-        {"listeners": listeners, "series": len(snapshot.splitlines()), "business": "UNKNOWN"},
+        {
+            "listeners": listeners,
+            "series": len(snapshot.splitlines()),
+            "business": "UNKNOWN",
+            "sampler_security": sampler_security,
+            "exporter_security": security_status(EXPORTER),
+        },
     )
 
     generation_before = collect()
@@ -526,8 +535,8 @@ def runtime_faults(model):
             try:
                 pids = (task / "children").read_text().split()
                 for pid in pids:
-                    cmdline = Path(f"/proc/{pid}/cmdline").read_bytes()
-                    if b"ipsecvpn.monitoring.collector" in cmdline:
+                    cmdline = Path(f"/proc/{pid}/cmdline").read_bytes().split(b"\0")
+                    if b"ipsecvpn.monitoring.sampler" in cmdline:
                         return int(pid)
             except FileNotFoundError:
                 continue
