@@ -533,13 +533,24 @@ def probe_edges(model):
         {"frame_bytes": len(request), "nonce_exposed": False},
     )
     link = model.links[0]
-    ip("link", "set", link.name, "down")
+    pid = HOST.assert_daemon({row.name for row in model.links})
+    child = inventory(HOST, model, pid).get(link.name).child
+    with session(pid) as vici:
+        vici.request(
+            "terminate", {"child-id": str(child.unique_id), "force": "yes", "timeout": "2500"}
+        )
     try:
+        lab.stable(model, lambda live: not live.get(link.name) or not live.get(link.name).child)
         guard = lab.capture_fail_closed(model, 560)
         snapshot = collect()
-        assert snapshot["business"] == State.UNKNOWN and not snapshot["collector_valid"]
+        assert snapshot["collector_valid"] and snapshot["business"] == State.UNKNOWN
+        assert (
+            next(row for row in snapshot["sites"] if row["site_id"] == link.site_id)["child"]
+            == State.DOWN
+        )
     finally:
-        ip("link", "set", link.name, "up")
+        cli("initiate", "--site", link.site_id, "--confirm")
+    assert collect()["collector_valid"]
     emit("P07", "An unavailable XFRM path fails guarded UDP without private WAN plaintext.", guard)
     node_a, node_b = (site["host"] for site in TOPO["sites"])
     test_a, test_b = (addr(site["lans"][0], 11) for site in TOPO["sites"])
@@ -574,6 +585,7 @@ def probe_edges(model):
 
 
 def runtime_faults(model):
+    startup_scrape()
     exporter_pid = int(HOST.service(EXPORTER, "MainPID"))
     sampler_pid = int(HOST.service(SAMPLER, "MainPID"))
     vpn_pid = HOST.assert_daemon({link.name for link in model.links})

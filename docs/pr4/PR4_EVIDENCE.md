@@ -20,6 +20,7 @@
 | `9835a53` | 正常双向 UDP 和 TTL 通过。单向丢包和反向成功都实际发生，但原夹具的 12.119 秒窗口包含启动和核验开销，证据按预期判为 UNKNOWN。 | [JSONL](https://github.com/yikkrrtykj/event-ipsec-hub/actions/runs/43619324869/artifacts/14123459208) |
 | `c17f942` | 双向 UDP、单向丢包、路径旁路及 TTL 通过。VICI 故障夹具恢复路径后，采集未在等待窗口内恢复。 | [JSONL](https://github.com/yikkrrtykj/event-ipsec-hub/actions/runs/43620514618/artifacts/14124840032) |
 | `3498413` | 三轮采集通过。重协商后的夹具只抓取一次指标，此时 exporter 尚未发布下一份健康快照，测试对空结果报错。 | [JSONL](https://github.com/yikkrrtykj/event-ipsec-hub/actions/runs/43621958328/artifacts/14124757576) |
+| `a1364f6` | UDP 各方向验证通过，VICI 故障撤销后 standalone 和 sampler 均拒绝 ROUTING。P07 启停了 Hub XFRM 接口，夹具改为只终止目标 CHILD，并在下一用例前核对健康。 | [JSONL](https://github.com/yikkrrtykj/event-ipsec-hub/actions/runs/43622939567/artifacts/14125635878) |
 
 ## 采样时限
 
