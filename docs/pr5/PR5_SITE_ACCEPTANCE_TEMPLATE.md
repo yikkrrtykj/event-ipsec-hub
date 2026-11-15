@@ -1,0 +1,70 @@
+# 赛事 Site-to-Site IPsec 现场验收与交接记录（复制到受控环境填写）
+
+> **空白即未验收 / SKIP**。本模板不包含真实赛事资料，不可将填有真实公网、PSK、人员信息的版本提交公开 Git 仓库。
+
+## A. 项目与授权
+
+| 字段 | 填写 |
+|---|---|
+| event_id / profile_SHA / repo HEAD | `_____` |
+| 日期/时区/维护窗口 / 实施审批 | `_____` |
+| Hub owner / Site A admin / Site B admin / Backup admin | `_____` |
+| 只读 observer / 带外管理/紧急联络 | `_____` |
+| site IDs / 精确业务 CIDRs（仅内部副本） | `_____` |
+| 现网配置备份 ID 与测试回滚人 | `_____` |
+
+## B. 外层路径与协议对账
+
+| 证据字段 | Primary Hub → Site A | Primary Hub → Site B | Backup Site A | Backup Site B |
+|---|---|---|---|---|
+| 路由/出口/ISP/固定公网 | SKIP | SKIP | SKIP | SKIP |
+| Peer IP / IKE ID 类型和值 | SKIP | SKIP | SKIP | SKIP |
+| Device model / OS full build / HA / VR | SKIP | SKIP | SKIP | SKIP |
+| IKEv2/PSK 独立交付/Proposal/DPD | SKIP | SKIP | SKIP | SKIP |
+| CHILD/ESP/PFS/Selectors/Proxy IDs | SKIP | SKIP | SKIP | SKIP |
+| NAT exemption / 安全区域 / 双向 ACL | SKIP | SKIP | SKIP | SKIP |
+| IKE SA 和 CHILD SA + 核对 SPI 证据 | SKIP | SKIP | SKIP | SKIP |
+| 路由优先级与本地/远端精确 CIDR | SKIP | SKIP | SKIP | SKIP |
+| 独立 Track 源/出口/目标/TTL | SKIP | SKIP | SKIP | SKIP |
+
+## C. 每对允许 CIDR 的业务实测（按授权 pairs 复制行）
+
+| src CIDR/测试主机 | dst CIDR/测试主机 | path | 方向 | 协议 | 发送/接收 | 原始源 IP | RTT / Loss / Jitter | MTU | PCAP/签名摘要 | PASS/FAIL/SKIP |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `_____` | `_____` | primary | A→B | UDP | `_____` | `_____` | `_____` | `_____` | `_____` | SKIP |
+| `_____` | `_____` | primary | B→A | UDP | `_____` | `_____` | `_____` | `_____` | `_____` | SKIP |
+| `_____` | `_____` | primary | A→B | TCP | `_____` | `_____` | `_____` | `_____` | `_____` | SKIP |
+| `_____` | `_____` | primary | B→A | TCP | `_____` | `_____` | `_____` | `_____` | `_____` | SKIP |
+| `_____` | `_____` | backup | A→B | UDP | `_____` | `_____` | `_____` | `_____` | `_____` | SKIP |
+| `_____` | `_____` | backup | B→A | UDP | `_____` | `_____` | `_____` | `_____` | `_____` | SKIP |
+
+## D. 主备/故障与回切
+
+| case | 故障注入与观察 | 双端路由一致性 | 业务丢包/中断/回切 | 真实证据 | 结果 |
+|---|---|---|---|---|---|
+| PRIM-LOSS-A | A 端主链路故障 | `_____` | `_____` | `_____` | SKIP |
+| PRIM-LOSS-B | B 端主链路故障 | `_____` | `_____` | `_____` | SKIP |
+| BACKUP-ONLY | 两端在备路径双向可用 | `_____` | `_____` | `_____` | SKIP |
+| ASYMMETRY | 只有一端切换 | `_____` | `_____` | `_____` | SKIP |
+| FAILBACK | 一端先恢复，两端协调回切 | `_____` | `_____` | `_____` | SKIP |
+| BOTH-DOWN | 主备双断，私网不可明文外泄 | `_____` | `_____` | `_____` | SKIP |
+| DPD-RECONNECT | 无人值守断线恢复（需另行验证） | `_____` | `_____` | `_____` | SKIP |
+
+## E. 赛事功能验证
+
+| 场景 | 验证人 | 实测结果 | 备注 |
+|---|---|---|---|
+| SRT 双向实时贡献业务 | `_____` | SKIP | 帧丢失、端到端 RTT、抖动、码率、重连 |
+| 游戏/制作系统通信 | `_____` | SKIP | 游戏服务器/OB 业务实际收发 |
+| QoS/ISP 主备对业务影响 | `_____` | SKIP | 本项目不自动修改站点 QoS |
+| 监控及告警（真实飞书需单独授权） | `_____` | SKIP | SA/业务路径须独立显示 |
+
+## F. 停止/回滚与最终签收
+
+- 未解除的 FAIL/STOP：`_____`
+- 证据缺失与 SKIP 清单：`_____`
+- 对端设备配置备份哈希、Hub backup_id：`_____`
+- 恢复后的 route/SA/业务重新检查：`_____`
+- 撤销计划（完成后仅本项目对象）、PSK 轮换：`_____`
+- 双方签收：Site A `_____`、Site B `_____`、Hub `_____`、Backup `_____`
+- **结果**：`PASS / FAIL / SKIP / STOP`（只有范围内所有必需证据都通过才能 PASS）
