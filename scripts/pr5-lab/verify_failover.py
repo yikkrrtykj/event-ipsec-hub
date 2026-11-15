@@ -276,7 +276,12 @@ def exchange(protocol, site, source, target, port, nonce, *, peer=None):
 def primary_adjacencies():
     details = []
     for site in SITES:
-        flags = json.loads(ip(site, "-j", "link", "show", "primary").stdout)[0]["flags"]
+        interfaces = json.loads(ip(site, "-j", "link", "show", "dev", "primary").stdout)
+        require(
+            len(interfaces) == 1 and interfaces[0].get("ifname") == "primary",
+            "Link inventory did not resolve the named fixture interface.",
+        )
+        flags = interfaces[0]["flags"]
         target = gateway(site, "primary")
         source = target.removesuffix(".1") + ".2"
         row = ip(site, "-4", "-j", "route", "get", target, "from", source, check=False)
@@ -306,7 +311,9 @@ def prove(path):
     for site, protocol in product(SITES, receipts):
         for source, target in product(LAN[site], LAN[REMOTE[site]]):
             port = str(41000 + sum(len(rows) for rows in receipts.values()))
-            receipts[protocol].append(exchange(protocol, site, source, target, port, nonce))
+            receipts[protocol].append(
+                exchange(protocol, site, source, target, port, f"{nonce}/{port}")
+            )
     end = counters()
     deltas = {name: [b - a for a, b in zip(start[name], end[name], strict=True)] for name in end}
     require(

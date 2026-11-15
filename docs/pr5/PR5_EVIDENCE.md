@@ -32,4 +32,5 @@ nftables 和其他基线。受控回切的示例计时为收齐全部回执的�
 - 首次扩展测试为 161 PASS、2 FAIL。更名测试漏改监控探针引用，通配测试提前触发成对字段约束。已修正两个测试输入，使其覆盖指定场景。Windows 本机 ShellCheck 可执行文件启动时返回 DLL 重定位错误，使用 Linux CI 验证相同脚本。
 - 首轮 QEMU 模拟在 B06 取得双向备线回执，B07 在关闭主接口后重复删除主路由时返回退出码 2，F12 的根命名空间基线通过。后续模拟先读取精确 FIB，再撤销仍存在且归属匹配的测试路由，并分别记录接口关闭引起的变化与显式撤销。[历史 FAIL 工作流](https://github.com/yikkrrtykj/event-ipsec-hub/actions/runs/43703342153) · [原始 JSONL](https://github.com/yikkrrtykj/event-ipsec-hub/actions/runs/43703342153/artifacts/14157339196)
 - 第二轮 B07 确认内核已撤销两条精确路由，B08 按预期 STOP，B10 双向业务验证通过。B11 的接口 carrier 标志断言失败。后续测试独立记录管理状态、下一跳 FIB 和指定源地址 UDP 邻接回执，再核对双站业务仍走备路径。[历史 FAIL 工作流](https://github.com/yikkrrtykj/event-ipsec-hub/actions/runs/43704719048) · [原始 JSONL](https://github.com/yikkrrtykj/event-ipsec-hub/actions/runs/43704719048/artifacts/14158242344)
+- 第三轮模拟全部断言通过，复核 JSONL 发现没有使用 `dev` 的接口查询误把 `lo` 标志记为主接口。实际 FIB 与 UDP 邻接回执彼此一致。修正后明确按设备名查询并核验 `ifname`，同时让每次收发的 nonce 独立。[历史工作流](https://github.com/yikkrrtykj/event-ipsec-hub/actions/runs/43706758070) · [原始 JSONL](https://github.com/yikkrrtykj/event-ipsec-hub/actions/runs/43706758070/artifacts/14159250703)
 - 后续失败与修复使用 PR 下对应提交的 Actions 日志和 Artifact 留档，最终结果见 PR 描述。
