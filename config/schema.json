@@ -74,6 +74,7 @@
       "properties": {
         "enabled": {"type": "boolean"},
         "type": {"const": "external_managed"},
+        "transit_support": {"enum": ["unknown", "supported", "unsupported"]},
         "peer_profile_ref": {"$ref": "#/$defs/id"},
         "provider_label": {"$ref": "#/$defs/label"},
         "location_label": {"$ref": "#/$defs/label"},

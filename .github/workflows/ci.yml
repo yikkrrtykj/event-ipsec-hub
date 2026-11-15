@@ -17,22 +17,29 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: '3.12'
       - name: Install the packaged CLI and test tools
+        id: install
         run: python -m pip install '.[dev]'
       - name: Python lint
+        id: lint
         run: |
           ruff check .
           ruff format --check .
       - name: Tests
-        run: python -m pytest -q
+        id: tests
+        run: python -m pytest -q --junitxml="${RUNNER_TEMP}/ipsecvpn-pytest.xml"
       - name: ShellCheck
+        id: shellcheck
         run: shellcheck scripts/*.sh scripts/pr2-vm/*.sh
       - name: Validate example and fixture profiles using the installed CLI
+        id: profiles
         run: bash scripts/validate-examples.sh
       - name: Smoke-test the wheel outside the checkout
+        id: wheel
         shell: bash
         run: |
           work="$(mktemp -d "${RUNNER_TEMP}/wheel-smoke.XXXXXX")"
@@ -51,10 +58,13 @@ jobs:
           venv/bin/python -I -c 'import ipsecvpn.monitoring.exporter, ipsecvpn.monitoring.bridge'
           site_id="$(venv/bin/python -c 'import yaml; print(yaml.safe_load(open("profile.yaml"))["sites"][0]["id"])')"
           venv/bin/ipsecvpn export-peer -c profile.yaml --site "$site_id" --format json > handoff.json
-          venv/bin/python -c 'import json; assert json.load(open("handoff.json"))["status"] == "PASS"'
+          venv/bin/ipsecvpn export-peer -c profile.yaml --site "$site_id" --format md > handoff.md
+          venv/bin/python -c 'import json; row=json.load(open("handoff.json")); assert row["status"] == "PASS" and row["delivery"]["classification"] == "NOT_APPLYABLE_CONFIG" and row["acceptance"]["status"] == "SKIP"'
+          grep -q NOT_APPLYABLE_CONFIG handoff.md
           venv/bin/python -c 'import json; assert len(json.load(open("render.json"))["manifest"]["links"]) == 2'
           venv/bin/python -c 'import json; assert all(json.load(open(name))["data_path"]["status"] == "SKIP" for name in ("status.json", "doctor.json"))'
       - name: Scan reachable commits for secrets
+        id: secrets
         shell: bash
         run: |
           scan_dir="$(mktemp -d)"
@@ -71,3 +81,16 @@ jobs:
             tar -xzf "$archive" gitleaks
           )
           "$scan_dir/gitleaks" git --redact=100 --no-banner --log-opts=HEAD .
+      - name: Record PR5 offline acceptance outcomes
+        if: ${{ !cancelled() }}
+        env:
+          OFFLINE_OUTCOMES: ${{ toJSON(steps) }}
+        run: |
+          python scripts/pr5-lab/offline_evidence.py \
+            "$RUNNER_TEMP/ipsecvpn-pytest.xml" "$RUNNER_TEMP/ipsecvpn-pr5-offline.jsonl"
+      - name: Save sanitized offline acceptance evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: ipsecvpn-pr5-offline-evidence
+          path: ${{ runner.temp }}/ipsecvpn-pr5-offline.jsonl

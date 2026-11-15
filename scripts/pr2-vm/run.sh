@@ -7,6 +7,7 @@ case "$suite" in
     pr2) extra_packages=() ;;
     pr3) extra_packages=(tcpdump) ;;
     pr4) extra_packages=(tcpdump prometheus prometheus-alertmanager) ;;
+    pr5) extra_packages=() ;;
     *) printf '%s\n' 'Unknown isolated VM suite.' >&2; exit 2 ;;
 esac
 work="$(mktemp -d)"
@@ -27,6 +28,8 @@ cleanup() {
             >/dev/null 2>&1 || true
     elif [[ "$suite" == pr4 ]]; then
         evidence=/var/tmp/ipsecvpn-pr4-acceptance.jsonl
+    elif [[ "$suite" == pr5 ]]; then
+        evidence=/var/tmp/ipsecvpn-pr5-simulation.jsonl
     fi
     if guest "sudo cat $evidence" > "$work/acceptance.jsonl" 2>/dev/null; then
         cat "$work/acceptance.jsonl"
@@ -50,6 +53,9 @@ python -m pip wheel --wheel-dir "$work/payload/wheels" "$root"
 cp "$root"/scripts/pr2-vm/guest.sh "$work/payload/"
 if [[ "$suite" == pr3 || "$suite" == pr4 ]]; then
     cp "$root"/scripts/pr3-lab/{verify.py,topology.py,traffic.py,topology.json} "$work/payload/"
+    git -C "$root" rev-parse HEAD > "$work/payload/head-sha"
+elif [[ "$suite" == pr5 ]]; then
+    cp "$root"/scripts/pr5-lab/verify_failover.py "$root"/scripts/pr3-lab/traffic.py "$work/payload/"
     git -C "$root" rev-parse HEAD > "$work/payload/head-sha"
 else
     cp "$root"/scripts/pr2-vm/verify.py "$work/payload/"
@@ -117,6 +123,10 @@ cp "$work"/apt-archives/*.deb "$work/payload/apt/"
 (cd "$work/payload/apt" && dpkg-scanpackages -m . /dev/null > Packages)
 scp "${ssh_options[@]}" -P 2222 -r "$work/payload" ubuntu@127.0.0.1:lab
 guest "sudo bash /home/ubuntu/lab/guest.sh $suite"
+if [[ "$suite" == pr5 ]]; then
+    guest 'true'
+    exit 0
+fi
 before="$(guest 'cat /proc/sys/kernel/random/boot_id')"
 guest 'sudo systemctl reboot --no-block' || true
 for _ in {1..100}; do
