@@ -47,6 +47,8 @@ jobs:
           venv/bin/ipsecvpn render -c profile.yaml --json > render.json
           venv/bin/ipsecvpn status --json > status.json
           venv/bin/ipsecvpn doctor --json > doctor.json
+          venv/bin/ipsecvpn monitor validate -c profile.yaml
+          venv/bin/python -I -c 'import ipsecvpn.monitoring.exporter, ipsecvpn.monitoring.bridge'
           site_id="$(venv/bin/python -c 'import yaml; print(yaml.safe_load(open("profile.yaml"))["sites"][0]["id"])')"
           venv/bin/ipsecvpn export-peer -c profile.yaml --site "$site_id" --format json > handoff.json
           venv/bin/python -c 'import json; assert json.load(open("handoff.json"))["status"] == "PASS"'

@@ -1,8 +1,8 @@
-# ipsecVPN 通用赛事网关工具
+# event-ipsec-hub 通用赛事网关工具
 
 ipsecVPN 面向电竞赛事、场馆和制作团队的三层站点互通。每场赛事通过独立 profile 定义一台 Linux Hub、两个外部站点及获准互通的 IPv4 网段。站点名称和角色、国家和地区、地址、VPS 供应商、运营商及防火墙型号随 profile 变化。外部备网关可以留空，也可登记为人工交接对象。
 
-PR #1 已按 [V2.0 规范](docs/SPEC.md)交付离线配置校验、拓扑计划和参数单。PR #2 交付授权隔离 Ubuntu 24.04 VM 的本机部署。Draft PR #3 在 Linux Hub 和两个隔离 Linux 对端上验证实际 IKEv2/CHILD 与数据路径。现场厂商设备、真实赛事链路和外部备用切换继续为 SKIP。
+PR #1 已按 [V2.0 规范](docs/SPEC.md)交付离线配置校验、拓扑计划和参数单。PR #2 交付授权隔离 Ubuntu 24.04 VM 的本机部署。PR #3 已合并，在 Linux Hub 和两个隔离 Linux 对端上验证实际 IKEv2/CHILD 与数据路径。仓库已迁移到 [event-ipsec-hub](https://github.com/yikkrrtykj/event-ipsec-hub)，CLI 名称仍为 `ipsecvpn`。现场厂商设备、真实赛事链路和外部备用切换继续为 SKIP。
 
 ## 本地试用
 
@@ -43,6 +43,7 @@ ipsecvpn export-peer -c config/event.example.yaml --site stage-b --format json
 - [P0/P1/P2 能力与 PR #2–#5 验收计划](docs/roadmap.md)
 - [隔离 VM 安装](docs/install.md)、[网络所有权](docs/network-ownership.md)、[备份回滚](docs/rollback.md)与[密钥安全](docs/security.md)
 - [活动 SA 所有权](docs/pr3/SA_OWNERSHIP_DESIGN.md)与 [三节点验收矩阵](docs/pr3/PR3_ACCEPTANCE.md)
+- [可选监控与隔离运行手册](docs/pr4/OPERATIONS.md)
 
 ```bash
 python -m pip install '.[dev]'

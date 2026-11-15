@@ -10,6 +10,18 @@ from .secureio import Stop, read_record
 from .transaction import ACTIVE, INSTALLED, JOURNAL, TERMINAL, installed_record
 
 
+def inspect_owned(host, install, *, stable=False):
+    pending = read_record(JOURNAL)
+    if pending and pending["phase"] not in TERMINAL:
+        raise SAError("UNFINISHED_TRANSACTION", "An unfinished transaction needs review.")
+    active = read_record(ACTIVE)
+    manifest, live, pid = owned_resources(host, install, active)
+    # Reject concurrent configuration replacement even when its resources read cleanly.
+    if stable and (read_record(ACTIVE) != active or read_record(JOURNAL) != pending):
+        raise SAError("SA_TRANSITION", "The active deployment changed during observation.")
+    return active, manifest, live, pid
+
+
 def status_report(host=None):
     host = host or Host()
     result = {
@@ -27,12 +39,8 @@ def status_report(host=None):
         stage = "host"
         host.probe()
         install = installed_record()
-        pending = read_record(JOURNAL)
-        if pending and pending["phase"] not in TERMINAL:
-            raise SAError("UNFINISHED_TRANSACTION", "An unfinished transaction needs review.")
         stage = "daemon_and_kernel"
-        active = read_record(ACTIVE)
-        manifest, live, _ = owned_resources(host, install, active)
+        _, manifest, live, _ = inspect_owned(host, install)
     except (Stop, OSError, KeyError, ValueError) as exc:
         detail = str(exc) if isinstance(exc, Stop) else "A protected observation was unavailable."
         reason = getattr(exc, "reason", "UNVERIFIED_RUNTIME")

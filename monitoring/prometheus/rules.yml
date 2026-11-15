@@ -1,0 +1,73 @@
+groups:
+  - name: event-ipsec-hub
+    rules:
+      - alert: HubExporterDown
+        expr: 'up{job="event-ipsec-hub"} == 0 or absent(up{job="event-ipsec-hub"})'
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: HubExporterDown on an event IPsec Hub
+      - alert: HubCollectorStale
+        expr: 'event_ipsec_collector_healthy == 0 or (time() - event_ipsec_collector_last_success_timestamp_seconds > 90)'
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: HubCollectorStale on an event IPsec Hub
+      - alert: IpsecOwnershipUnknown
+        expr: 'event_ipsec_observation_reason{reason_code=~"UNOWNED_SA|UNOWNED_DAEMON|UNVERIFIED_RUNTIME"} == 1'
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: IpsecOwnershipUnknown on an event IPsec Hub
+      - alert: IpsecIkeDown
+        expr: 'event_ipsec_site_ike_state == 0'
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: IpsecIkeDown on an event IPsec Hub
+      - alert: IpsecChildDown
+        expr: 'event_ipsec_site_child_state == 0'
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: IpsecChildDown on an event IPsec Hub
+      - alert: IpsecKernelMismatch
+        expr: 'event_ipsec_observation_reason{reason_code="UNOWNED_SA"} == 1'
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: IpsecKernelMismatch on an event IPsec Hub
+      - alert: IpsecPathDown
+        expr: 'event_ipsec_path_state == 0'
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: IpsecPathDown on an event IPsec Hub
+      - alert: IpsecPathUnverified
+        expr: 'event_ipsec_path_state == -1'
+        for: 2m
+        labels:
+          severity: info
+        annotations:
+          summary: IpsecPathUnverified on an event IPsec Hub
+      - alert: IpsecOneWay
+        expr: '(count by (event_id,hub_id) (event_ipsec_path_state == 1) == 1) and on (event_id,hub_id) (count by (event_id,hub_id) (event_ipsec_path_state == 0) == 1)'
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: IpsecOneWay on an event IPsec Hub
+      - alert: IpsecFrequentRekey
+        expr: 'event_ipsec_site_rekeys_in_window >= 3'
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: IpsecFrequentRekey on an event IPsec Hub

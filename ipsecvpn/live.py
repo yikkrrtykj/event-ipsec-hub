@@ -8,12 +8,24 @@ from vici.exception import CommandException
 from .renderer import build_manifest, connection_settings
 from .resources import Resources
 from .sa import SAError, identity, inventory, session
-from .secureio import Stop
+from .secureio import ObservationStop, Stop
 
 
 def assert_baseline(active, baseline):
     if active and active.get("host_baseline", baseline) != baseline:
-        raise Stop("The recorded SSH, routing or foreign firewall baseline has changed.")
+        changed = {
+            key for key, value in active["host_baseline"].items() if baseline.get(key) != value
+        }
+        stage = {
+            "foreign_nft": "NFTABLES",
+            "ssh": "SSH_BASELINE",
+            "default_routes": "ROUTING",
+            "foreign_routes": "ROUTING",
+            "sysctl": "SYSCTL_BASELINE",
+        }.get(next(iter(changed)) if len(changed) == 1 else "", "HOST_BASELINE")
+        raise ObservationStop(
+            "The recorded SSH, routing or foreign firewall baseline has changed.", stage
+        )
 
 
 def owned_resources(host, install, active):

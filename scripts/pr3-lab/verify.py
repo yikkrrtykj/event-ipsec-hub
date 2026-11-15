@@ -418,12 +418,16 @@ def exchange(
         stop_process(server)
 
 
-def begin_captures(model, *, wan_only=False):
+def begin_captures(model, *, wan_only=False, probe=False):
     points = [
         ("hub", TOPO["wan"], None, "ip"),
         ("wan-switch", "bridge", "wan-switch", "ip"),
     ]
-    for link, site in zip(model.links, TOPO["sites"], strict=True) if not wan_only else ():
+    if probe:
+        points = [points[1], *(("hub", link.name, None, "ip") for link in model.links)]
+    for link, site in (
+        zip(model.links, TOPO["sites"], strict=True) if not (wan_only or probe) else ()
+    ):
         points.extend(
             (
                 ("hub", link.name, None, "ip"),
