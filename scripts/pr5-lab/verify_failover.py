@@ -6,6 +6,7 @@ import socket
 import subprocess
 import sys
 import time
+import uuid
 from contextlib import ExitStack
 from datetime import UTC, datetime
 from itertools import product
@@ -85,13 +86,6 @@ def change_route(site, path, enabled):
             ip(site, "route", "del", destination, *scope)
         changed += 1
     return changed
-
-
-def primary_carriers():
-    return tuple(
-        "LOWER_UP" in json.loads(ip(site, "-j", "link", "show", "primary").stdout)[0]["flags"]
-        for site in SITES
-    )
 
 
 def add_counter(node, name):
@@ -239,9 +233,9 @@ def traffic(node, *args):
     return ns(node, sys.executable, str(ROOT / "traffic.py"), *args)
 
 
-def exchange(protocol, site, source, target, port):
+def exchange(protocol, site, source, target, port, nonce, *, peer=None):
     with subprocess.Popen(
-        traffic(REMOTE[site], "server", protocol, target, port, "1"),
+        traffic(peer or REMOTE[site], "server", protocol, target, port, "1"),
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -260,7 +254,7 @@ def exchange(protocol, site, source, target, port):
                     port,
                     "1",
                     "256",
-                    f"pr5-{port}",
+                    nonce,
                     "default",
                     "0",
                 )
@@ -279,15 +273,40 @@ def exchange(protocol, site, source, target, port):
     return sent[0]["sha256"]
 
 
+def primary_adjacencies():
+    details = []
+    for site in SITES:
+        flags = json.loads(ip(site, "-j", "link", "show", "primary").stdout)[0]["flags"]
+        target = gateway(site, "primary")
+        source = target.removesuffix(".1") + ".2"
+        row = ip(site, "-4", "-j", "route", "get", target, "from", source, check=False)
+        device = json.loads(row.stdout)[0].get("dev") if row.returncode == 0 else None
+        receipt = None
+        if "UP" in flags and device == "primary":
+            receipt = exchange(
+                "udp", site, source, target, "41902", uuid.uuid4().hex, peer=TRANSIT["primary"]
+            )
+        details.append(
+            {
+                "site": site,
+                "interface_flags": flags,
+                "gateway_lookup": device,
+                "adjacency_receipt_sha256": receipt,
+            }
+        )
+    return tuple(row["adjacency_receipt_sha256"] is not None for row in details), details
+
+
 def prove(path):
     selections = paths()
     require(selections == (path, path), "Both sides must select the tested route.")
     start = counters()
     receipts = {"udp": [], "tcp": []}
+    nonce = uuid.uuid4().hex
     for site, protocol in product(SITES, receipts):
         for source, target in product(LAN[site], LAN[REMOTE[site]]):
             port = str(41000 + sum(len(rows) for rows in receipts.values()))
-            receipts[protocol].append(exchange(protocol, site, source, target, port))
+            receipts[protocol].append(exchange(protocol, site, source, target, port, nonce))
     end = counters()
     deltas = {name: [b - a for a, b in zip(start[name], end[name], strict=True)] for name in end}
     require(
@@ -375,12 +394,15 @@ def scenario():
         expected = "Both still select backup, with RECOVERY_PENDING."
         ip(SITES[0], "link", "set", "primary", "up")
         backup, traffic_proof = prove("backup")
-        candidates = primary_carriers()
-        require(candidates == (True, False), expected)
+        candidates, adjacencies = primary_adjacencies()
+        require(candidates == (True, False), f"Unexpected adjacency receipts: {adjacencies}")
         decision = observe(*paths(), backup, primary_ready=candidates)
         require(decision["state"] == "RECOVERY_PENDING", expected)
         report(
-            case, action, expected, {**decision, **traffic_proof, "primary_carriers": candidates}
+            case,
+            action,
+            expected,
+            {**decision, **traffic_proof, "primary_adjacencies": adjacencies},
         )
 
         case = "B13"
@@ -390,9 +412,9 @@ def scenario():
             ip(SITES[0], "link", "set", "primary", link_state)
             require(paths() == ("backup", "backup"), expected)
         ip(SITES[1], "link", "set", "primary", "up")
-        candidates = primary_carriers()
-        require(candidates == (True, True), "Both synthetic candidate links must be up.")
         backup, traffic_proof = prove("backup")
+        candidates, adjacencies = primary_adjacencies()
+        require(candidates == (True, True), f"Unexpected adjacency receipts: {adjacencies}")
         decision = observe(*paths(), backup, primary_ready=candidates, hold_met=False)
         require(decision["state"] == "RECOVERY_PENDING", expected)
         require(
@@ -408,7 +430,7 @@ def scenario():
                 **decision,
                 **traffic_proof,
                 "link_transitions": 4,
-                "primary_carriers": candidates,
+                "primary_adjacencies": adjacencies,
             },
         )
 
