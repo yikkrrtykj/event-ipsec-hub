@@ -30,4 +30,5 @@ nftables 和其他基线。受控回切的示例计时为收齐全部回执的�
 
 - 首次本地实现检查发现原交接回归要求 `backup.links` 保持原结构，结果为 105 PASS、1 FAIL。已保留原字段，新增派生数据放在 `backup.handoff`。同一轮 Ruff 发现一处未用导入和一处超长行，均已修正。
 - 首次扩展测试为 161 PASS、2 FAIL。更名测试漏改监控探针引用，通配测试提前触发成对字段约束。已修正两个测试输入，使其覆盖指定场景。Windows 本机 ShellCheck 可执行文件启动时返回 DLL 重定位错误，使用 Linux CI 验证相同脚本。
+- 首轮 QEMU 模拟在 B06 取得双向备线回执，B07 在关闭主接口后重复删除主路由时返回退出码 2，F12 的根命名空间基线通过。后续模拟先读取精确 FIB，再撤销仍存在且归属匹配的测试路由，并分别记录接口关闭引起的变化与显式撤销。[历史 FAIL 工作流](https://github.com/yikkrrtykj/event-ipsec-hub/actions/runs/43703342153) · [原始 JSONL](https://github.com/yikkrrtykj/event-ipsec-hub/actions/runs/43703342153/artifacts/14157339196)
 - 后续失败与修复使用 PR 下对应提交的 Actions 日志和 Artifact 留档，最终结果见 PR 描述。

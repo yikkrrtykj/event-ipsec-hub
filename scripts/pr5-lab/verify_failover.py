@@ -65,20 +65,33 @@ def connect(site, peer, path):
 
 
 def change_route(site, path, enabled):
+    changed = 0
     for address in LAN[REMOTE[site]]:
-        action = "replace" if enabled else "del"
-        ip(
-            site,
-            "route",
-            action,
-            network(address),
-            "via",
-            gateway(site, path),
-            "dev",
-            path,
-            "metric",
-            METRIC[path],
-        )
+        destination = network(address)
+        scope = ("dev", path, "metric", METRIC[path])
+        if enabled:
+            ip(site, "route", "replace", destination, "via", gateway(site, path), *scope)
+        else:
+            rows = json.loads(ip(site, "-4", "-j", "route", "show", "exact", destination).stdout)
+            current = [row for row in rows if row.get("metric") == int(METRIC[path])]
+            if not current:
+                continue
+            require(
+                len(current) == 1
+                and current[0].get("dev") == path
+                and current[0].get("gateway") == gateway(site, path),
+                "An unexpected route uses the fixture path's metric.",
+            )
+            ip(site, "route", "del", destination, *scope)
+        changed += 1
+    return changed
+
+
+def primary_carriers():
+    return tuple(
+        "LOWER_UP" in json.loads(ip(site, "-j", "link", "show", "primary").stdout)[0]["flags"]
+        for site in SITES
+    )
 
 
 def add_counter(node, name):
@@ -324,9 +337,19 @@ def scenario():
             observe(*paths(), primary)["state"] == "PRIMARY_VERIFIED", "Primary baseline failed."
         )
         ip(SITES[0], "link", "set", "primary", "down")
-        change_route(SITES[0], "primary", False)
+        withdrawn = change_route(SITES[0], "primary", False)
         require(paths() == ("backup", "primary"), expected)
-        report(case, action, expected, {"selected_paths": paths(), "before": traffic_proof})
+        report(
+            case,
+            action,
+            expected,
+            {
+                "selected_paths": paths(),
+                "emulated_controller_withdrawals": withdrawn,
+                "missing_after_link_down": len(LAN[SITES[1]]) - withdrawn,
+                "before": traffic_proof,
+            },
+        )
 
         case = "B08"
         action = "Evaluate the single-side route selection before peer changes"
@@ -340,6 +363,7 @@ def scenario():
         case = "B10"
         action = "Coordinate the Site B change to backup"
         expected = "Every authorized synthetic pair verifies UDP/TCP using only backup."
+        ip(SITES[1], "link", "set", "primary", "down")
         change_route(SITES[1], "primary", False)
         backup, traffic_proof = prove("backup")
         decision = observe(*paths(), backup)
@@ -351,9 +375,13 @@ def scenario():
         expected = "Both still select backup, with RECOVERY_PENDING."
         ip(SITES[0], "link", "set", "primary", "up")
         backup, traffic_proof = prove("backup")
-        decision = observe(*paths(), backup, primary_ready=(True, False))
+        candidates = primary_carriers()
+        require(candidates == (True, False), expected)
+        decision = observe(*paths(), backup, primary_ready=candidates)
         require(decision["state"] == "RECOVERY_PENDING", expected)
-        report(case, action, expected, {**decision, **traffic_proof})
+        report(
+            case, action, expected, {**decision, **traffic_proof, "primary_carriers": candidates}
+        )
 
         case = "B13"
         action = "Flap the first primary interface and withhold the recovery hold"
@@ -361,15 +389,28 @@ def scenario():
         for link_state in ("down", "up", "down", "up"):
             ip(SITES[0], "link", "set", "primary", link_state)
             require(paths() == ("backup", "backup"), expected)
+        ip(SITES[1], "link", "set", "primary", "up")
+        candidates = primary_carriers()
+        require(candidates == (True, True), "Both synthetic candidate links must be up.")
         backup, traffic_proof = prove("backup")
-        decision = observe(*paths(), backup, primary_ready=(True, True), hold_met=False)
+        decision = observe(*paths(), backup, primary_ready=candidates, hold_met=False)
         require(decision["state"] == "RECOVERY_PENDING", expected)
         require(
-            observe(*paths(), backup, primary_ready=(True, True), hold_met=True)["state"]
+            observe(*paths(), backup, primary_ready=candidates, hold_met=True)["state"]
             == "MANUAL_CUTOVER_REQUIRED",
             "A confirmed hold must still require a manual change.",
         )
-        report(case, action, expected, {**decision, **traffic_proof, "link_transitions": 4})
+        report(
+            case,
+            action,
+            expected,
+            {
+                **decision,
+                **traffic_proof,
+                "link_transitions": 4,
+                "primary_carriers": candidates,
+            },
+        )
 
         case = "B12"
         action = "Restore both sites' primary routes as an explicit lab operation"
@@ -441,7 +482,10 @@ def scenario():
             {**decision, "wan_control_packets": controls, "protected_wan_packets": leaks},
         )
     except (RuntimeError, subprocess.SubprocessError, OSError, ValueError) as exc:
-        report(case, action, expected, {"error": str(exc)}, "FAIL")
+        detail = {"error": str(exc)}
+        if isinstance(exc, subprocess.CalledProcessError) and exc.stderr:
+            detail["stderr"] = exc.stderr.strip()[:240]
+        report(case, action, expected, detail, "FAIL")
         raise
 
 
