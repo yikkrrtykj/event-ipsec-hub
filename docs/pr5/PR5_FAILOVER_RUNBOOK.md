@@ -31,21 +31,31 @@
 
 **注意：**主 Hub 的 PR4 UDP 证据只能证明**指定主 Hub 路径**，不能对外部备路径冒用。备路径必须有在其 ingress/egress 或备端 FIB 侧的独立可靠证据。
 
+| 观测状态 | 处置 |
+| --- | --- |
+| `PRIMARY_VERIFIED` / `BACKUP_VERIFIED` | 双端选路一致，指定路径内收到每对授权网段的双向 UDP/TCP 回执且保留源 IP。 |
+| `UNKNOWN` | FIB、回执或 TTL 无法核实。采集缺失时业务为 `SKIP`。实际探测失败记 `FAIL`，错误路径或源地址变化时 `STOP`。 |
+| `SINGLE_SIDE_TRANSITION` / `ASYMMETRIC_STOP` | 一端无路由或主备选路分叉，立即停止扩大变更。保留选路证据并联系另一端。 |
+| `BOTH_UNAVAILABLE` | 双端均无受保护转发路径。验证精确丢弃路由或策略，避免私网经公网默认路由外泄。 |
+| `RECOVERY_PENDING` | 当前备用业务经核实。继续留在备线，等待双端主路径回执和稳定窗口。 |
+| `MANUAL_CUTOVER_REQUIRED` | 双端主路径证据在约定稳定窗口内持续有效。值班人员仍须按批准窗口协调回切，再重新验证业务。 |
+
 ## 3. 推荐的保守实验步骤（不是可直接粘贴的设备命令）
 
 | 阶段 | 操作（真实设备需变更批准） | 必须观察 | 决策 |
 |---|---|---|---|
 | 0 | 冻结 baseline、双端快照 | SSH / console / 原有业务仍可达 | 任一不可达 STOP |
 | 1 | 在不切走业务前分别检查主和备 | 双路径各自 SA/路由/UDP/TCP/源 IP | 备路径无中转能力 STOP |
-| 2 | 注入 Site A 的主路径故障 | Site A 选路变化、Site B 尚未变化的非对称窗口 | 长期非对称 STOP |
+| 2 | 在批准窗口注入单侧主路径故障，冻结进一步变更 | 观察 Site A 失效后的 FIB 和 Site B 的未变路径，再用反向案例验证 | 非对称 STOP，协调控制者决定撤回或进入下一步 |
 | 3 | 按批准计划协调 Site B 切换 | 双端 FIB 一致、原业务源 IP、UDP/TCP | 失败回滚 |
-| 4 | 让 Site A 主链路提前恢复（Site B 未恢复） | Track 状态不等于双方选择同一路径 | 未同步则保持备用/人工处理 |
+| 4 | 让一个站点的主链路提前恢复 | 核对两站仍经备路径转发，收集恢复一侧的候选接口证据 | 保持备用，进入 RECOVERY_PENDING |
 | 5 | 双方主路径稳定再受控回切 | 两端路由、业务、MTU、丢包和中断窗口 | 失败回滚 |
 | 6 | 主备双故障或监控中断 | 私网不出公网默认路由、健康 UNKNOWN | 不切换/手工诊断 |
 
 ## 4. 抖动、故障检测、无人值守重连
 
 - Track interval / NQA / hold-down / recovery hold / route priority 由两站**各自设备**和项目实际业务测量决定，没有“通用 5 秒切换”承诺。
+- 双端分别记录首次故障、稳定后回执和批准时刻。在回复过期、探针走错出口或发生 flap 时重新开始稳定窗口。批准前记录两端仍用备线。人工执行顺序、允许的非对称窗口和撤销阈值须双方确认。
 - 当仅一个站点切换时，不能推断另一站也切换；监控与日志必须明确区分“单侧变更/双端稳定”。
 - 现有 strongSwan Hub 在 PR3 仅验证 DPD clear 后显式 `initiate` 恢复，**无人值守断线自动重连未验证**；纳入现场风险。自动 Track 的 enable 条件包括备路径真实稳定、双站同步及恢复后的去抖/回切测试。
 - SRT / 游戏 / UDP 长连接可能因切换或短期非对称断开；不能声称业务无感。报告需分别记录 SA 恢复时间、路径业务恢复时间和客户端重新建立会话时间。
@@ -61,3 +71,7 @@
 `test_id | before_hash | after_hash | UTC | site-A route/path | site-B route/path | cloud/backup route | A→B UDP/TCP | B→A UDP/TCP | MTU | max_loss | outage_s | failback_s | PASS/FAIL/SKIP/STOP | evidence_ref | signoff`
 
 未执行或无法测量填 `SKIP`，失败和超时填 `FAIL/STOP`，禁止留空后输出 PASS。
+
+## 7. 收尾
+
+两站分别恢复预演前批准的优先级、Track 和安全策略，复核双向业务及原有默认路由和管理连接。由 Hub、两站和备路径管理员分别签收，再按赛事生命周期撤销本次临时授权、探测和密钥。

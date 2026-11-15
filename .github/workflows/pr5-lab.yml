@@ -1,0 +1,40 @@
+name: PR5 isolated failover simulation
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'ipsecvpn/**'
+      - 'scripts/pr5-lab/**'
+      - 'scripts/pr2-vm/**'
+      - 'scripts/pr3-lab/traffic.py'
+      - 'config/**'
+      - 'pyproject.toml'
+      - '.github/workflows/pr5-lab.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  failover:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405
+        with:
+          python-version: '3.12'
+      - name: Run failover model against real routes and packets in a disposable QEMU guest
+        env:
+          IPSECVPN_EVIDENCE_FILE: ${{ runner.temp }}/ipsecvpn-pr5-simulation.jsonl
+        run: bash scripts/pr2-vm/run.sh pr5
+      - name: Save simulated route and traffic evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: ipsecvpn-pr5-simulation
+          path: ${{ runner.temp }}/ipsecvpn-pr5-simulation.jsonl

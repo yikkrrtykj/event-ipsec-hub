@@ -23,6 +23,8 @@ ipsecvpn export-peer -c config/event.example.yaml --site stage-b --format json
 
 山石设备默认生成 Hillstone / StoneOS 参数单，其他厂商使用通用参数单。可用 `--template hillstone` 或 `--template generic` 明确选择模板。JSON 用于交接和后续系统处理，设备配置由双方管理员按各自版本完成。省略导出的 `-c` 时，须先显式设置 `IPSECVPN_CONFIG`。
 
+两种模板均标为 `NOT_APPLYABLE_CONFIG`，包含 profile 摘要、IKE 身份类型、WAN Peer /32、精确选择器、双向安全区域与 NAT 豁免、逐网段验收和签收栏。导出只写 stdout。含真实拓扑的报告请在受控目录保存和传递。
+
 | 命令 | 输出与判定 |
 | --- | --- |
 | `profiles list` | 读取指定目录，默认 `/etc/ipsecvpn/profiles`。显示已保存的赛事和校验结果，活动 profile 为 `SKIP`。 |
@@ -36,6 +38,8 @@ ipsecvpn export-peer -c config/event.example.yaml --site stage-b --format json
 
 启用外部备网关时，离线交接要求两站各有唯一备链路，并填写备 Peer 公网地址、隧道名、授权备路由、主备路由优先级和 Track 目标。资料缺失时，`validate` 可对配置格式和拓扑返回 `PASS`，同时报告备用交接 `SKIP/INCOMPLETE`。此时 `plan` 保留主链路计划，`export-peer` 仅输出缺项诊断，两者状态均为 `SKIP`。备用资料齐全时显示 `PASS/COMPLETE`，现场验收仍为 `SKIP`。
 
+旧 profile 可直接使用。可选的 `backup.transit_support` 接受 `unknown`（默认）、`supported` 或 `unsupported`。在 `plan` 和 `export-peer` 的 `backup.feasibility` 中查看中转核验、业务路径和切换准入。供应商能力声明为 `supported` 后，现场仍须独立验证两站之间的备线路业务。中转不可用、证据缺失或备路由覆盖不全时，切换准入为 `STOP`。
+
 ## 配置与验证
 
 - [通用架构和配置约束](docs/architecture.md)
@@ -44,6 +48,7 @@ ipsecvpn export-peer -c config/event.example.yaml --site stage-b --format json
 - [隔离 VM 安装](docs/install.md)、[网络所有权](docs/network-ownership.md)、[备份回滚](docs/rollback.md)与[密钥安全](docs/security.md)
 - [活动 SA 所有权](docs/pr3/SA_OWNERSHIP_DESIGN.md)与 [三节点验收矩阵](docs/pr3/PR3_ACCEPTANCE.md)
 - [可选监控与隔离运行手册](docs/pr4/OPERATIONS.md)
+- [主备切换与回切](docs/pr5/PR5_FAILOVER_RUNBOOK.md)、[设备兼容性核对](docs/pr5/PR5_VENDOR_MATRIX.md)及[现场验收记录](docs/pr5/PR5_SITE_ACCEPTANCE_TEMPLATE.md)
 
 ```bash
 python -m pip install '.[dev]'

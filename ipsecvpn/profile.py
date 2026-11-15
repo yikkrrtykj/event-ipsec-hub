@@ -243,6 +243,17 @@ def _validate_optional_paths(profile):
         primary_endpoints = {profile["hub"]["public_endpoint"]} | {
             site["public_endpoint"] for site in sites.values()
         }
+        primary_endpoints.update(
+            primary["outer_path"][key]
+            for primary in profile["site_links"]
+            for key in ("source_ip", "gateway")
+            if key in primary["outer_path"]
+        )
+        primary_endpoints.update(
+            uplink["public_endpoint"]
+            for site in sites.values()
+            for uplink in site.get("uplinks", [])
+        )
         for link in links:
             site_id = link["site_id"]
             if site_id not in sites:

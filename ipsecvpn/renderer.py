@@ -4,7 +4,7 @@ import hashlib
 import json
 from dataclasses import asdict, dataclass
 
-from .handoff import build_plan
+from .handoff import HUB_DPD_ACTION, HUB_START_ACTION, build_plan, child_rekey_seconds
 from .profile import backup_readiness, validate_profile
 
 TABLE = "ipsecvpn"
@@ -98,7 +98,7 @@ def build_manifest(profile):
                 site_id=item["site_id"],
                 if_id=item["xfrm_if_id"],
                 wan=outer["interface"],
-                source=outer.get("source_ip", item["hub"]["public_endpoint"]),
+                source=item["hub_source"],
                 gateway=outer.get("gateway"),
                 peer=item["peer"]["public_endpoint"],
                 local_id=item["hub"]["ike_identity"],
@@ -139,9 +139,9 @@ def connection_settings(link):
                 "if_id_in": str(link.if_id),
                 "if_id_out": str(link.if_id),
                 "life_time": f"{link.child_lifetime}s",
-                "rekey_time": f"{max(1, link.child_lifetime * 9 // 10)}s",
-                "start_action": "none",
-                "dpd_action": "clear",
+                "rekey_time": f"{child_rekey_seconds(link.child_lifetime)}s",
+                "start_action": HUB_START_ACTION,
+                "dpd_action": HUB_DPD_ACTION,
                 "close_action": "none",
             }
         },

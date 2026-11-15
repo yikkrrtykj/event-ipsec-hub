@@ -9,6 +9,7 @@ case "$suite" in
     pr2) extra_packages=() ;;
     pr3) extra_packages=(tcpdump) ;;
     pr4) extra_packages=(tcpdump prometheus prometheus-alertmanager) ;;
+    pr5) extra_packages=() ;;
     *) exit 2 ;;
 esac
 guest_suite="$suite"
@@ -63,4 +64,5 @@ EOF
 systemctl enable --now nftables.service
 driver=verify.py
 if [[ "$suite" == pr4 ]]; then driver=verify_monitor.py; fi
+if [[ "$suite" == pr5 ]]; then driver=verify_failover.py; fi
 /opt/ipsecvpn-lab/venv/bin/python "/opt/ipsecvpn-lab/$driver" before-reboot

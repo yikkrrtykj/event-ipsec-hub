@@ -40,3 +40,5 @@
 - `Hillstone` 是 profile 中的 vendor 标签，**不是**设备配置自动化引擎。其 `if_id` 与 Linux XFRM 对象属于不同编号空间。
 - 对 StoneOS 5.5R11P2-v6 的 exact CLI、Phase2 组合、Track/NQA、HA 行为，仅现场版本及官方对应资料才能确认。
 - 云 VPN 拥有到两个 customer gateway 的两条隧道，不证明两个 customer LAN 可以通过云 VPN 互相转发；须核对 transit 路由与产品约束。
+- StoneOS 官方手册可用于识别 route-based 和 policy-based 两个配置入口。按现场完整 build 取得适用手册后再核对字段。[Hillstone StoneOS WebUI 指南](https://kb.hillstonenet.com/en/wp-content/uploads/2023/01/StoneOS_WebUI_User_Guide_X_5.5R10-1.pdf)
+- 腾讯云公开文档描述了 VPC 和 CCN 两类场景。需逐项核对所选产品、地域、隧道模式、路由及安全策略，再通过独立的备线路收发确认是否符合本站中转要求。当前仓库未验收任何云端产品实例。[应用场景](https://www-sg.tencentcloud.com/document/product/1037/39702) · [IPsec 网关常见问题](https://www-sg.tencentcloud.com/document/product/1037/53821)
