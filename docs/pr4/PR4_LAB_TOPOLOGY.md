@@ -20,6 +20,9 @@
 
 ## 证据结构
 
-`docs/pr4/PR4_EVIDENCE.md`，`docs/pr4/CODE_ACCEPTANCE.jsonl` 和两个 VM 产出的脱敏 JSONL 仅提供已运行证据；执行前不提交虚假 PASS。每个案例包含截图或 `ss` 的采样，promtool/Grafana parser 结果、path nonce 的 SHA-256 和时间窗、业务 Packet proof、Alertmanager bridge 发包/重试次数/响应 code、`main` 比较快照。不得导出真实 PSK、飞书 webhook、密钥或未经脱敏的 raw kernel dump。
+[阶段证据](PR4_EVIDENCE.md)、[PR #4 离线 CI](https://github.com/yikkrrtykj/event-ipsec-hub/actions/runs/43673246184)
+和[客体脱敏 JSONL](../evidence/archive/pr4-final.jsonl)仅记录真实执行。每个适用案例包含截图或 `ss` 采样、
+promtool/Grafana 解析结果、path nonce 的 SHA-256 和时间窗、业务报文证明、Alertmanager bridge 发包/重试次数与响应码，
+以及基线比较。不得导出真实 PSK、飞书 webhook、密钥或未经脱敏的原始内核数据。
 
 如果执行环境缺少 Prometheus / Alertmanager 测试工具：可以提供可复现的隔离安装（带校验和）并在 VM 实际运行；若做不到必须记录 `SKIP`，不得用单测模拟替代实际集成验收。禁止为了凑 PASS 自动关闭系统安全设置。

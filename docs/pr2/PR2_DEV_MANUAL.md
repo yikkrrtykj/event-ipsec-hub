@@ -1,23 +1,18 @@
-# ipsecVPN · PR #2 开发手册（强制交付合同）
+# V2.0 隔离 Ubuntu Hub 部署技术参考
 
-- **版本**：PR2-1.0 / 2026-11-06
-- **仓库**：https://github.com/yikkrrtykj/ipsecVPN
-- **精确基线**：`main` 的 merge commit `5f6ac250043c37d97cc375dae2250c89257b7ca2`
-- **PR 分支建议**：`codex/pr2-deployment-transaction`
-- **开发结果**：一个独立 **Draft PR**，严禁自动 merge；不接触生产 VPS、山石、腾讯云。
-- **上位规格**：`docs/SPEC.md` V2.0；本手册细化 PR #2 的实现和测试，不改变 PR #1 公共输出语义。
+实现与验收来源为 [PR #2](https://github.com/yikkrrtykj/event-ipsec-hub/pull/2)。[SPEC](../SPEC.md)定义 V2.0 兼容范围。
 
-## 0. 本阶段目标与完成定义
+## 0. 能力与验收边界
 
 在 PR #1 已完成的 **通用赛事 profile + 只读 CLI** 上，为 **Ubuntu 24.04 LTS** 实现可审计、可撤销的 **strongSwan IKEv2 + 双独立 XFRM 接口** 配置部署。站点/地域/VPS/ISP/网段/防火墙均来自 profile，不可写死。支持**一台 Linux Hub、恰好两个远端站点、每站一个主 IPsec 链路、每站多授权 IPv4 CIDR**。仅一个活动部署 profile。
 
-本 PR 达到的 PASS 必须指：**配置正确渲染、依赖和本机网络准备在隔离 Ubuntu 环境实际完成、可幂等应用、可恢复、不可破坏现有公网和 SSH 路径**。不能因为生成了配置就声称端到端 IPsec 已可用。
+本机部署的 PASS 必须指：**配置正确渲染、依赖和本机网络准备在隔离 Ubuntu 环境实际完成、可幂等应用、可恢复、不可破坏现有公网和 SSH 路径**。不能因为生成了配置就声称端到端 IPsec 已可用。
 
 **明确不做**：不建设真实上海/海外链路、不配置任何山石、腾讯云 API、CCN、主备自动切换、不接入 Prometheus/Grafana/飞书、不开发浏览器 UI。真实 IKE/CHILD SA 建链、跨两条隧道转发、UDP/TCP、重协商、MTU、现场 Track 分别留给 PR #3/#5；这些运行验收一律 `SKIP`，除非对应的隔离证据真实产生且在报告里注明边界。
 
 ## 1. 依赖与既有接口（必须向后兼容）
 
-Codex 开发前必须重新读取：
+配置与接口的约束如下。
 
 - `config/schema.json`、`ipsecvpn/profile.py`：两个任意站点、`site_links[].if_id`、`outer_path`、`secret_ref`、`traffic_policy.allowed_site_pairs`、`backup`。
 - `ipsecvpn/handoff.py`：`authorized_lans()`、站点与 Hub 的流量选择器推导。**同一拓扑模型**产生 Hub 端 `swanctl`、内层路由、nft ACL 和 peer handoff，禁止四份独立计算。
@@ -26,33 +21,9 @@ Codex 开发前必须重新读取：
 
 特别保留 PR #1 的备用状态：`backup.enabled=true` 但未完整填写时，`validate` 为格式 PASS 且备用 `SKIP/INCOMPLETE`；`plan` 仍输出主链路；`export-peer` 暂缓参数单。**PR #2 不应因外部备用资料缺失而误阻断合法主 Hub 的本机渲染/隔离部署**，但必须在输出和审计里说明 `external backup SKIP`，不得对备用报 READY。若设计有不同选择，先建立显式兼容性测试并在 PR 中解释。
 
-## 2. 组件与推荐目录
+## 2. 组件与打包边界
 
-建议将核心逻辑拆开，而不是写一个几千行 shell 脚本：
-
-```text
-ipsecvpn/
-  cli.py                    # 命令分发，保持向后兼容
-  renderer.py               # 从经过验证的 profile 产生不可变资源清单
-  host.py                   # OS/包/服务/网络冲突/权限检查
-  transaction.py            # 加锁、快照、journal、apply、rollback
-  resources.py              # 接口、路由、sysctl、nft、服务的所有权管理
-  secrets.py                # 受保护的 file: 引用和 PSK 处理
-  models.py                 # 已验证资源清单、运行状态和错误类别
-  templates/                # 纯模板，无真实环境数据
-scripts/
-  install.sh                # **薄包装**，转发至 Python CLI
-  validate-examples.sh     # PR #1 原有脚本不回归
-docs/
-  pr2/PR2_DEV_MANUAL.md
-  pr2/PR2_ACCEPTANCE.md
-  install.md                # 运维部署与升级（仅实验环境为已验收）
-  rollback.md
-  network-ownership.md
-  security.md
-```
-
-所有交付文件兼容 wheel 安装：安装后不依赖仓库工作目录或 `git`、测试 fixtures。使用 Python 模块内资源或 `importlib.resources`；CI 必须再次做仓库外 wheel smoke test。
+CLI、渲染、主机检查、事务、资源所有权和安全文件读取分属项目模块。安装脚本只包装 CLI。安装后的 wheel 不依赖仓库目录、Git 或测试 fixture，仓库外安装验证见 [验收矩阵](PR2_ACCEPTANCE.md)。
 
 ## 3. 资源所有权与零破坏承诺
 
@@ -182,9 +153,9 @@ NEW → PREFLIGHT_OK → SNAPSHOTTED → STAGED → APPLYING → VERIFIED → CO
 - 重启后能恢复项目拥有的必要接口/路由/ACL，不能依赖手动 SSH 输入；用明确 systemd 单元/可核对的配置，测试服务启动先后与异常处理。
 - 没有备份或者备份损坏时禁止破坏性 rollback；给出可操作的人工恢复步骤但不要伪恢复。
 
-## 9. 测试与验收要求（必须看另一文件）
+## 9. 测试与验收要求
 
-在 PR 内附 `docs/pr2/PR2_ACCEPTANCE.md`，至少满足：
+按[验收矩阵](PR2_ACCEPTANCE.md)保留以下回归。
 
 - PR #1 62 项（或新数量）全部继续 PASS。
 - pytest、Ruff、ShellCheck、JSON schema、Gitleaks、wheel 仓库外安装继续 PASS。
@@ -195,15 +166,11 @@ NEW → PREFLIGHT_OK → SNAPSHOTTED → STAGED → APPLYING → VERIFIED → CO
 - 生成的 `swanctl` 配置在目标版本由真实 daemon 加载并可被 `swanctl --list-conns` 列出，双链路 SA 可以全部处于未连接状态；这不是 PR #3 的业务可达验收。
 - 真实两站 IPsec 协商、UDP/TCP/MTU/真实山石/腾讯云切换，全部继续明确 `SKIP`。
 
-## 10. 仓库和 PR 提交约定
+## 10. 交付与记录
 
-1. 从 `5f6ac250043c37d97cc375dae2250c89257b7ca2` 的 `main` 新建开发分支，base/merge-base 与 main 对齐；不要把本手册直接当作对生产机执行的命令。
-2. 先审读技术设计与权责表，再实现纯渲染；后实现预检和快照，最后引入明确确认的有副作用操作。
-3. 每条重要执行动作有单测、隔离集成测试、故障注入和“不会影响第三方资源”的负面测试；文档声称与证据必须一致。更新 `README.md` 中“当前 Draft PR #1”的过时描述，明确 PR #1 已合并而 PR #2 仍属实验阶段。
-4. 不产生未授权 GitHub 资源或修改其它仓库；PR 必须 Draft，不合并、不推生产；任何强制停止事项用 `STOP` 报告原因与建议。
-5. 提交结尾报告：head SHA、base/merge-base、文件列表、变化摘要、所有 CI job 链接、每项 PASS/FAIL/SKIP、缺失环境和未解决风险、手工恢复路径。禁止把未执行的测试写成“已验证”。
+重要变更保留单测、隔离集成、故障注入和第三方资源守恒的证据。阻断项记录 STOP 原因与人工恢复路径，见 [SPEC 审查门槛](../SPEC.md#10-审查与交付)和[历史验收](PR2_EVIDENCE.md)。生产准备在 [#14](https://github.com/yikkrrtykj/event-ipsec-hub/issues/14)跟踪。
 
-## 11. 官方技术依据（Codex 应以部署时实际版本再次核对）
+## 11. 官方技术依据
 
 - strongSwan 5.9 Route-based VPN / XFRM：<https://docs.strongswan.org/docs/5.9/features/routeBasedVpn.html>
 - strongSwan `swanctl.conf`（`if_id_in/out`、Traffic Selectors、`start_action`）：<https://docs.strongswan.org/docs/5.9/swanctl/swanctlConf.html>

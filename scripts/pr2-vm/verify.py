@@ -1,6 +1,7 @@
 """Acceptance assertions executed by root inside the disposable Ubuntu guest."""
 
 import copy
+import hashlib
 import json
 import os
 import secrets
@@ -101,11 +102,15 @@ def cli(*args, ok=True):
 
 
 def emit(ids, verdict, expected, observed, audit_command=None):
+    head = (HERE / "head-sha").read_text(encoding="ascii").strip()
+    payload = hashlib.sha256((HERE / "payload.sha256").read_bytes()).hexdigest()
     with SUMMARY.open("a", encoding="utf-8") as stream:
         for case in ids.split():
             row = {
                 "case": case,
                 "at": datetime.now(UTC).isoformat(),
+                "head_sha": head,
+                "payload_sha256": payload,
                 "result": verdict,
                 "vm": "ipsecvpn-pr2-lab",
                 "versions": ENV,

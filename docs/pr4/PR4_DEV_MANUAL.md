@@ -1,10 +1,6 @@
-# PR #4 技术开发手册 — 可观测性、真实业务探针及飞书告警
+# V2.0 监控、探针与告警技术参考
 
-- 仓库：`yikkrrtykj/event-ipsec-hub`（以前名称 `ipsecVPN`）。
-- 唯一基线与预期 merge-base：`9fa763d40e0b81f7600f601e8b30c32f8d671233`。
-- 交付方式：一个独立 Draft PR；规范文档先提交，然后代码、测试、证据；不自动合并。
-- 适用范围：**一个活动赛事 profile、一台 Ubuntu 24.04 strongSwan Hub、两个任意命名站点**；生产写入继续禁止。
-- 系统限制：PR #2/#3 的 `lab-authorized`、systemd、SSH/路由/防火墙基线保护和 SA 所有权检查不可弱化。
+历史实现与验收见 [PR #4](https://github.com/yikkrrtykj/event-ipsec-hub/pull/4)。当前适用一台 Ubuntu 24.04 Hub、单活动 profile、两站，生产写入须另获授权。保留隔离标记、systemd、SSH、路由、防火墙和 SA 所有权门槛。
 
 ## 1. 目标和非目标
 
@@ -12,7 +8,7 @@
 
 必须给出安装完全可选的 Prometheus 指标端点、Grafana 面板、Prometheus 规则、Alertmanager→飞书机器人桥接、测试与配置撤销。**监控失效不得阻断 IPsec/SSH 或自动变更业务设备。**
 
-不做：自动 `initiate`、路由 Track、切主备、自动修复/restart、对接腾讯云 API、推送山石配置、用 Hub 自己 ping 证明 A↔B、生产公网开口、SRT QoE 结论、任意 N 站点/IPv6、长期性能 SLO。以上均 `SKIP`，在 PR #5 或单独后续阶段处理。DPD 目前经显式 `initiate` 恢复，**不得宣传无人值守自动重连**。
+不做：自动 `initiate`、路由 Track、切主备、自动修复/restart、对接腾讯云 API、推送山石配置、用 Hub 自己 ping 证明 A↔B、生产公网开口、SRT QoE 结论、任意 N 站点/IPv6、长期性能 SLO。这些能力在此阶段为 SKIP。多站监控和飞书待验证范围见 [#9](https://github.com/yikkrrtykj/event-ipsec-hub/issues/9)。DPD 目前经显式 `initiate` 恢复，**不得宣传无人值守自动重连**。
 
 ## 2. 总体架构与故障边界
 
@@ -104,19 +100,7 @@
 
 ## 9. 配置、CLI 与权限
 
-建议产品内独立配置 `monitoring`，参数可变、默认关闭。配置例子仅在文档中，用虚构事件/地址；时间窗口以参数命名且不写死任何赛事地域。新文件优先：
-
-```
-ipsecvpn/monitoring/{model,collector,exporter,probes,alerts,feishu,service}.py
-monitoring/prometheus/{scrape.example.yml,rules.yml}
-monitoring/grafana/event-ipsec-hub.json
-monitoring/alertmanager/receiver.example.yml
-monitoring/feishu/{bridge.example.yml,README.md}
-scripts/pr4-lab/{run.sh,guest.sh,verify.py,...}
-docs/pr4/{PR4_DEV_MANUAL.md,PR4_METRICS_ALERTS.md,PR4_ACCEPTANCE.md,...}
-```
-
-建议命令：`ipsecvpn monitor validate -c ...`、`ipsecvpn monitor snapshot --json`、`ipsecvpn monitor serve --dry-run|--confirm`、`ipsecvpn monitor stop --dry-run|--confirm`、`ipsecvpn monitor test-alert --dry-run`（仅本机验证，不发外网）、`ipsecvpn monitor doctor --json`。具体实现应遵循项目现有 CLI 风格，不强制引入破坏已有命令的全新 CLI 框架。
+使用独立 `monitoring` 配置，默认关闭。配置示例使用虚构赛事与地址。现有 CLI 的配置校验、快照、启停、只读诊断和飞书 mock 见[运行手册](OPERATIONS.md)。时间窗口可配置，受限环境中的测试通知仅发本机。
 
 - 如果启动服务作为持久变更，保留项目专属 systemd unit/状态文件、只写项目目录、可撤销且回滚；单纯生成 Grafana/Prometheus 片段不修改用户现有服务。
 - Linux collector 在带 `lab-authorized` 的隔离 QEMU VM 上实测；普通 Windows/Linux 无授权环境下离线校验可以运行，但任何启动/绑定/网络探测/本机部署变更必须 STOP。
@@ -124,13 +108,9 @@ docs/pr4/{PR4_DEV_MANUAL.md,PR4_METRICS_ALERTS.md,PR4_ACCEPTANCE.md,...}
 
 ## 10. 测试、交付和发布限制
 
-严格执行 `PR4_ACCEPTANCE.md`：原 85 pytest 及 PR2 38 VM case、PR3 三节点全部回归；新增读模式、采集失败/超时/未知 SA、探针路径证明、失联与恢复、hook 认证/重复通知、Feishu stub、监控服务重启、监控移除后配置/SSH/路由不变。系统安全性见人工 checklist。
+严格执行 `PR4_ACCEPTANCE.md`：原 85 pytest 及 PR2 38 VM case、PR3 三节点全部回归；新增读模式、采集失败/超时/未知 SA、探针路径证明、失联与恢复、hook 认证/重复通知、Feishu stub、监控服务重启、监控移除后配置/SSH/路由不变。审查要求见 [SPEC](../SPEC.md#10-审查与交付)。
 
 PR #4 可以提交的结论：**在授权隔离环境中，监控指标、独立路径探针、Grafana 文件和告警桥接经过验证**。不能宣称线上 SRT 质量、自动故障切换、腾讯云备网关、外部强制穿透或 DPD 无人值守自愈。
-
-## 11. 文档一致性
-
-当前 `main` 的 `README.md` 仍把 PR #3 写为 Draft，而 `docs/SPEC.md` 使用仓库改名前的 URL。PR #4 应更新 README 的实际阶段状态、明确新仓库 URL；历史规格中的原始 URL 可以保留并注明迁移，不要改写旧验收证据或误称 PR4 已上线。
 
 ## 12. 官方参考（访问时再次核对版本）
 

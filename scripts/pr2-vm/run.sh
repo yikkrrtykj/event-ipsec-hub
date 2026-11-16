@@ -10,7 +10,14 @@ case "$suite" in
     pr5) extra_packages=() ;;
     *) printf '%s\n' 'Unknown isolated VM suite.' >&2; exit 2 ;;
 esac
+source_sha="$(git -C "$root" rev-parse --verify HEAD)"
+if [[ ! "$source_sha" =~ ^[a-f0-9]{40}$ || "$source_sha" != "${IPSECVPN_EXPECTED_SHA:-$source_sha}" ]]; then
+    printf '%s\n' 'STOP: checkout does not match the requested source SHA.' >&2
+    exit 1
+fi
 work="$(mktemp -d)"
+source="$work/source"
+payload_sha=
 pidfile="$work/qemu.pid"
 known_hosts="$work/known_hosts"
 ssh_options=(-i "$work/key" -o "UserKnownHostsFile=$known_hosts" -o StrictHostKeyChecking=accept-new
@@ -31,12 +38,23 @@ cleanup() {
     elif [[ "$suite" == pr5 ]]; then
         evidence=/var/tmp/ipsecvpn-pr5-simulation.jsonl
     fi
-    if guest "sudo cat $evidence" > "$work/acceptance.jsonl" 2>/dev/null; then
-        cat "$work/acceptance.jsonl"
-        if [[ -n "${IPSECVPN_EVIDENCE_FILE:-}" ]]; then
-            cp "$work/acceptance.jsonl" "$IPSECVPN_EVIDENCE_FILE" ||
+    if [[ -s "$pidfile" ]] && guest "sudo cat $evidence" > "$work/acceptance.jsonl" 2>/dev/null; then
+        expected_payload=
+        if [[ "$suite" == pr2 ]]; then expected_payload="$payload_sha"; fi
+        if python "$source/scripts/pr2-vm/verify_evidence.py" \
+            "$work/acceptance.jsonl" "$source_sha" "$expected_payload"; then
+            cat "$work/acceptance.jsonl"
+            if [[ -n "${IPSECVPN_EVIDENCE_FILE:-}" ]] &&
+                ! cp "$work/acceptance.jsonl" "$IPSECVPN_EVIDENCE_FILE"; then
                 printf '%s\n' 'Could not save the JSONL artifact. Evidence remains in the job log.' >&2
+                code=1
+            fi
+        else
+            code=1
         fi
+    elif [[ "$code" == 0 ]]; then
+        printf '%s\n' 'STOP: no attributable evidence was retrieved from the guest.' >&2
+        code=1
     fi
     if [[ -s "$pidfile" ]]; then kill -- "$(cat "$pidfile")" 2>/dev/null || true; fi
     rm -rf -- "$work"
@@ -44,27 +62,28 @@ cleanup() {
 }
 trap cleanup EXIT
 
+mkdir "$source"
+git -C "$root" archive "$source_sha" | tar -x -C "$source"
 apt_network=(-o Acquire::Retries=1 -o Acquire::http::Timeout=20 -o Acquire::https::Timeout=20)
 sudo apt-get "${apt_network[@]}" -qq update
 sudo apt-get "${apt_network[@]}" -qq install -y --no-install-recommends \
     qemu-system-x86 qemu-utils cloud-image-utils dpkg-dev
 mkdir -p "$work/payload/apt" "$work/payload/wheels" "$work/apt-archives"
-python -m pip wheel --wheel-dir "$work/payload/wheels" "$root"
-cp "$root"/scripts/pr2-vm/guest.sh "$work/payload/"
+python -m pip wheel --wheel-dir "$work/payload/wheels" "$source"
+cp "$source"/scripts/pr2-vm/guest.sh "$work/payload/"
+printf '%s\n' "$source_sha" > "$work/payload/head-sha"
 if [[ "$suite" == pr3 || "$suite" == pr4 ]]; then
-    cp "$root"/scripts/pr3-lab/{verify.py,topology.py,traffic.py,topology.json} "$work/payload/"
-    git -C "$root" rev-parse HEAD > "$work/payload/head-sha"
+    cp "$source"/scripts/pr3-lab/{verify.py,topology.py,traffic.py,topology.json} "$work/payload/"
 elif [[ "$suite" == pr5 ]]; then
-    cp "$root"/scripts/pr5-lab/verify_failover.py "$root"/scripts/pr3-lab/traffic.py "$work/payload/"
-    git -C "$root" rev-parse HEAD > "$work/payload/head-sha"
+    cp "$source"/scripts/pr5-lab/verify_failover.py "$source"/scripts/pr3-lab/traffic.py "$work/payload/"
 else
-    cp "$root"/scripts/pr2-vm/verify.py "$work/payload/"
+    cp "$source"/scripts/pr2-vm/verify.py "$work/payload/"
 fi
 if [[ "$suite" == pr4 ]]; then
-    cp "$root"/scripts/pr4-lab/verify_monitor.py "$work/payload/"
-    cp -r "$root/monitoring" "$work/payload/"
+    cp "$source"/scripts/pr4-lab/verify_monitor.py "$work/payload/"
+    cp -r "$source/monitoring" "$work/payload/"
 fi
-cp "$root/config/event.example.yaml" "$work/payload/example.yaml"
+cp "$source/config/event.example.yaml" "$work/payload/example.yaml"
 
 image=noble-server-cloudimg-amd64.img
 origin=https://cloud-images.ubuntu.com/noble/current
@@ -121,8 +140,16 @@ sudo apt-get "${apt_network[@]}" -qq -y --download-only --no-install-recommends 
     nftables iproute2 python3-venv iptables ufw "${extra_packages[@]}"
 cp "$work"/apt-archives/*.deb "$work/payload/apt/"
 (cd "$work/payload/apt" && dpkg-scanpackages -m . /dev/null > Packages)
+(
+    cd "$work/payload"
+    find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum
+) > "$work/payload.sha256"
+cp "$work/payload.sha256" "$work/payload/payload.sha256"
+payload_sha="$(sha256sum "$work/payload/payload.sha256" | cut -d ' ' -f1)"
 scp "${ssh_options[@]}" -P 2222 -r "$work/payload" ubuntu@127.0.0.1:lab
-guest "sudo bash /home/ubuntu/lab/guest.sh $suite"
+guest "cd /home/ubuntu/lab && printf '%s  payload.sha256\n' '$payload_sha' |
+    sha256sum --check --strict --status && sha256sum --check --strict --status payload.sha256 &&
+    sudo bash ./guest.sh '$suite' '$source_sha' '$payload_sha'"
 if [[ "$suite" == pr5 ]]; then
     guest 'true'
     exit 0
