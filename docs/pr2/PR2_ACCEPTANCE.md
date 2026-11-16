@@ -95,7 +95,19 @@
 
 这些是 PR #3–#5 的明确范围。**不能用合成样例中 `PASS` 的字段代替网络实测。**
 
-## 7. Codex 最终报告格式
+## 7. 安装生命周期的补充回归
+
+| 编号 | 场景 | 通过条件 |
+| --- | --- | --- |
+| L01 | 安装、应用、卸载、重装、再应用 | 通过卸载记录、软件包状态和文件归属证明后重用非运行软件包，不重新执行 APT。先前非项目配置与管理链路不变。 |
+| L02 | APT 已安装但实际激活失败 | 完整 dpkg 包状态变化即保留差异并 STOP_FOR_MANUAL。仅在管理员恢复精确包清单且审计通过后报告 RESTORED。 |
+| L03 | dpkg 部分安装或触发器残留 | 保留版本、状态差异和 dpkg 审计，禁止直接重试或误报 RESTORED。精确包状态和非项目基线恢复后才可结束事务。 |
+| L04 | 保留包环境中存在外部 strongSwan 或残留 VICI | STOP 并保留外部配置、daemon、套接字、journal 和主机基线。 |
+
+用例的原始结果见[最终 Review](https://github.com/yikkrrtykj/event-ipsec-hub/pull/2#pullrequestreview-5803609644)
+和[长期回执](../evidence/archive/pr2-final.jsonl)。新回执须有实际执行 `head_sha` 和客体载荷 `payload_sha256`。
+
+## 8. 历史报告模板
 
 ```text
 PR #2: <URL>  (Draft)

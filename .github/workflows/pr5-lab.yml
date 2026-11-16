@@ -30,6 +30,7 @@ jobs:
           python-version: '3.12'
       - name: Run failover model against real routes and packets in a disposable QEMU guest
         env:
+          IPSECVPN_EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           IPSECVPN_EVIDENCE_FILE: ${{ runner.temp }}/ipsecvpn-pr5-simulation.jsonl
         run: bash scripts/pr2-vm/run.sh pr5
       - name: Save simulated route and traffic evidence

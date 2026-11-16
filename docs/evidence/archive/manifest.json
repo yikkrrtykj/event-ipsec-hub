@@ -1,0 +1,237 @@
+[
+  {
+    "file": "pr2-final.jsonl",
+    "run_id": 42251240160,
+    "artifact_id": 13521777287,
+    "attempt": null,
+    "reported_head_sha": null,
+    "workflow_associated_head_sha": "6e9189c8cfe34446c24a8479812c086681de290d",
+    "records": 52,
+    "verdicts": {
+      "PASS": 52
+    },
+    "source_zip_sha256": "c9c00ffc1a6b9ac53b32b001d6bde6670e313468ab57f38f3c3355a46f0da2e7",
+    "source_jsonl_sha256": "b0ad593db790129cc775e8fb199d90077c6c4005bd70f343b388966f36b4d556",
+    "archive_sha256": "7d51a6ea97be07b9a806214af57c3880d477c8fbc93265eebc7660d5600ccce9"
+  },
+  {
+    "file": "pr3-final.jsonl",
+    "run_id": 43416607390,
+    "artifact_id": 14033538445,
+    "attempt": null,
+    "reported_head_sha": "11f1098946217b9a5402dffd6cd27ccad2a332c5",
+    "workflow_associated_head_sha": null,
+    "records": 94,
+    "verdicts": {
+      "PASS": 94
+    },
+    "source_zip_sha256": "a2c467a81aba4981e2c2e57c6dda1d8faf7af67d7c98ff8311230fd7383e5774",
+    "source_jsonl_sha256": "707fc1f0718c2f34bb93dcd56b07e7103e066ac19b739b86b7362f98d222df0d",
+    "archive_sha256": "601cf3b39e8d244d062fc393a4af7542161abac28c32475aa84a6a024506c5c1"
+  },
+  {
+    "file": "pr3-restart-fail.jsonl",
+    "run_id": 42332206806,
+    "artifact_id": 13558353867,
+    "attempt": null,
+    "reported_head_sha": "64c7dc1e78742167a49b6e371702b0f31f505f0a",
+    "workflow_associated_head_sha": null,
+    "records": 56,
+    "verdicts": {
+      "FAIL": 1,
+      "PASS": 53,
+      "SKIP": 2
+    },
+    "source_zip_sha256": "dd45d5cb192fab2cd865bb47cf34aa6091c3c4c1583e7070950b48e95cd692ab",
+    "source_jsonl_sha256": "41c5c4e9a7e79dcc555f86b75bea13fbf8632597da35edcd431fe495389f0b97",
+    "archive_sha256": "78ab441a0becd463086265a0e386eb4348cb0544bf5851de06f87020bf7435fe"
+  },
+  {
+    "file": "pr4-final.jsonl",
+    "run_id": 43673246033,
+    "artifact_id": 14145369062,
+    "attempt": null,
+    "reported_head_sha": "21d38470124f21787667cded96f6846db000934c",
+    "workflow_associated_head_sha": null,
+    "records": 48,
+    "verdicts": {
+      "PASS": 48
+    },
+    "source_zip_sha256": "e2ec1ea550b8aea8bbed8564b589da71312b13758e6e987b6c9a5eaeb4dc2819",
+    "source_jsonl_sha256": "df26969ff0905c9594a78ad34299ad3dcc6c55dceeddc9c623f1a3f0a54715fd",
+    "archive_sha256": "6c0e6089348b24cdcb3be9cd73a50a21c46976817ab9035f9c80365312c8156a"
+  },
+  {
+    "file": "pr4-startup-fail.jsonl",
+    "run_id": 43550327558,
+    "artifact_id": 14096370914,
+    "attempt": null,
+    "reported_head_sha": "f96716ec77f773c21fcf9fa86da252677828dc13",
+    "workflow_associated_head_sha": null,
+    "records": 3,
+    "verdicts": {
+      "FAIL": 2,
+      "PASS": 1
+    },
+    "source_zip_sha256": "78163d61b61b56fbf932d4062a456b8d3654ac80958afdd80905916dfad1d353",
+    "source_jsonl_sha256": "5ad4d7b5d0ea6413184ef7be77eae50d1f6165448a804ddae6a0cf53dd6dd6b2",
+    "archive_sha256": "9f35cd6a18eeab1a5e184f4bcfea002e15454e344cab22c2652b109c7426eeae"
+  },
+  {
+    "file": "pr4-timeout-fail.jsonl",
+    "run_id": 43577551928,
+    "artifact_id": 14107686820,
+    "attempt": null,
+    "reported_head_sha": "ab1db84d751ba93f3a8cbbb7893ab485a50f2acb",
+    "workflow_associated_head_sha": null,
+    "records": 3,
+    "verdicts": {
+      "FAIL": 2,
+      "PASS": 1
+    },
+    "source_zip_sha256": "e0134b8bd038427f54664c6a07566ddb1c1c2d8df457b34bf90cbfe8984f3223",
+    "source_jsonl_sha256": "7d8c760e1e583e737286aefa8cadf105fcb950d0249a7b933e8186dada818567",
+    "archive_sha256": "6db1452e8032f34e7982afafcfcfb6bfe5ea0ed80159a0fc11c26bb1026cb588"
+  },
+  {
+    "file": "pr5-offline.jsonl",
+    "run_id": 43707877274,
+    "artifact_id": 14159670429,
+    "attempt": null,
+    "reported_head_sha": "c70ffc2d063fdc2ddff1e2cdb5e4971895d6171f",
+    "workflow_associated_head_sha": null,
+    "records": 52,
+    "verdicts": {
+      "PASS": 52
+    },
+    "source_zip_sha256": "676cbd701932be1a8a7fd8475fb6b5f7f4f73774f29a7c3113ee9e09195c940e",
+    "source_jsonl_sha256": "b996346de99f5ac5afe49749a64b98560d9d11eec596a72195c8928a0675ab40",
+    "archive_sha256": "1f1e077c256946a3f2c7c34088a51bd5636f2c28f726c8b49f7804438b3656d1"
+  },
+  {
+    "file": "pr5-pr2.jsonl",
+    "run_id": 43707877244,
+    "artifact_id": 14159592359,
+    "attempt": null,
+    "reported_head_sha": null,
+    "workflow_associated_head_sha": "c70ffc2d063fdc2ddff1e2cdb5e4971895d6171f",
+    "records": 52,
+    "verdicts": {
+      "PASS": 52
+    },
+    "source_zip_sha256": "d6aaf8c3101cb532f8eff3ea9f337368003ec348ee2f7444510900114aac83e2",
+    "source_jsonl_sha256": "a807dc9537c9a23c2df576bce57f12d4e2c4ea108cbc73b24ddd7fefd0c24624",
+    "archive_sha256": "bd4ed9d2cb041fc72aafc42b13a250fd67819f34ddf8efac3eba07eaee07fe8b"
+  },
+  {
+    "file": "pr5-pr3-stop.jsonl",
+    "run_id": 43707877249,
+    "artifact_id": 14159832947,
+    "attempt": 1,
+    "reported_head_sha": "c70ffc2d063fdc2ddff1e2cdb5e4971895d6171f",
+    "workflow_associated_head_sha": null,
+    "records": 94,
+    "verdicts": {
+      "FAIL": 1,
+      "PASS": 91,
+      "SKIP": 2
+    },
+    "source_zip_sha256": "15311544299907a2ed2a9d1ec0b3e353ff48858c58a67c4b0f3da0f764357289",
+    "source_jsonl_sha256": "99457c4d2e6bb1faec32f70513e9eca1cc2efc6fada902ecf2c5b88097108a96",
+    "archive_sha256": "40601136a1ea1d8c8620fea6e3ba2f6345069fa3948601ea4356977fae976496"
+  },
+  {
+    "file": "pr5-pr3-retry.jsonl",
+    "run_id": 43707877249,
+    "artifact_id": 14167945414,
+    "attempt": 2,
+    "reported_head_sha": "c70ffc2d063fdc2ddff1e2cdb5e4971895d6171f",
+    "workflow_associated_head_sha": null,
+    "records": 94,
+    "verdicts": {
+      "PASS": 94
+    },
+    "source_zip_sha256": "500f87dc4f67838e4fde69b91b7f3e280621cf0073e8bcced9eeb5ddd06e71c3",
+    "source_jsonl_sha256": "b0c74d69da283fd14e66323e8c5abf2115528c6df7593895b17ace42b167b32e",
+    "archive_sha256": "da1a11f30a688fee657403920e41015982993ae79681a61247acf3098d1de3f3"
+  },
+  {
+    "file": "pr5-pr4.jsonl",
+    "run_id": 43707877239,
+    "artifact_id": 14159018683,
+    "attempt": null,
+    "reported_head_sha": "c70ffc2d063fdc2ddff1e2cdb5e4971895d6171f",
+    "workflow_associated_head_sha": null,
+    "records": 48,
+    "verdicts": {
+      "PASS": 48
+    },
+    "source_zip_sha256": "dd7ed6d1101051bd97b0a3ec5d0f6627ecfd7f86e9fce2614c773738038573dd",
+    "source_jsonl_sha256": "8310236cc718486c31b6fe4feb5ad64dbb030099a1957fddf6a19a91402e05d1",
+    "archive_sha256": "9744b538056e6f872be6f2e382e8b2a328995dd52f0f51a69e3d55202781b458"
+  },
+  {
+    "file": "pr5-final.jsonl",
+    "run_id": 43707877267,
+    "artifact_id": 14159601123,
+    "attempt": null,
+    "reported_head_sha": "c70ffc2d063fdc2ddff1e2cdb5e4971895d6171f",
+    "workflow_associated_head_sha": null,
+    "records": 10,
+    "verdicts": {
+      "PASS": 9,
+      "SKIP": 1
+    },
+    "source_zip_sha256": "5a4695afb88fcf985e5d747a32b2969f5ece8e237b07a3338bb6bd7a25bf73a9",
+    "source_jsonl_sha256": "854f88b0d336f055ec89035967b43d8b378b5e1ca6771c7792dfb35ea8d17359",
+    "archive_sha256": "cf4b3fb1f90c696f1c0184e4ca6261d58a3c06d8182d559efe4df40b9855ae6a"
+  },
+  {
+    "file": "pr5-route-fail.jsonl",
+    "run_id": 43703342153,
+    "artifact_id": 14157339196,
+    "attempt": null,
+    "reported_head_sha": "5189adcdd83c92144f88669d339a77f8eef00aa9",
+    "workflow_associated_head_sha": null,
+    "records": 3,
+    "verdicts": {
+      "FAIL": 1,
+      "PASS": 2
+    },
+    "source_zip_sha256": "1bd769cf3b0b6f0efeee66856f900e012bdd3c12ae53f32cbc00c7d579a8d5af",
+    "source_jsonl_sha256": "e66cf4ebed7c77a9c551aac5fb4f2bec1316235ba4e46e46507164d03f5154a0",
+    "archive_sha256": "639518303811469aaf17c47a9dc9ea69985dcb3d293ec64df5d3cb3e18aaf2e3"
+  },
+  {
+    "file": "pr5-recovery-fail.jsonl",
+    "run_id": 43704719048,
+    "artifact_id": 14158242344,
+    "attempt": null,
+    "reported_head_sha": "b3649b3149055f66ccfba86999ddbc846c521e09",
+    "workflow_associated_head_sha": null,
+    "records": 6,
+    "verdicts": {
+      "FAIL": 1,
+      "PASS": 5
+    },
+    "source_zip_sha256": "c179465b6b3771060237be755ae2691e1f86300777e2cf75c812203bb00585db",
+    "source_jsonl_sha256": "f60a8399b227793163b4ec7934c3804ea358b1639dbec5022224ffb60eac44ec",
+    "archive_sha256": "39f2f4343777fc0e2d1dd369a8121e1503f712a4768e5b311c1e09b6ed4e7596"
+  },
+  {
+    "file": "pr5-observation-fix.jsonl",
+    "run_id": 43706758070,
+    "artifact_id": 14159250703,
+    "attempt": null,
+    "reported_head_sha": "7ff17a656dabd69a5e8a105e30c4ad6617e92a20",
+    "workflow_associated_head_sha": null,
+    "records": 10,
+    "verdicts": {
+      "PASS": 9,
+      "SKIP": 1
+    },
+    "source_zip_sha256": "1e65e8da162786e6294d95db4ab6abf023374952fa294eba0eebea8119609f59",
+    "source_jsonl_sha256": "c1771596341214565787b25a287f82a96321866cae1af0daebf5d98447848e84",
+    "archive_sha256": "52d5a54ce6f832f8e97be5034556f66a4aee22da5ef2d1cef30d4c3d4615e905"
+  }
+]

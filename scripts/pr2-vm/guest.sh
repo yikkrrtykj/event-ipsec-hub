@@ -5,6 +5,8 @@ systemd-detect-virt --vm
 # shellcheck disable=SC1091
 . /etc/os-release
 suite="${1:-pr2}"
+source_sha="${2:-}"
+payload_sha="${3:-}"
 case "$suite" in
     pr2) extra_packages=() ;;
     pr3) extra_packages=(tcpdump) ;;
@@ -22,6 +24,13 @@ fi
 cp -a /home/ubuntu/lab /opt/ipsecvpn-lab
 chown -R root:root /opt/ipsecvpn-lab
 chmod 0755 /opt/ipsecvpn-lab /opt/ipsecvpn-lab/apt
+(
+    cd /opt/ipsecvpn-lab &&
+    [[ "$source_sha" =~ ^[a-f0-9]{40}$ && "$source_sha" == "$(cat head-sha)" &&
+        "$payload_sha" =~ ^[a-f0-9]{64}$ ]] &&
+    printf '%s  payload.sha256\n' "$payload_sha" | sha256sum --check --strict --status &&
+    sha256sum --check --strict --status payload.sha256
+) || { printf '%s\n' 'STOP: the guest payload does not match the host checkout.' >&2; exit 1; }
 if [[ -f /etc/apt/sources.list.d/ubuntu.sources ]]; then
     mv /etc/apt/sources.list.d/ubuntu.sources /etc/apt/sources.list.d/ubuntu.sources.disabled
 fi

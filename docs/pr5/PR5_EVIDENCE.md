@@ -1,6 +1,6 @@
 # PR #5 验收证据索引
 
-[Draft PR #5](https://github.com/yikkrrtykj/event-ipsec-hub/pull/5) 的基线为
+[已合并的 PR #5](https://github.com/yikkrrtykj/event-ipsec-hub/pull/5) 的基线为
 `6aacc03514ee98bea91e26bbba46a72451211715`。人工审查以 PR 描述中的最终 HEAD、
 该 HEAD 触发的工作流链接及未过期 Artifact 为准。索引只描述如何找到证据。
 

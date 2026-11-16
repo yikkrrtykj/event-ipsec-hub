@@ -43,4 +43,4 @@
 - `217fa3a` 与仅更新文档的 `95cc5bd` 均通过原有安装和 dry-run 检查，并越过黑洞路由所有权校验。两次 V09 均在创建两条 XFRM 后以 `STOP_FOR_MANUAL` 结束。Linux 6.8 的创建路径不应用接口 alias，修复改为创建后用独立的 `ip link set` 设置所有权标记并启用接口。 [首次复测](https://github.com/yikkrrtykj/ipsecVPN/actions/runs/42220411594) · [重复复测](https://github.com/yikkrrtykj/ipsecVPN/actions/runs/42222752430) · [Linux rtnetlink 创建与更新](https://github.com/torvalds/linux/blob/v6.8/net/core/rtnetlink.c)
 - `ce3aa3d` 修复接口标记后，首次通过完整 VM 验收。后续 `a605636` 在另一台新客户机复现通过，并归档逐项 JSONL。 [首次完整通过](https://github.com/yikkrrtykj/ipsecVPN/actions/runs/42232217808)
 
-真实双端 IKE/CHILD SA、UDP/TCP、MTU、现场防火墙和外部备用切换属于后续 PR，标记为 SKIP。PR 保持 Draft，所有部署操作限于实验客户机。
+真实双端 IKE/CHILD SA、UDP/TCP、MTU、现场防火墙和外部备用切换属于后续 PR，标记为 SKIP。当轮部署操作限于实验客户机。最终合并审查证据见 [PR #2](https://github.com/yikkrrtykj/event-ipsec-hub/pull/2)及[长期回执](../evidence/archive/pr2-final.jsonl)。

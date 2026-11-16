@@ -1,9 +1,6 @@
-# ipsecVPN — PR #3 真实 IKEv2 与跨 XFRM 数据平面开发手册
+# V2.0 活动 IKEv2 与跨 XFRM 数据平面技术参考
 
-> 开发合同版本 PR3.1 · 2026-11-07  
-> 仓库：`yikkrrtykj/ipsecVPN`  
-> 唯一基线与预期 merge-base：`1bdfdb7fe17a2c959a0859856824eadf8f1ceae6`  
-> 仅新建独立 **Draft PR #3**。禁止修改 `main`、自动合并、在生产 VPS 或现场防火墙试运行。
+实现与验收见 [PR #3](https://github.com/yikkrrtykj/event-ipsec-hub/pull/3)和[活动 SA 所有权](SA_OWNERSHIP_DESIGN.md)。
 
 ## 0. 目标与边界
 
@@ -17,10 +14,7 @@
 
 保留 PR #2 的 Ubuntu 24.04 + `charon-systemd` + `swanctl` + VICI + 专有 XFRM 接口、精确路由与 blackhole、独立 nftables 表、持久事务与 journal、回滚、失败闭锁、root-only lab marker、SSH/默认路由/非项目对象的基线检查。强制继续使用已发布的 wheel 和隔离授权主机机制。不得将实验 marker 改写成任意机器的可用生产开关。
 
-现有两个代码冲突点要 **先审计再修改**：
-
-1. `ipsecvpn/host.py` 的 `assert_no_other_ike()` / `assert_exclusive_ike()` 拒绝任何内核 SA 和 VICI `--list-sas`。PR #3 应允许严格证实的 **本项目活动 SA**，对归属不明的任何 IKE/CHILD 或 kernel XFRM SA/policy 必须 `STOP`。不能直接删除“有 SA 就停”逻辑。
-2. `ipsecvpn/resources.py::load()` 当前执行 `swanctl --load-all --clear`。须查明其对已加载配置、凭据、正在运行的 SA、rekey 的语义；禁止在线操作默默清除无关配置或使业务短时无保护。用受限目标加载流程；需要切断旧 CHILD 时应在明确维护模式下执行，并留原状态、诊断和可验证恢复证据。
+项目活动 SA 只能在 daemon、VICI 和内核联合证实归属后纳入变更。外来或无法归属的任何 IKE/CHILD、SAD/SPD 均须 STOP。在线操作采用目标范围明确的配置及凭据加载，禁止使用全局 `swanctl --load-all --clear` 清掉不相关对象。需要终止旧 CHILD 时须显式进入维护，保留原状态、诊断及可验证恢复证据。
 
 ## 2. 隔离实验拓扑与安全边界
 
@@ -132,23 +126,18 @@ ipsecvpn apply ... --maintenance --confirm  # 影响活动 SA 的受控配置变
 5. XFRM 接口消失或 SA 缺失期间，在 Hub WAN 侧抓包：受保护的 LAN payload（明文）为 **零**。尤其检查黑洞选择器、错误更具体路由、临时重路由、已存在连接，以及被错误 routing mark 旁路。
 6. 保持 PR #2 L01–L04、V01–V20、F01–F14 的原始回归全部 PASS。若因支持活动 SA 而改变负面测试预期，必须给出严格替代证据，不得删除旧用例绕过。
 
-## 9. 开发分层与变更约束
+## 9. 兼容性与验证
 
-- 先加入只读 SA snapshot / ownership 模块与测试夹具，再加入目标化 IKE/CHILD 管理和真实三节点 lab，最后开放活 SA 的 `apply` / `rollback`；不要第一步大幅改掉事务系统。
 - 保持 profile schema V2.0 向后兼容；需要新可选字段时提供默认/迁移文档和拒绝非法组合。默认禁用影响系统全局的 MTU/MSS 优化。
 - 不能在用户未授权时修改真实对端防火墙或云安全组。测试 peer 可自动生成但仅存在隔离 lab；对端配置不应被当作山石可直接导入模板。
 - 代码应保持 Python/Shell lint、Wheel 外部安装、Gitleaks 与 CI 全绿；新测试结果必须来自客观外部命令/抓包观察，不写恒真 verdict。
 - `README`、架构和 handoff 更新应清楚标注“Linux ↔ Linux 三节点实验互通”与“现场任意厂商设备验证 SKIP”的边界。
 
-## 10. 交付清单
+## 10. 验收入口
 
-1. 新 `docs/pr3/PR3_DEV_MANUAL.md`（本文件）、`PR3_ACCEPTANCE.md`、`PR3_LAB_TOPOLOGY.md`、`PR3_REVIEW_CHECKLIST.md` 和 `CODEX_PR3_TASK.md`，作为 PR 首批规范提交。
-2. `status` / `doctor` / 指定站点 initiate/rekey（若实现）及必要结构化状态/所有权模型；和 PR #2 事务兼容。
-3. 三节点隔离实验自动搭建/销毁脚本、真实 Peer 配置、有限 UDP/TCP test helper，输出脱敏机器可读测试记录；GitHub workflow 附 artifacts。
-4. PR #3 新增验收项和 PR #1/#2 全量回归；每个测试必须给出 PASS/FAIL/SKIP/STOP + 证据，不能用“本地通过”无记录。
-5. 清晰技术限制、维护窗口/故障恢复及未验证项清单。不得修改生产，Draft PR 等待人工审查。
+三节点拓扑、独立对端、有限 UDP/TCP 夹具和脱敏回执按[实验拓扑](PR3_LAB_TOPOLOGY.md)实施，新旧用例与结果见[验收矩阵](PR3_ACCEPTANCE.md)和[历史证据](PR3_EVIDENCE.md)。维护时序和无人值守重连分别在 [#10](https://github.com/yikkrrtykj/event-ipsec-hub/issues/10) 与 [#11](https://github.com/yikkrrtykj/event-ipsec-hub/issues/11)跟踪。
 
-## 11. 官方技术参考（Codex 应查阅相应 5.9 版本）
+## 11. 官方技术参考
 
 - strongSwan 5.9 route-based VPN / XFRM：<https://docs.strongswan.org/docs/5.9/features/routeBasedVpn.html>
 - strongSwan 5.9 swanctl 配置：<https://docs.strongswan.org/docs/5.9/swanctl/swanctlConf.html>

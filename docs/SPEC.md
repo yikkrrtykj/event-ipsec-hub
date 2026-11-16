@@ -1,7 +1,7 @@
 # ipsecVPN — 通用电竞赛事 Site-to-Site IPsec 中转工具开发规格
 
 - 规格版本：V2.0（2026-11-06）
-- 目标仓库：https://github.com/yikkrrtykj/ipsecVPN
+- 目标仓库：https://github.com/yikkrrtykj/event-ipsec-hub
 - 语言：中文文档，英文代码/指标名
 - 开发流程：分支开发、Draft PR、审核后再合并；未经授权不运行生产部署
 - **产品定位**：可复用的赛事网络交付工具，而非某一场 PUBG、某一国家、某台 VPS 的一次性部署脚本。
@@ -243,12 +243,11 @@ ipsecVPN/
 5. 如有备 Hub，独立验证备路径和两端切换；不能可靠双端收敛时禁止自动切换。
 6. 记录最终 PASS/FAIL/SKIP、现场的基线性能、路由与回滚快照；比赛结束后清理该赛事配置但不误删其他资源。
 
-## 10. Codex 分 PR 开发顺序
+## 10. 审查与交付
 
-- **PR #1（当前任务，仅设计与只读工具）**：README、通用 schema、虚构 fixtures、CLI `profiles list`/`validate`/`check`/`plan`/`export-peer`、对应单元测试与 CI；全程 Draft，不在生产部署。
-- **PR #2**：Ubuntu/strongSwan 安装、模板渲染、XFRM、事务 apply/rollback/backup；隔离验证且不修改默认路由。
-- **PR #3**：真实双端 IPsec 转发、diagnostics、UDP、MTU、重协商与异常处理。
-- **PR #4**：可选监控、告警、导出 Dashboard。
-- **PR #5**：山石与通用对接运行手册、外部备 Hub 对接、赛事生命周期和真实验收模板。
-
-每个 PR 必须保留 Draft 等待审查，不自动 merge；本轮 PR #1 完成后停止，不自行推进后续 PR。遇到协议、StoneOS 或内核限制，记录真实问题并 STOP，不以替代的未经授权网络操作绕过验收。
+- V2.0 已完成阶段和验收边界见[能力索引](roadmap.md)。开发需求、依赖与验收关闭在 GitHub Issues 跟踪。PR 写明实际基线、merge-base、HEAD、对应 Issue 和变更范围。
+- 开发 PR 保持 Draft，人工审查前不得自动合并。不得擅自推进未批准阶段。普通 Merge commit 需明确批准，不得用重写历史、删除失败日志或放宽用例代替修复。
+- 保留原有技术回归及负面安全断言。确认隔离运行的真实 checkout，逐项归档证据并区分 PASS、实测 FAIL、无证据 SKIP 与安全 STOP。以同一 HEAD 的回归证据复核，解决阻塞审查意见后再请求审核结论。
+- 审查重点包括已确认维护与事务互斥、所有权、原有管理链路、受保护网段的精确路由及防明文泄漏、应用失败闭锁。配置恢复与业务恢复分别证明。外来对象、未知状态、权限或协议/内核/厂商限制均须保持原停止门槛。
+- 监控只读且可选，HTTP 仅回环。旧证据无效后不得报告业务 UP 或恢复。现场和云备路径必须独立验证，存在非对称、无中转证据或不具备回滚条件时 STOP。真实飞书、厂商和生产操作必须分别获授权。
+- 所有文档、配置、指标、日志、抓包和回执均须脱敏。保留历史失败、后续重跑和未验收边界，见[证据归档](evidence/README.md)。

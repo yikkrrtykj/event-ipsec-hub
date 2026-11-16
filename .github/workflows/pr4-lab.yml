@@ -31,6 +31,7 @@ jobs:
           python-version: '3.12'
       - name: Verify monitoring on a disposable Ubuntu QEMU guest
         env:
+          IPSECVPN_EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           IPSECVPN_EVIDENCE_FILE: ${{ runner.temp }}/ipsecvpn-pr4-acceptance.jsonl
         run: bash scripts/pr2-vm/run.sh pr4
       - name: Save sanitized monitoring evidence
