@@ -349,3 +349,27 @@ def test_configure_scoped_unloads_existing_conns_and_initiate_skips_installed_ch
     )
     assert live.initiate_link(None, manifest, 1, ob2) is full_ike
     assert initiated == [ob2.child_specs()[0][0]]
+
+
+def test_apply_hub_xfrm_gate_restores_inner_routes_on_unlock(monkeypatch):
+    from ipsecvpn import failover, secureio, transaction
+
+    profile = load_profile(Path("config/event.example.yaml"))
+    manifest = build_manifest(profile)
+    commands = []
+
+    class FakeHost:
+        def probe(self):
+            pass
+
+        def ip(self, *_args):
+            return [{"ifname": lnk.name, "ifalias": "ipsecvpn:tok"} for lnk in manifest.links]
+
+        def command(self, label, *args, **_kwargs):
+            commands.append((label, args))
+
+    monkeypatch.setattr(transaction, "installed_record", lambda: {"token": "tok"})
+    monkeypatch.setattr(secureio, "read_record", lambda _p: {"profile": profile})
+    out = failover.apply_hub_xfrm_gate(False, host=FakeHost())
+    assert out["gate"] == "UNLOCKED_UP"
+    assert any(label == "XFRM gate route restore" for label, _ in commands)

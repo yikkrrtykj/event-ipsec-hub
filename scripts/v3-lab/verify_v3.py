@@ -24,7 +24,7 @@ from ipsecvpn.monitoring.bridge import CONFIG as BRIDGE_CONF
 from ipsecvpn.monitoring.collector import collect
 from ipsecvpn.monitoring.model import State
 from ipsecvpn.profile import load_profile, validate_profile
-from ipsecvpn.renderer import DeploymentManifest, build_manifest, swanctl_config
+from ipsecvpn.renderer import ROUTE_PROTOCOL, DeploymentManifest, build_manifest, swanctl_config
 from ipsecvpn.resources import Resources
 from ipsecvpn.sa import inventory, session
 from ipsecvpn.secureio import Stop, atomic_write, read_keys, read_record
@@ -729,6 +729,42 @@ def baseline_for(manifest):
     return Resources(HOST, install["token"], (manifest,) if manifest else ()).baseline()
 
 
+def restore_hub_link_routes(link):
+    ip("link", "set", "dev", link.name, "up")
+    for cidr in link.remote_ts:
+        ip(
+            "-4",
+            "route",
+            "replace",
+            cidr,
+            "dev",
+            link.name,
+            "table",
+            "main",
+            "proto",
+            ROUTE_PROTOCOL,
+            "metric",
+            str(link.route_priority),
+        )
+
+
+def restore_peer_tunnel_routes(site_id, manifest):
+    rtr = SITES[site_id]["router"]
+    site_links = [item for item in manifest.links if item.site_id == site_id]
+    for l_idx, link in enumerate(site_links):
+        tname = f"tunnel{l_idx + 1}" if len(site_links) > 1 else "tunnel"
+        ip("link", "set", "dev", tname, "up", ns=rtr)
+        metric = str(link.route_priority)
+        for other_id, other_meta in SITES.items():
+            if other_id == site_id:
+                continue
+            other_nets = other_meta["lans"] + (
+                [other_meta["extra_lan"]] if "extra_lan" in other_meta else []
+            )
+            for r_cidr in other_nets:
+                ip("route", "replace", r_cidr, "dev", tname, "metric", metric, ns=rtr)
+
+
 def verify_issue7_nsite_isolation_and_multichild(manifest):
     # Ensure unattended start_action=start established all 4 links + 5 CHILD SAs automatically!
     snap = wait_all_links_up(manifest, timeout=60)
@@ -894,11 +930,11 @@ def verify_issue8_dual_isp_hot_standby(manifest):
                 expect_fail=True,
             )
         finally:
-            ip("link", "set", "dev", isp2_link.name, "up")
-            ip("link", "set", "dev", "tunnel2", "up", ns="peer-srv")
+            restore_hub_link_routes(isp2_link)
+            restore_peer_tunnel_routes("server-core", manifest)
     finally:
-        ip("link", "set", "dev", isp1_link.name, "up")
-        ip("link", "set", "dev", "tunnel1", "up", ns="peer-srv")
+        restore_hub_link_routes(isp1_link)
+        restore_peer_tunnel_routes("server-core", manifest)
 
     fib_restored = json.loads(cmd("ip", "-j", "-4", "route", "get", "10.100.10.11").stdout)
     assert fib_restored[0]["dev"] == isp1_link.name
@@ -1400,9 +1436,8 @@ def verify_issue13_coordinated_failover(manifest, feishu_inbox):
         )
         assert ok["action"] == "SWITCH_TO_PRIMARY" and ok["hub_gate"]["gate"] == "UNLOCKED_UP"
     finally:
-        ip("link", "set", "dev", "tunnel", "up", ns="peer-ob1")
-        ip("link", "set", "dev", "tunnel1", "up", ns="peer-srv")
-        ip("link", "set", "dev", "tunnel2", "up", ns="peer-srv")
+        restore_peer_tunnel_routes("ob-alpha", manifest)
+        restore_peer_tunnel_routes("server-core", manifest)
         state_file.unlink(missing_ok=True)
 
     pri_flow = exchange(
