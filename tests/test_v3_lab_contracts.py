@@ -373,3 +373,21 @@ def test_apply_hub_xfrm_gate_restores_inner_routes_on_unlock(monkeypatch):
     out = failover.apply_hub_xfrm_gate(False, host=FakeHost())
     assert out["gate"] == "UNLOCKED_UP"
     assert any(label == "XFRM gate route restore" for label, _ in commands)
+
+
+def test_default_probe_fn_adapts_udp_probe_tuple_endpoints_and_rtts(monkeypatch):
+    from ipsecvpn.monitoring import active_probe
+
+    captured = {}
+
+    def fake_udp_probe(key, local, peer, *, count=3, timeout=0.5):
+        captured.update(key=key, local=local, peer=peer, count=count, timeout=timeout)
+        return [{"rtt": 0.011}, {"rtt": None}, {"rtt": 0.015}]
+
+    monkeypatch.setattr(active_probe, "udp_probe", fake_udp_probe)
+    rtts = active_probe.default_probe_fn(
+        "10.100.10.11", 41501, b"k" * 32, source="10.101.10.11", source_port=41601, count=3
+    )
+    assert rtts == [0.011, 0.015]
+    assert captured["local"] == ("10.101.10.11", 41601)
+    assert captured["peer"] == ("10.100.10.11", 41501)

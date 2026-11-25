@@ -9,6 +9,18 @@ from .probes import generation
 from .udp import probe as udp_probe
 
 
+def default_probe_fn(target, port, secret, *, source, source_port=41500, count=3, timeout=0.8):
+    """Bind the authorized local LAN source and return verified UDP echo RTTs in seconds."""
+    receipts = udp_probe(
+        secret,
+        (source, int(source_port)),
+        (target, int(port)),
+        count=count,
+        timeout=timeout,
+    )
+    return [row["rtt"] for row in receipts if row["rtt"] is not None]
+
+
 def run_probe_cycle(
     *,
     install,
@@ -17,7 +29,7 @@ def run_probe_cycle(
     probe_specs,
     secret,
     probe_file=PROBE_FILE,
-    probe_fn=udp_probe,
+    probe_fn=default_probe_fn,
 ):
     """Execute UDP echo probes for declared directions and persist a PROBE_FILE receipt."""
     started = time.time()
@@ -26,6 +38,11 @@ def run_probe_cycle(
     for spec in probe_specs:
         count = max(1, min(4, int(spec.get("count", 3))))
         timeout = float(spec.get("timeout", 0.8))
+        extra = (
+            {"source_port": int(spec["source_port"])}
+            if "source_port" in spec and probe_fn is default_probe_fn
+            else {}
+        )
         rtts = probe_fn(
             spec["target"],
             int(spec["port"]),
@@ -33,6 +50,7 @@ def run_probe_cycle(
             source=spec["source"],
             count=count,
             timeout=timeout,
+            **extra,
         )
         directions.append(
             {

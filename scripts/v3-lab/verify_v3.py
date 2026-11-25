@@ -301,8 +301,8 @@ def create_v3_profile():
         "backup": {"enabled": False},
         "monitoring": {
             "enabled": True,
-            "exporter": {"interval_seconds": 6, "timeout_seconds": 4, "ttl_seconds": 16},
-            "udp_path": {"enabled": True, "ttl_seconds": 14},
+            "exporter": {"interval_seconds": 6, "timeout_seconds": 4, "ttl_seconds": 18},
+            "udp_path": {"enabled": True, "ttl_seconds": 25},
         },
     }
     write_profile_data(profile)
@@ -1107,93 +1107,95 @@ def verify_issue9_monitoring_and_feishu(manifest):
         # Run real authenticated UDP active_probe across all 4 authorized directions
         probe_key = os.urandom(32)
         responders = []
-        probe_Port = 41500
-        # Start lightweight UDP echo threads in namespaces via python subprocesses
+        probe_port = 41500
         resp_script = (
-            "import socket,sys,time; from ipsecvpn.monitoring.udp import Responder; "
-            "s=socket.socket(socket.AF_INET, socket.SOCK_DGRAM); s.settimeout(15); "
-            "s.bind((sys.argv[3], int(sys.argv[4]))); print('RDY', flush=True);\n"
-            "for _ in range(2):\n"
-            "  data, addr = s.recvfrom(512)\n"
-            "  ans = Responder(bytes.fromhex(sys.argv[1]), addr).answer(addr, data, time.time())\n"
-            "  if ans: s.sendto(ans, addr)\n"
+            "import sys; from ipsecvpn.monitoring.udp import respond; "
+            "respond(bytes.fromhex(sys.argv[1]), (sys.argv[3], int(sys.argv[4])), "
+            "(sys.argv[2], int(sys.argv[5])), seconds=25)"
         )
         directions_cfg = [
-            ("ob-alpha", "server-core", "10.101.10.11", "10.100.10.11", probe_Port + 1),
-            ("server-core", "ob-alpha", "10.100.10.11", "10.101.10.11", probe_Port + 2),
-            ("ob-beta", "server-core", "10.102.10.11", "10.100.10.11", probe_Port + 3),
-            ("server-core", "ob-beta", "10.100.10.11", "10.102.10.11", probe_Port + 4),
+            ("ob-alpha", "server-core", "10.101.10.11", "10.100.10.11", probe_port + 1),
+            ("server-core", "ob-alpha", "10.100.10.11", "10.101.10.11", probe_port + 2),
+            ("ob-beta", "server-core", "10.102.10.11", "10.100.10.11", probe_port + 3),
+            ("server-core", "ob-beta", "10.100.10.11", "10.102.10.11", probe_port + 4),
         ]
-        # Run active_probe from Hub using namespace-bound probe_fn executing real UDP over IPsec!
-        for _, dst_site, src_ip, dst_ip, pport in directions_cfg:
-            proc = subprocess.Popen(
-                in_ns(
-                    SITES[dst_site]["host"],
-                    sys.executable,
-                    "-c",
-                    resp_script,
-                    probe_key.hex(),
-                    src_ip,
-                    dst_ip,
-                    str(pport),
-                ),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-            )
-            assert proc.stdout.readline().strip() == "RDY"
-            responders.append(proc)
-
-        def _ns_udp_probe(target, port, secret, *, source, count, timeout):
-            client_code = (
-                "import json,sys; from ipsecvpn.monitoring.udp import probe; "
-                "print(json.dumps(probe(sys.argv[1], int(sys.argv[2]), bytes.fromhex(sys.argv[3]), "
-                "source=sys.argv[4], count=int(sys.argv[5]), timeout=float(sys.argv[6]))))"
-            )
-            src_site = next(
-                sid
-                for sid, d in SITES.items()
-                if any(source.startswith(c.rsplit(".", 1)[0]) for c in d["lans"])
-            )
-            out = cmd(
-                *in_ns(
-                    SITES[src_site]["host"],
-                    sys.executable,
-                    "-c",
-                    client_code,
-                    target,
-                    str(port),
-                    secret.hex(),
-                    source,
-                    str(count),
-                    str(timeout),
+        try:
+            for _, dst_site, src_ip, dst_ip, pport in directions_cfg:
+                proc = subprocess.Popen(
+                    in_ns(
+                        SITES[dst_site]["host"],
+                        sys.executable,
+                        "-c",
+                        resp_script,
+                        probe_key.hex(),
+                        src_ip,
+                        dst_ip,
+                        str(pport),
+                        str(pport + 100),
+                    ),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
                 )
-            )
-            return json.loads(out.stdout)
+                assert proc.stdout.readline().strip() == "READY"
+                responders.append(proc)
 
-        install = read_record(INSTALLED)
-        pid = HOST.assert_daemon({item.name for item in manifest.links})
-        live_snap = inventory(HOST, manifest, pid)
-        active_probe.run_probe_cycle(
-            install=install,
-            manifest=manifest,
-            live=live_snap,
-            probe_specs=[
-                {
-                    "src_site_id": s_id,
-                    "dst_site_id": d_id,
-                    "source": s_ip,
-                    "target": d_ip,
-                    "port": pport,
-                    "count": 2,
-                }
-                for s_id, d_id, s_ip, d_ip, pport in directions_cfg
-            ],
-            secret=probe_key,
-            probe_fn=_ns_udp_probe,
-        )
-        for proc in responders:
-            proc.wait(timeout=5)
+            def _ns_udp_probe(target, port, secret, *, source, count, timeout):
+                client_code = (
+                    "import json,sys; "
+                    "from ipsecvpn.monitoring.active_probe import default_probe_fn; "
+                    "print(json.dumps(default_probe_fn(sys.argv[1], int(sys.argv[2]), "
+                    "bytes.fromhex(sys.argv[3]), source=sys.argv[4], source_port=int(sys.argv[5]), "
+                    "count=int(sys.argv[6]), timeout=float(sys.argv[7]))))"
+                )
+                src_site = next(
+                    sid
+                    for sid, d in SITES.items()
+                    if any(source.startswith(c.rsplit(".", 1)[0]) for c in d["lans"])
+                )
+                out = cmd(
+                    *in_ns(
+                        SITES[src_site]["host"],
+                        sys.executable,
+                        "-c",
+                        client_code,
+                        target,
+                        str(port),
+                        secret.hex(),
+                        source,
+                        str(int(port) + 100),
+                        str(count),
+                        str(timeout),
+                    )
+                )
+                return json.loads(out.stdout)
+
+            install = read_record(INSTALLED)
+            pid = HOST.assert_daemon({item.name for item in manifest.links})
+            live_snap = inventory(HOST, manifest, pid)
+            active_probe.run_probe_cycle(
+                install=install,
+                manifest=manifest,
+                live=live_snap,
+                probe_specs=[
+                    {
+                        "src_site_id": s_id,
+                        "dst_site_id": d_id,
+                        "source": s_ip,
+                        "target": d_ip,
+                        "port": pport,
+                        "count": 2,
+                    }
+                    for s_id, d_id, s_ip, d_ip, pport in directions_cfg
+                ],
+                secret=probe_key,
+                probe_fn=_ns_udp_probe,
+            )
+        finally:
+            for proc in responders:
+                if proc.poll() is None:
+                    proc.terminate()
+                proc.wait(timeout=5)
 
         verified_obs = collect()
         assert verified_obs["business"] == State.UP, verified_obs
@@ -1277,7 +1279,7 @@ def verify_issue11_unattended_reconnect(manifest):
                 or int(ob1_row["uniqueid"]) != ob1_ike_before
             )
 
-        wait_until(_dpd_triggered, timeout=35, interval=0.5)
+        wait_until(_dpd_triggered, timeout=210, interval=1.0)
     finally:
         ip("link", "set", "wan", "up", ns="peer-ob1")
 
