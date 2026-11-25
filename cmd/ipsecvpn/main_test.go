@@ -104,3 +104,22 @@ func TestCLIFailoverLifecycleAndNonLinuxInstallStop(t *testing.T) {
 		t.Fatalf("expected FAIL/STOP on non-Linux install, got %d %s", code, out)
 	}
 }
+
+func TestCLIMonitorValidateTimelineAndMetrics(t *testing.T) {
+	sample := filepath.Join("..", "..", "config", "event.example.yaml")
+	code, out, _ := runCLI("monitor", "validate", "-c", sample, "--json")
+	if code != 0 || !strings.Contains(out, `"Monitoring validated."`) {
+		t.Fatalf("monitor validate failed: %d %s", code, out)
+	}
+
+	dbPath := filepath.Join(t.TempDir(), "mon.db")
+	code, out, _ = runCLI("monitor", "timeline", "--db", dbPath, "--site", "ob-venue-1")
+	if code != 0 || !strings.Contains(out, `"OBSERVATION_UNVERIFIED"`) {
+		t.Fatalf("monitor timeline failed: %d %s", code, out)
+	}
+
+	code, out, _ = runCLI("monitor", "metrics", "--db", dbPath)
+	if code != 0 || !strings.Contains(out, "event_ipsec_collector_healthy 0") {
+		t.Fatalf("monitor metrics failed: %d %s", code, out)
+	}
+}

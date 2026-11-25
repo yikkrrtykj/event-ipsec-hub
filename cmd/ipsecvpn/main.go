@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -10,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/yikkrrtykj/event-ipsec-hub/internal/diagnostics"
 	"github.com/yikkrrtykj/event-ipsec-hub/internal/failover"
@@ -17,11 +19,13 @@ import (
 	"github.com/yikkrrtykj/event-ipsec-hub/internal/manifest"
 	"github.com/yikkrrtykj/event-ipsec-hub/internal/profile"
 	"github.com/yikkrrtykj/event-ipsec-hub/internal/secureio"
+	"github.com/yikkrrtykj/event-ipsec-hub/internal/storage"
+	"github.com/yikkrrtykj/event-ipsec-hub/internal/telemetry"
 	"github.com/yikkrrtykj/event-ipsec-hub/internal/transaction"
 )
 
 const (
-	Version        = "4.0.0-alpha.m1"
+	Version         = "4.0.0-alpha.m2"
 	DefaultProfiles = "/etc/ipsecvpn/profiles"
 )
 
@@ -72,6 +76,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runHostAction(cmd, rest, stdout, stderr)
 	case "failover":
 		return runFailover(rest, stdout, stderr)
+	case "probe":
+		return runProbe(rest, stdout, stderr)
+	case "monitor":
+		return runMonitor(rest, stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "unknown command: %s\n", cmd)
 		printUsage(stderr)
@@ -83,7 +91,8 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "ipsecvpn — event-ipsec-hub V4.0 Go gateway CLI")
 	fmt.Fprintln(w, "Commands: profiles list | validate | check | status | doctor | plan | render | export-peer")
 	fmt.Fprintln(w, "          install | apply | backup | rollback | uninstall | initiate | rekey | reconnect")
-	fmt.Fprintln(w, "          failover status|evaluate|switch-backup|failback|set-role | boot guard|restore | version")
+	fmt.Fprintln(w, "          failover status|evaluate|switch-backup|failback|set-role | probe respond|run")
+	fmt.Fprintln(w, "          monitor validate|timeline|metrics | boot guard|restore | version")
 }
 
 func writeJSON(w io.Writer, v any) {
@@ -541,4 +550,146 @@ func firstNonEmpty(vals ...string) string {
 		}
 	}
 	return ""
+}
+
+func runProbe(args []string, stdout, stderr io.Writer) int {
+	if len(args) == 0 || (args[0] != "respond" && args[0] != "run") {
+		fmt.Fprintln(stderr, "usage: ipsecvpn probe respond|run --source IP --source-port PORT --target IP --target-port PORT [--key-file PATH] [--seconds N] [--count N] [--timeout-ms N]")
+		return 2
+	}
+	op := args[0]
+	fs := flag.NewFlagSet("probe "+op, flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	src := fs.String("source", "", "local LAN IPv4")
+	srcPort := fs.Int("source-port", 41500, "local UDP port")
+	dst := fs.String("target", "", "peer LAN IPv4")
+	dstPort := fs.Int("target-port", 41500, "peer UDP port")
+	keyFile := fs.String("key-file", "/etc/ipsecvpn/secrets/monitor-probe", "32-byte probe key file")
+	seconds := fs.Int("seconds", 30, "responder duration in seconds")
+	count := fs.Int("count", 3, "probe packet count (1..4)")
+	timeoutMs := fs.Int("timeout-ms", 500, "per-packet timeout ms")
+	if err := fs.Parse(args[1:]); err != nil {
+		return 2
+	}
+	localAddr, err := telemetry.ValidateLANEndpoint(*src, *srcPort)
+	if err != nil {
+		return emitError(err, false, true, stdout, stderr)
+	}
+	peerAddr, err := telemetry.ValidateLANEndpoint(*dst, *dstPort)
+	if err != nil {
+		return emitError(err, false, true, stdout, stderr)
+	}
+	key, err := os.ReadFile(*keyFile)
+	if err != nil || len(key) != 32 {
+		return emitError(secureio.Stop("A dedicated 32-byte UDP test key is required."), false, true, stdout, stderr)
+	}
+	if op == "respond" {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Duration(*seconds)*time.Second)
+		defer cancel()
+		err := telemetry.ServeUDPResponder(ctx, key, localAddr, peerAddr, func() {
+			fmt.Fprintln(stdout, "READY")
+		})
+		if err != nil {
+			return emitError(err, false, true, stdout, stderr)
+		}
+		return 0
+	}
+	receipts, err := telemetry.ProbeUDP(key, localAddr, peerAddr, *count, time.Duration(*timeoutMs)*time.Millisecond)
+	if err != nil {
+		return emitError(err, true, true, stdout, stderr)
+	}
+	writeJSON(stdout, receipts)
+	return 0
+}
+
+func runMonitor(args []string, stdout, stderr io.Writer) int {
+	if len(args) == 0 {
+		fmt.Fprintln(stderr, "usage: ipsecvpn monitor validate|timeline|metrics")
+		return 2
+	}
+	sub := args[0]
+	fs := flag.NewFlagSet("monitor "+sub, flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	cfg := fs.String("c", "", "config path")
+	cfgLong := fs.String("config", "", "config path")
+	dbPath := fs.String("db", storage.DefaultDBPath, "SQLite DB path")
+	site := fs.String("site", "", "site ID filter")
+	windowMin := fs.Int("window-minutes", 60, "timeline lookback minutes")
+	asJSON := fs.Bool("json", false, "JSON output")
+	if err := fs.Parse(args[1:]); err != nil {
+		return 2
+	}
+
+	switch sub {
+	case "validate":
+		path := firstNonEmpty(*cfg, *cfgLong)
+		if path == "" {
+			fmt.Fprintln(stderr, "monitor validate requires -c/--config")
+			return 2
+		}
+		p, err := profile.LoadProfile(path)
+		if err != nil {
+			return emitError(err, *asJSON, false, stdout, stderr)
+		}
+		enabled := p.Monitoring != nil && p.Monitoring.Enabled
+		return emitResult(map[string]any{
+			"status":  "PASS",
+			"enabled": enabled,
+			"detail":  "Monitoring validated.",
+		}, *asJSON, stdout, stderr)
+
+	case "timeline":
+		st, err := storage.Open(*dbPath)
+		if err != nil {
+			return emitError(err, true, true, stdout, stderr)
+		}
+		defer st.Close()
+		toMs := time.Now().UnixMilli()
+		fromMs := toMs - int64(*windowMin)*60_000
+		samples, err := st.QueryMetricSamples(*site, fromMs, toMs, 1000)
+		if err != nil {
+			return emitError(err, true, true, stdout, stderr)
+		}
+		events, err := st.QueryTimelineEvents(*site, fromMs, toMs, 500)
+		if err != nil {
+			return emitError(err, true, true, stdout, stderr)
+		}
+		resp := telemetry.SyncedTimelineResponse{
+			SiteID:    *site,
+			FromMs:    fromMs,
+			ToMs:      toMs,
+			Samples:   samples,
+			Events:    events,
+			Diagnosis: telemetry.SummarizeWindow(samples, events),
+		}
+		writeJSON(stdout, resp)
+		return 0
+
+	case "metrics":
+		st, err := storage.Open(*dbPath)
+		if err != nil {
+			return emitError(err, false, true, stdout, stderr)
+		}
+		defer st.Close()
+		now := time.Now().UnixMilli()
+		samples, err := st.QueryMetricSamples(*site, now-5*60_000, now, 200)
+		if err != nil {
+			return emitError(err, false, true, stdout, stderr)
+		}
+		latestBySite := make(map[string]storage.MetricSample)
+		for _, s := range samples {
+			latestBySite[s.SiteID] = s
+		}
+		latest := make([]storage.MetricSample, 0, len(latestBySite))
+		for _, s := range latestBySite {
+			latest = append(latest, s)
+		}
+		sort.Slice(latest, func(i, j int) bool { return latest[i].SiteID < latest[j].SiteID })
+		fmt.Fprint(stdout, telemetry.RenderPrometheusMetrics(len(latest) > 0, "READY", latest))
+		return 0
+
+	default:
+		fmt.Fprintf(stderr, "unknown monitor subcommand: %s\n", sub)
+		return 2
+	}
 }
