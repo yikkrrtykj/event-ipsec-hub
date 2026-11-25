@@ -24,6 +24,35 @@ VENDOR_UNITS = {
     "/lib/systemd/system/strongswan.service",
 }
 LAB_MARKER = Path("/etc/ipsecvpn/lab-authorized")
+HOST_MARKER = Path("/etc/ipsecvpn/host-authorized")
+LAB_MARKER_VALUE = b"ipsecvpn-lab-v1\n"
+HOST_MARKER_VALUE = b"ipsecvpn-prod-v1\n"
+
+
+def read_host_authorization():
+    """Return 'production' for VPS/bare-metal host marker or 'lab' for isolated VM marker."""
+    try:
+        marker = read_file(HOST_MARKER, limit=64, parent_mode=0o700)
+    except FileNotFoundError:
+        marker = None
+    except OSError:
+        raise Stop("The root-only host authorization marker is invalid or unreadable.") from None
+    if marker is not None:
+        if marker != HOST_MARKER_VALUE:
+            raise Stop("The production host authorization marker is invalid.")
+        return "production"
+    try:
+        lab = read_file(LAB_MARKER, limit=64, parent_mode=0o700)
+    except OSError:
+        raise Stop(
+            "Host authorization marker is missing "
+            "(/etc/ipsecvpn/host-authorized or /etc/ipsecvpn/lab-authorized)."
+        ) from None
+    if lab != LAB_MARKER_VALUE:
+        raise Stop("The isolated VM authorization marker is invalid.")
+    return "lab"
+
+
 HOST_TOOLS = ("ip", "nft", "ss", "systemctl", "sysctl", "modprobe", "dpkg-query", "apt-get")
 
 
@@ -126,21 +155,26 @@ class Host:
         fields = dict(line.split("=", 1) for line in release.splitlines() if "=" in line)
         if fields.get("ID") != "ubuntu" or fields.get("VERSION_ID", "").strip('"') != "24.04":
             raise Stop("Only Ubuntu 24.04 is supported.")
-        virtual = self.command("VM detection", "systemd-detect-virt", "--vm").strip()
-        if not virtual or virtual == "none" or not Path("/run/systemd/system").is_dir():
-            raise Stop("A systemd-managed isolated VM is required.")
-        try:
-            marker = read_file(LAB_MARKER, limit=64, parent_mode=0o700)
-        except OSError:
-            raise Stop("The root-only isolated VM authorization marker is missing.") from None
-        if marker != b"ipsecvpn-lab-v1\n":
-            raise Stop("The isolated VM authorization marker is invalid.")
+        if not Path("/run/systemd/system").is_dir():
+            raise Stop("A systemd-managed Ubuntu 24.04 host is required.")
+        mode = read_host_authorization()
+        virtual = (
+            self.command("VM detection", "systemd-detect-virt", "--vm", allowed=(0, 1)).strip()
+            or "none"
+        )
+        if mode == "lab" and virtual == "none":
+            raise Stop("A systemd-managed isolated VM is required for lab authorization.")
         if any(not shutil.which(name, path=PATH) for name in HOST_TOOLS):
             raise Stop("The required Ubuntu host tools are missing.")
         self.command("XFRM interface support", "modprobe", "-nq", "xfrm_interface")
         self.command("IPv4 XFRM support", "ip", "xfrm", "policy", "list")
         self.json("nftables support", "nft", "-j", "list", "ruleset")
-        return {"os": "Ubuntu 24.04", "kernel": platform.release(), "hypervisor": virtual}
+        return {
+            "os": "Ubuntu 24.04",
+            "kernel": platform.release(),
+            "hypervisor": virtual,
+            "mode": mode,
+        }
 
     def packages(self):
         installed = self.command(
@@ -276,27 +310,37 @@ class Host:
         if f"STRONGSWAN_CONF={PRIVATE_CONF}".encode() not in environment:
             raise Stop("The running strongSwan process does not use the project configuration.")
 
-    def routing(self):
+    def routing(self, permitted_rules=()):
         rules = self.ip("-4", "rule", "show")
-        self.verify_routing_rules(rules)
+        self.verify_routing_rules(rules, permitted_rules=permitted_rules)
         routes = self.ip("-4", "route", "show", "table", "all")
         links = self.ip("-details", "link", "show")
         return rules, routes, links
 
     @staticmethod
-    def verify_routing_rules(rules):
-        expected = {(0, "255"), (32766, "254"), (32767, "253")}
-        if (
-            {(row.get("priority"), table_id(row.get("table"))) for row in rules} != expected
-            or len(rules) != 3
-            or any(
-                set(row) - {"priority", "src", "table", "protocol"} or row.get("src") != "all"
-                for row in rules
-            )
-        ):
+    def verify_routing_rules(rules, *, permitted_rules=()):
+        system_expected = {(0, "all", "255"), (32766, "all", "254"), (32767, "all", "253")}
+        allowed_fields = {"priority", "src", "srclen", "table", "protocol"}
+        permitted = set(permitted_rules)
+        seen_system = set()
+        for row in rules:
+            if set(row) - allowed_fields:
+                raise Stop("IPv4 policy routing differs from the default rule set.")
+            key = rule_key(row)
+            if key in system_expected:
+                if key in seen_system:
+                    raise Stop("IPv4 policy routing differs from the default rule set.")
+                seen_system.add(key)
+                continue
+            if key in permitted:
+                continue
+            raise Stop("IPv4 policy routing differs from the default rule set.")
+        if seen_system != system_expected:
             raise Stop("IPv4 policy routing differs from the default rule set.")
 
-    def check_paths(self, manifest, routes, owned_routes, links, owned_links):
+    def check_paths(
+        self, manifest, routes, owned_routes, links, owned_links, owned_rules=frozenset()
+    ):
         if not manifest:
             return
         ids = {link.if_id for link in manifest.links}
@@ -309,7 +353,11 @@ class Host:
             if (name in names or xfrm_id(row) in ids) and name not in owned_links:
                 raise Stop("A requested XFRM name or ID is already in use.")
         networks = [IPv4Network(cidr) for cidr in manifest.networks]
-        defaults = [row for row in routes if row.get("dst") == "default"]
+        defaults = [
+            row
+            for row in routes
+            if row.get("dst") == "default" and route_key(row) not in owned_routes
+        ]
         if not defaults or any(row.get("dev") in names or row.get("nexthops") for row in defaults):
             raise Stop("The existing IPv4 default path is missing or ambiguous.")
         for row in routes:
@@ -334,23 +382,47 @@ class Host:
                 )
         if any(link.wan == "auto" for link in manifest.links):
             raise Stop("outer_path.interface auto is an offline placeholder.")
-        lookups = self.route_lookups((link.peer, link.source) for link in manifest.links)
+        pending_policy = {
+            link.site_id
+            for link in manifest.links
+            if link.route_table is not None
+            and (link.policy_priority, f"{link.source}/32", str(link.route_table))
+            not in owned_rules
+        }
+        lookups = self.route_lookups(
+            (
+                link.gateway if link.site_id in pending_policy else link.peer,
+                None if link.site_id in pending_policy else link.source,
+            )
+            for link in manifest.links
+        )
         for link in manifest.links:
             addresses = self.ip("-4", "addr", "show", "dev", link.wan)
             if not any(
                 addr.get("local") == link.source for row in addresses for addr in row["addr_info"]
             ):
                 raise Stop("The IKE source address is not assigned to the specified WAN interface.")
-            lookup = lookups[link.peer, link.source]
-            if (
-                len(lookup) != 1
-                or lookup[0].get("dev") != link.wan
-                or (link.gateway is not None and lookup[0].get("gateway") != link.gateway)
-                or route_kind(lookup[0]) != "unicast"
-                or link.wan in names
-                or link.wan in owned_links
-            ):
+            if link.wan in names or link.wan in owned_links:
                 raise Stop("The existing peer route does not match the specified WAN path.")
+            if link.site_id in pending_policy:
+                gw_lookup = lookups[link.gateway, None]
+                if (
+                    len(gw_lookup) != 1
+                    or gw_lookup[0].get("dev") != link.wan
+                    or route_kind(gw_lookup[0]) != "unicast"
+                ):
+                    raise Stop(
+                        "The Dual-ISP gateway is not reachable on the specified WAN interface."
+                    )
+            else:
+                lookup = lookups[link.peer, link.source]
+                if (
+                    len(lookup) != 1
+                    or lookup[0].get("dev") != link.wan
+                    or (link.gateway is not None and lookup[0].get("gateway") != link.gateway)
+                    or route_kind(lookup[0]) != "unicast"
+                ):
+                    raise Stop("The existing peer route does not match the specified WAN path.")
         if self.ipv4_setting("ip_forward", label="Forwarding probe") != "1":
             raise Stop(
                 "Preconfigure IPv4 forwarding on the VM before apply; no sysctl was changed."
@@ -387,7 +459,9 @@ class Host:
             ):
                 raise Stop("A foreign firewall rule may drop, redirect or rewrite project traffic.")
 
-    def baseline(self, rules, routes, links, foreign_nft, owned_routes, owned_links):
+    def baseline(
+        self, rules, routes, links, foreign_nft, owned_routes, owned_links, owned_rules=frozenset()
+    ):
         addresses = self.ip("address", "show")
         ssh_socket = self.service_properties("ssh.socket", "ActiveState", "Listen")
         ssh = {
@@ -397,8 +471,14 @@ class Host:
         }
         ssh["listeners"] = self.ssh_listeners(ssh)
         return {
-            "rules": fingerprint(rules),
-            "default_routes": fingerprint([row for row in routes if row.get("dst") == "default"]),
+            "rules": fingerprint([row for row in rules if rule_key(row) not in owned_rules]),
+            "default_routes": fingerprint(
+                [
+                    row
+                    for row in routes
+                    if row.get("dst") == "default" and route_key(row) not in owned_routes
+                ]
+            ),
             "foreign_routes": fingerprint(
                 [row for row in routes if route_key(row) not in owned_routes]
             ),
@@ -482,6 +562,13 @@ def route_kind(row):
 def table_id(value):
     text = str(value)
     return {"local": "255", "main": "254", "default": "253"}.get(text, text)
+
+
+def rule_key(row):
+    src = str(row.get("src", ""))
+    if src and src != "all" and "/" not in src:
+        src = f"{src}/{row.get('srclen', 32)}"
+    return (row.get("priority"), src, table_id(row.get("table")))
 
 
 def separate_nft(objects):

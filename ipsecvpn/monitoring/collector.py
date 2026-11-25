@@ -11,8 +11,8 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from ..diagnostics import inspect_owned
-from ..host import LAB_MARKER, UNIT, CommandFailed, Host
-from ..secureio import ObservationStop, Stop, read_file, read_record
+from ..host import UNIT, CommandFailed, Host, read_host_authorization
+from ..secureio import ObservationStop, Stop, read_record
 from ..transaction import ACTIVE, INSTALLED, installed_record
 from .model import Settings, State, unavailable
 from .probes import assess
@@ -122,9 +122,9 @@ class ReadOnlyHost(Host):
         # The batch text is constructed exclusively from canonical IPv4 addresses.
         return dict(zip(keys, self.ip_batch("".join(lines), len(keys)), strict=True))
 
-    def routing(self):
+    def routing(self, permitted_rules=()):
         rules, routes = self.ip_batch("rule show\nroute show table all\n", 2)
-        self.verify_routing_rules(rules)
+        self.verify_routing_rules(rules, permitted_rules=permitted_rules)
         links = self.ip("-details", "link", "show")
         return rules, routes, links
 
@@ -246,17 +246,20 @@ def authorize_endpoint(host, *, require_systemd=False):
     if fields.get("ID") != "ubuntu" or fields.get("VERSION_ID", "").strip('"') != "24.04":
         raise Stop("Monitoring runtime requires Ubuntu 24.04.")
     if require_systemd and not Path("/run/systemd/system").is_dir():
-        raise Stop("Monitoring requires a systemd-managed isolated VM.")
-    if read_file(LAB_MARKER, limit=64, parent_mode=0o700) != b"ipsecvpn-lab-v1\n":
-        raise Stop("The root-only isolated VM authorization marker is invalid.")
-    virtual = host.command("VM detection", "systemd-detect-virt", "--vm").strip()
-    if virtual != "qemu":
-        raise Stop("Monitoring runtime requires an authorized Ubuntu 24.04 QEMU VM.")
+        raise Stop("Monitoring requires a systemd-managed Ubuntu 24.04 host.")
+    mode = read_host_authorization()
+    virtual = (
+        host.command("VM detection", "systemd-detect-virt", "--vm", allowed=(0, 1)).strip()
+        or "none"
+    )
+    if mode == "lab" and virtual != "qemu":
+        raise Stop("Lab monitoring runtime requires an authorized Ubuntu 24.04 QEMU VM.")
 
 
 def authorized(host):
-    if host.probe()["hypervisor"] != "qemu":
-        raise Stop("Monitoring runtime requires an authorized Ubuntu 24.04 QEMU VM.")
+    info = host.probe()
+    if info.get("mode", "lab") == "lab" and info["hypervisor"] != "qemu":
+        raise Stop("Lab monitoring runtime requires an authorized Ubuntu 24.04 QEMU VM.")
 
 
 def collect(host=None):
@@ -303,12 +306,12 @@ def collect(host=None):
         paths, business = assess(
             [
                 {
-                    "src_site_id": source["site_id"],
-                    "dst_site_id": target["site_id"],
+                    "src_site_id": source.site_id,
+                    "dst_site_id": target.site_id,
                     "state": State.UNKNOWN,
                     "reason_code": "NO_PROBE",
                 }
-                for source, target in (sites, sites[::-1])
+                for source, target, _, _ in manifest.resolved_forward_rules()
             ],
             settings,
             install,

@@ -3,7 +3,7 @@
 import sys
 import time
 from collections import deque
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from threading import Lock
 
 from ..secureio import Stop, read_record
@@ -14,9 +14,10 @@ PREFIX = "event_ipsec_"
 
 
 class Cache:
-    def __init__(self, ttl, probe_ttl):
+    def __init__(self, ttl, probe_ttl, idle_seconds=300):
         self.ttl = ttl
         self.probe_ttl = probe_ttl
+        self.idle_seconds = idle_seconds
         self.lock = Lock()
         self.result = unavailable("NO_SAMPLE")
         self.last_success = None
@@ -24,6 +25,7 @@ class Cache:
         self.scope = {}
         self.generations = {}
         self.changes = {}
+        self.traffic_state = {}
 
     def publish(self, result):
         with self.lock:
@@ -35,6 +37,7 @@ class Cache:
                 if scope != self.scope:
                     self.generations.clear()
                     self.changes.clear()
+                    self.traffic_state.clear()
                 self.scope = scope
                 self.last_success = result["collected_at"]
                 self.sample_clock = time.monotonic()
@@ -50,6 +53,19 @@ class Cache:
                         if previous and generation != previous:
                             changes.append(self.sample_clock)
                         row["rekeys"] = len(changes)
+                    if "counts" in row:
+                        total = (row["counts"][0], row["counts"][1])
+                        prev_total, last_active = self.traffic_state.get(
+                            site, (total, self.sample_clock)
+                        )
+                        if total != prev_total or (total[0] > 0 and prev_total == (0, 0)):
+                            last_active = self.sample_clock
+                        self.traffic_state[site] = (total, last_active)
+                        row["traffic_idle"] = int(
+                            self.sample_clock - last_active >= self.idle_seconds
+                        )
+                    else:
+                        self.traffic_state.pop(site, None)
             else:
                 self.generations.clear()
             self.result = result
@@ -173,6 +189,15 @@ def metrics(snapshot):
             if "rekeys" in row
         ],
     )
+    family(
+        "site_traffic_idle",
+        "1 when an installed CHILD SA had no byte counter progress within the idle window.",
+        [
+            ({**dimensions, "site_id": row["site_id"]}, row["traffic_idle"])
+            for row in snapshot["sites"]
+            if "traffic_idle" in row
+        ],
+    )
     paths = [
         ({**dimensions, "src_site_id": row["src_site_id"], "dst_site_id": row["dst_site_id"]}, row)
         for row in snapshot["paths"]
@@ -223,7 +248,7 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(content)
 
 
-class LoopbackServer(HTTPServer):
+class LoopbackServer(ThreadingHTTPServer):
     def __init__(self, port, handler):
         super().__init__(("127.0.0.1", port), handler)
 

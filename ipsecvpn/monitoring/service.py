@@ -1,14 +1,17 @@
 """Manage only the two optional monitoring units in the authorized lab."""
 
+import json
 import os
 from contextlib import contextmanager
 from pathlib import Path
 
+from ..host import read_host_authorization
 from ..installer import trusted_python
 from ..secureio import Stop, atomic_write, make_directory, read_file, remove_file
 from .collector import ReadOnlyHost, authorized, runtime_settings
 
 DIRECTORY = Path("/var/lib/event-ipsec-hub-monitor")
+BRIDGE_CONFIG = Path("/etc/ipsecvpn/monitor-bridge.json")
 SYSTEMD = Path("/etc/systemd/system")
 SERVICES = {"sampler": "sampler", "exporter": "exporter", "feishu": "bridge"}
 
@@ -22,7 +25,7 @@ def notify_ready():
             sock.sendto(b"READY=1", "\0" + address[1:] if address.startswith("@") else address)
 
 
-def unit(component, python):
+def unit(component, python, *, allow_feishu_egress=False):
     if component == "sampler":
         # procfs checks require a superset of charon's permitted capabilities.
         # The sampler has no IP or packet sockets and exposes no listener.
@@ -36,6 +39,11 @@ def unit(component, python):
         capabilities = ""
         families = "AF_UNIX AF_INET AF_INET6"
         write_access = f"ReadWritePaths={DIRECTORY}\n" if component == "feishu" else ""
+    ip_policy = (
+        "# Production Feishu egress enabled; destination validated by official_target()."
+        if (component == "feishu" and allow_feishu_egress)
+        else "IPAddressDeny=any\nIPAddressAllow=localhost"
+    )
     return f"""[Unit]
 Description=Event IPsec Hub monitoring ({component})
 After=local-fs.target
@@ -56,8 +64,7 @@ ProtectControlGroups=yes
 RestrictAddressFamilies={families}
 CapabilityBoundingSet={capabilities}
 SystemCallFilter=~@debug @mount @module @reboot
-IPAddressDeny=any
-IPAddressAllow=localhost
+{ip_policy}
 UMask=0077
 {write_access}
 [Install]
@@ -87,21 +94,34 @@ def monitor_lock():
         yield
 
 
-def verify_unit(host, path, content):
+def _feishu_egress_enabled():
+    try:
+        if read_host_authorization() != "production":
+            return False
+        config = json.loads(read_file(BRIDGE_CONFIG, limit=4096, parent_mode=0o700))
+    except (Stop, OSError, ValueError):
+        return False
+    return bool(config.get("feishu_webhook_ref") or config.get("feishu_webhook"))
+
+
+def verify_unit(host, path, content, *, alternate=None):
     name = path.name
     try:
         stored = read_file(path, mode=0o644)
     except FileNotFoundError:
         stored = None
     fragment = host.service(name, "FragmentPath")
+    valid_contents = {content} | ({alternate} if alternate is not None else set())
     if (
-        (stored is not None and stored != content)
+        (stored is not None and stored not in valid_contents)
         or (fragment and fragment != str(path))
         or host.service(name, "DropInPaths")
         or (stored is None and fragment)
     ):
         raise Stop("A monitoring unit or override cannot be attributed to this project.")
-    return stored is not None
+    if stored is None:
+        return "missing"
+    return "exact" if stored == content else "outdated"
 
 
 def systemctl(host, *args):
@@ -122,26 +142,38 @@ def change(action, confirmed, with_bridge=False):
         if with_bridge or action == "stop"
         else ("sampler", "exporter")
     )
+    egress = _feishu_egress_enabled() if action == "serve" else False
     units = {
-        SYSTEMD / f"event-ipsec-hub-{component}.service": unit(component, python)
+        SYSTEMD / f"event-ipsec-hub-{component}.service": unit(
+            component, python, allow_feishu_egress=(component == "feishu" and egress)
+        )
         for component in components
     }
+    alternates = {
+        SYSTEMD / "event-ipsec-hub-feishu.service": unit(
+            "feishu", python, allow_feishu_egress=not egress
+        )
+    }
     for path, content in units.items():
-        verify_unit(host, path, content)
+        verify_unit(host, path, content, alternate=alternates.get(path))
     if not confirmed:
         return {"status": "PASS", "detail": "Monitor dry-run.", "units": [p.name for p in units]}
     with monitor_lock():
-        owned = {path: verify_unit(host, path, content) for path, content in units.items()}
+        owned = {
+            path: verify_unit(host, path, content, alternate=alternates.get(path))
+            for path, content in units.items()
+        }
         return reconcile(Host(), action, units, owned)
 
 
 def reconcile(host, action, units, owned):
     if action == "stop":
-        for path, exists in owned.items():
+        present = {path: state != "missing" for path, state in owned.items()}
+        for path, exists in present.items():
             if exists:
                 systemctl(host, "disable", "--now", path.name)
                 remove_file(path)
-        if any(owned.values()):
+        if any(present.values()):
             systemctl(host, "daemon-reload")
         for filename in ("path.json", "delivery.json"):
             path = DIRECTORY / filename
@@ -158,12 +190,16 @@ def reconcile(host, action, units, owned):
 
     make_directory(DIRECTORY)
     created = []
+    updated = False
     try:
         for path, content in units.items():
-            if not owned[path]:
+            if owned[path] != "exact":
+                was_missing = owned[path] == "missing"
                 atomic_write(path, content, mode=0o644)
-                created.append(path)
-        if created:
+                updated = True
+                if was_missing:
+                    created.append(path)
+        if updated:
             systemctl(host, "daemon-reload")
         for path in units:
             systemctl(host, "enable", "--now", path.name)

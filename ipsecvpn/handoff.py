@@ -5,7 +5,13 @@ import json
 from html import escape
 from ipaddress import IPv4Address
 
-from .profile import ProfileError, authorized_lans, backup_readiness
+from .profile import (
+    ProfileError,
+    authorized_lans,
+    authorized_pairs,
+    authorized_remote_lans,
+    backup_readiness,
+)
 
 PSK_PLACEHOLDER = "<SEND_SEPARATELY>"
 HUB_START_ACTION = "none"
@@ -30,6 +36,9 @@ def _security(profile, link):
     shared = profile.get("security", {})
     ike = link.get("ike_proposal", shared.get("ike_proposal", "aes256-sha256-prfsha256-modp2048"))
     esp = link.get("esp_proposal", shared.get("esp_proposal", "aes256-sha256-modp2048"))
+    start_action = link.get("start_action", shared.get("start_action", HUB_START_ACTION))
+    dpd_action = link.get("dpd_action", shared.get("dpd_action", HUB_DPD_ACTION))
+    close_action = link.get("close_action", shared.get("close_action", "none"))
     return {
         "ike": {
             "version": 2,
@@ -39,9 +48,14 @@ def _security(profile, link):
             "prf": next(name for name in ike.split("-") if name.startswith("prf")),
             "lifetime_seconds": shared.get("ike_lifetime_seconds", 28800),
             "dpd_delay_seconds": shared.get("dpd_delay_seconds", 30),
-            "start_action": HUB_START_ACTION,
-            "dpd_action": HUB_DPD_ACTION,
-            "initiator": "Explicit Hub initiate, or the authorized site peer.",
+            "start_action": start_action,
+            "dpd_action": dpd_action,
+            "close_action": close_action,
+            "initiator": (
+                "Unattended Hub auto-initiate/reconnect enabled."
+                if start_action != "none" or dpd_action == "restart"
+                else "Explicit Hub initiate, or the authorized site peer."
+            ),
             "forced_nat_t": True,
         },
         "child": {
@@ -81,7 +95,7 @@ def _connections(profile):
     authorized = authorized_lans(profile)
     for link in profile["site_links"]:
         site = sites[link["site_id"]]
-        other = next(site_id for site_id in sites if site_id != site["id"])
+        remote_ts = authorized_remote_lans(profile, site["id"])
         yield {
             "site_id": site["id"],
             "hub": hub,
@@ -89,21 +103,21 @@ def _connections(profile):
             "xfrm_if_id": link["if_id"],
             "outer_path": link["outer_path"],
             "hub_source": link["outer_path"].get("source_ip", hub["public_endpoint"]),
-            "hub_local_ts": authorized[other],
+            "hub_local_ts": remote_ts,
             "hub_remote_ts": authorized[site["id"]],
             "peer_local_ts": authorized[site["id"]],
-            "peer_remote_ts": authorized[other],
+            "peer_remote_ts": remote_ts,
+            "selector_mode": link.get("selector_mode", "exact"),
             "primary_route_priority": link.get("route_priority"),
             **_security(profile, link),
         }
 
 
 def _backup_transit(profile, links):
-    authorized = authorized_lans(profile)
     support = profile["backup"].get("transit_support", "unknown")
     uncovered = {}
     for link in links:
-        remote = next(lans for site, lans in authorized.items() if site != link["site_id"])
+        remote = authorized_remote_lans(profile, link["site_id"])
         missing = sorted(set(remote) - set(link["remote_cidrs"]))
         if missing:
             uncovered[link["site_id"]] = missing
@@ -208,8 +222,8 @@ def _device(firewall):
 
 
 def build_plan(profile):
-    first, second = _connections(profile)
-    connections = [first, second]
+    connections = list(_connections(profile))
+    by_site = {conn["site_id"]: conn for conn in connections}
     backup = _backup(profile)
     return {
         "status": backup.get("status", "PASS"),
@@ -233,12 +247,14 @@ def build_plan(profile):
         ],
         "forward_acl": [
             {
-                "from_xfrm_if_id": source["xfrm_if_id"],
-                "to_xfrm_if_id": target["xfrm_if_id"],
-                "source_cidrs": source["hub_remote_ts"],
-                "destination_cidrs": target["hub_remote_ts"],
+                "from_xfrm_if_id": by_site[rule["source_site_id"]]["xfrm_if_id"],
+                "to_xfrm_if_id": by_site[rule["target_site_id"]]["xfrm_if_id"],
+                "source_site_id": rule["source_site_id"],
+                "target_site_id": rule["target_site_id"],
+                "source_cidrs": rule["source_cidrs"],
+                "destination_cidrs": rule["target_cidrs"],
             }
-            for source, target in ((first, second), (second, first))
+            for rule in authorized_pairs(profile)
         ],
         "source_nat": False,
         "backup": backup,
@@ -266,8 +282,14 @@ def peer_parameters(profile, site_id, template="auto"):
     if template == "auto":
         vendor = site["firewall"]["vendor"].casefold()
         template = "hillstone" if vendor == "hillstone" else "generic"
-    authorized = authorized_lans(profile)
-    remote_site_id = next(other for other in authorized if other != site_id)
+    remote_site_ids = sorted(
+        {
+            rule["target_site_id"]
+            for rule in authorized_pairs(profile)
+            if rule["source_site_id"] == site_id
+        }
+    )
+    remote_site_id = remote_site_ids[0] if len(remote_site_ids) == 1 else ", ".join(remote_site_ids)
     local_cidrs, remote_cidrs = connection["peer_local_ts"], connection["peer_remote_ts"]
     hub_endpoint = connection["hub"]["public_endpoint"]
     return {
@@ -306,10 +328,16 @@ def peer_parameters(profile, site_id, template="auto"):
         },
         "ike": connection["ike"],
         "child": connection["child"],
-        "local_ts": local_cidrs,
-        "remote_ts": remote_cidrs,
+        "selector_mode": connection["selector_mode"],
+        "local_ts": (
+            ["0.0.0.0/0"] if connection["selector_mode"] == "route_based" else local_cidrs
+        ),
+        "remote_ts": (
+            ["0.0.0.0/0"] if connection["selector_mode"] == "route_based" else remote_cidrs
+        ),
         "allowed_traffic": {
             "remote_site_id": remote_site_id,
+            "remote_site_ids": remote_site_ids,
             "local_cidrs": local_cidrs,
             "remote_cidrs": remote_cidrs,
             "direction": "bidirectional",
@@ -360,16 +388,27 @@ def peer_parameters(profile, site_id, template="auto"):
             "data_path": "SKIP",
             "matrix": [
                 {
-                    "from_site_id": source,
-                    "to_site_id": destination,
-                    "source_cidrs": authorized[source],
-                    "destination_cidrs": authorized[destination],
+                    "from_site_id": rule["source_site_id"],
+                    "to_site_id": rule["target_site_id"],
+                    "source_cidrs": rule["source_cidrs"],
+                    "destination_cidrs": rule["target_cidrs"],
                     "protocols": ["UDP", "TCP"],
                     "paths": ["primary", "backup"] if backup["enabled"] else ["primary"],
                     "pairing": "every source CIDR against every destination CIDR",
                     "status": "SKIP",
                 }
-                for source, destination in ((site_id, remote_site_id), (remote_site_id, site_id))
+                for rule in sorted(
+                    (
+                        r
+                        for r in authorized_pairs(profile)
+                        if site_id in (r["source_site_id"], r["target_site_id"])
+                    ),
+                    key=lambda r: (
+                        r["source_site_id"] != site_id,
+                        r["source_site_id"],
+                        r["target_site_id"],
+                    ),
+                )
             ],
             "instructions": [
                 "Confirm IKE and CHILD SA establishment with the exact selectors.",
@@ -435,11 +474,28 @@ def render_peer_markdown(data):
         "",
     ]
     if hillstone:
+        mode = data.get("selector_mode", "exact")
+        if mode == "route_based":
+            mode_note = (
+                "当前为 **山石路由型模式（route_based）**：Phase 2 代理 ID 使用 "
+                "`0.0.0.0/0 <-> 0.0.0.0/0` 并绑定 `tunnel` 接口，通过精确静态路由 + "
+                "安全策略（LAN <-> VPN）+ NAT 豁免严格限制仅授权网段互通。"
+            )
+        elif mode == "per_pair":
+            mode_note = (
+                "当前为 **多 CHILD 策略模式（per_pair）**：Hub 侧已按每对 "
+                "`(local_cidr, remote_cidr)` 拆分为独立 CHILD SA，请在山石侧逐对配置镜像 Proxy ID。"
+            )
+        else:
+            mode_note = (
+                "当前为 **精确选择器模式（exact）**：需核实设备能否在单个 CHILD SA 内协商"
+                "列出的全部 CIDR；若不支持单 CHILD 多网段，请切换为 `route_based` 或 `per_pair`。"
+            )
         lines.extend(
             [
-                "请按设备型号和 StoneOS 版本核对 IKE 对端、IPsec 提议、隧道接口、"
-                "安全区域和 Track 的配置方式。需核实设备能否协商列出的多 CIDR，"
-                "如需通配选择器则暂停对接并单独验收。",
+                "请按设备型号和 StoneOS 版本核对 IKE 对端、IPsec 提议、"
+                "隧道接口、安全区域和 Track 配置：",
+                mode_note,
                 "",
             ]
         )

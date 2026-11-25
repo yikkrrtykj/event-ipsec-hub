@@ -72,9 +72,9 @@ def text(row, key):
     return row[key].decode("ascii")
 
 
-def cidr(value):
+def cidr(value, *, allow_wildcard=False):
     net = IPv4Network(value)
-    if net.prefixlen == 0:
+    if net.prefixlen == 0 and not allow_wildcard:
         raise ValueError("Unrestricted selector.")
     return str(net)
 
@@ -100,7 +100,11 @@ def proposal(row, expected, *, ike):
         wanted["prf-alg"] = "PRF_HMAC_SHA2_" + parts.pop(0).removeprefix("prfsha")
     # The first CHILD in IKE_AUTH may use IKE key material without separate DH.
     if ike or "dh-group" in row:
+        if not parts:
+            return False
         group = re.fullmatch(r"(modp|ecp)(\d+)", parts[0])
+        if not group:
+            return False
         wanted["dh-group"] = f"{group[1].upper()}_{group[2]}"
     return all(row.get(key) == value.encode() for key, value in wanted.items())
 
@@ -139,6 +143,12 @@ class Ike:
     unique_id: int
     cookies: tuple[int, int]
     child: Child | None
+    children: tuple[tuple[str, Child], ...] = ()
+
+    def child_map(self):
+        if self.children:
+            return dict(self.children)
+        return {}
 
 
 @dataclass(frozen=True)
@@ -166,38 +176,70 @@ def parse_ike(name, row, link):
         raise unowned("IKE identity, endpoint or proposal differs from the active manifest.")
     if row.get("state") != b"ESTABLISHED":
         raise transition("An IKE SA has not reached a stable established state.")
+    specs = link.child_specs()
+    expected_children = {
+        c_name: (set(c_local), set(c_remote)) for c_name, c_local, c_remote in specs
+    }
     children = row.get("child-sas", {})
-    if len(children) > 1:
+    if len(children) > len(expected_children):
         raise transition("Multiple CHILD generations require a stable VICI snapshot.")
     child = None
+    parsed = {}
     if children:
-        info = next(iter(children.values()))
-        if (
-            info.get("name") != link.child.encode()
-            or info.get("protocol") != b"ESP"
-            or info.get("mode") != b"TUNNEL"
-            or number(text(info, "if-id-in"), 16) != link.if_id
-            or number(text(info, "if-id-out"), 16) != link.if_id
-            or set(cidr(s.decode()) for s in info["local-ts"]) != set(link.local_ts)
-            or set(cidr(s.decode()) for s in info["remote-ts"]) != set(link.remote_ts)
-            or any(key.startswith(("mark-", "cpi-")) for key in info)
-            or not proposal(info, link.esp_proposal, ike=False)
-        ):
-            raise unowned("CHILD selector, interface, mode or proposal differs from the manifest.")
-        if info.get("state") != b"INSTALLED":
-            raise transition("A CHILD SA has not reached a stable installed state.")
-        reqid = number(text(info, "reqid"))
-        child = Child(
-            number(text(info, "uniqueid")),
-            State(link.peer, link.source, number(text(info, "spi-in"), 16), reqid, link.if_id),
-            State(link.source, link.peer, number(text(info, "spi-out"), 16), reqid, link.if_id),
-            tuple(int(info[key]) for key in ("bytes-in", "bytes-out", "packets-in", "packets-out")),
-        )
+        for info in children.values():
+            c_name = text(info, "name") if "name" in info else ""
+            if c_name in parsed:
+                raise transition("Multiple CHILD generations require a stable VICI snapshot.")
+            expected_ts = expected_children.get(c_name)
+            if (
+                expected_ts is None
+                or info.get("protocol") != b"ESP"
+                or info.get("mode") != b"TUNNEL"
+                or number(text(info, "if-id-in"), 16) != link.if_id
+                or number(text(info, "if-id-out"), 16) != link.if_id
+                or set(
+                    cidr(s.decode(), allow_wildcard=link.selector_mode == "route_based")
+                    for s in info["local-ts"]
+                )
+                != expected_ts[0]
+                or set(
+                    cidr(s.decode(), allow_wildcard=link.selector_mode == "route_based")
+                    for s in info["remote-ts"]
+                )
+                != expected_ts[1]
+                or any(key.startswith(("mark-", "cpi-")) for key in info)
+                or not proposal(info, link.esp_proposal, ike=False)
+            ):
+                raise unowned(
+                    "CHILD selector, interface, mode or proposal differs from the manifest."
+                )
+            if info.get("state") != b"INSTALLED":
+                raise transition("A CHILD SA has not reached a stable installed state.")
+            reqid = number(text(info, "reqid"))
+            parsed[c_name] = Child(
+                number(text(info, "uniqueid")),
+                State(link.peer, link.source, number(text(info, "spi-in"), 16), reqid, link.if_id),
+                State(link.source, link.peer, number(text(info, "spi-out"), 16), reqid, link.if_id),
+                tuple(
+                    int(info[key]) for key in ("bytes-in", "bytes-out", "packets-in", "packets-out")
+                ),
+            )
+    ordered_children = tuple((c_name, parsed[c_name]) for c_name, _, _ in specs if c_name in parsed)
+    if len(ordered_children) == len(specs) and ordered_children:
+        first_child = ordered_children[0][1]
+        if len(ordered_children) == 1:
+            child = first_child
+        else:
+            totals = tuple(
+                sum(item.counts[idx] for _, item in ordered_children) for idx in range(4)
+            )
+            child = Child(first_child.unique_id, first_child.inbound, first_child.outbound, totals)
     return Ike(
         name,
         number(text(row, "uniqueid")),
         tuple(number(text(row, f"{side}-spi"), 16) for side in ("initiator", "responder")),
         child,
+        ordered_children,
     )
 
 
@@ -223,6 +265,8 @@ def value(tokens, key):
 def kernel_states(output):
     result = []
     for line in output.splitlines():
+        if not line.strip():
+            continue
         segments = [segment.split() for segment in line.split("\\") if segment.strip()]
         head, body = segments[0], segments[1]
         fields = [token for segment in segments[1:] for token in segment]
@@ -248,6 +292,8 @@ def kernel_states(output):
 def kernel_policies(output):
     result = []
     for line in output.splitlines():
+        if not line.strip():
+            continue
         segments = [segment.split() for segment in line.split("\\") if segment.strip()]
         head = segments[0]
         fields = [token for segment in segments[1:] for token in segment]
@@ -264,8 +310,8 @@ def kernel_policies(output):
         result.append(
             (
                 Policy(
-                    cidr(head[1]),
-                    cidr(head[3]),
+                    cidr(head[1], allow_wildcard=True),
+                    cidr(head[3], allow_wildcard=True),
                     value(fields, "dir"),
                     str(IPv4Address(value(template, "src"))),
                     str(IPv4Address(value(template, "dst"))),
@@ -283,20 +329,33 @@ def correlate(snapshot, manifest, states, policies):
     expected_policies = {}
     for link in manifest.links if manifest else ():
         ike = snapshot.get(link.name)
-        if not ike or not ike.child:
+        if not ike or (not ike.child and not ike.children):
             continue
-        inbound, outbound = ike.child.inbound, ike.child.outbound
-        expected_states.update((inbound, outbound))
-        for local, remote in product(link.local_ts, link.remote_ts):
-            for direction, source, destination, sa in (
-                ("out", local, remote, outbound),
-                ("in", remote, local, inbound),
-                ("fwd", remote, local, inbound),
-            ):
-                key = Policy(
-                    source, destination, direction, sa.source, sa.destination, sa.reqid, sa.if_id
-                )
-                expected_policies[key] = sa.spi
+        cmap = ike.child_map()
+        if not cmap and ike.child:
+            cmap = {link.child: ike.child}
+        for c_name, c_local, c_remote in link.child_specs():
+            c_obj = cmap.get(c_name)
+            if not c_obj:
+                continue
+            inbound, outbound = c_obj.inbound, c_obj.outbound
+            expected_states.update((inbound, outbound))
+            for local, remote in product(c_local, c_remote):
+                for direction, source, destination, sa in (
+                    ("out", local, remote, outbound),
+                    ("in", remote, local, inbound),
+                    ("fwd", remote, local, inbound),
+                ):
+                    key = Policy(
+                        source,
+                        destination,
+                        direction,
+                        sa.source,
+                        sa.destination,
+                        sa.reqid,
+                        sa.if_id,
+                    )
+                    expected_policies[key] = sa.spi
     if set(states) != expected_states or len(states) != len(expected_states):
         raise unowned("The kernel XFRM state does not map exactly to VICI CHILD SPIs.")
     if (

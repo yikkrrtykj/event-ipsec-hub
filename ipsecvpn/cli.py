@@ -149,10 +149,91 @@ def _parser():
             kind = operation.add_mutually_exclusive_group(required=True)
             kind.add_argument("--child", dest="kind", action="store_const", const="child")
             kind.add_argument("--ike", dest="kind", action="store_const", const="ike")
+    failover = commands.add_parser(
+        "failover", help="Inspect backup lock state or execute manual-confirm failback."
+    )
+    fo_cmds = failover.add_subparsers(dest="failover_action", required=True)
+    fo_status = fo_cmds.add_parser("status", help="Show current failover lock state.")
+    fo_status.add_argument("--state-file", type=Path, default=None)
+    fo_status.add_argument("--json", action="store_true")
+    fo_eval = fo_cmds.add_parser("evaluate", help="Evaluate probe health and update lock state.")
+    fo_pri = fo_eval.add_mutually_exclusive_group(required=True)
+    fo_pri.add_argument("--primary-healthy", dest="primary_healthy", action="store_true")
+    fo_pri.add_argument("--primary-unhealthy", dest="primary_healthy", action="store_false")
+    fo_bak = fo_eval.add_mutually_exclusive_group(required=True)
+    fo_bak.add_argument("--backup-healthy", dest="backup_healthy", action="store_true")
+    fo_bak.add_argument("--backup-unhealthy", dest="backup_healthy", action="store_false")
+    fo_eval.add_argument("--reason", default="probe_failure")
+    fo_eval.add_argument("--apply-gate", action="store_true")
+    fo_eval.add_argument("--send-feishu", action="store_true")
+    fo_eval.add_argument("--state-file", type=Path, default=None)
+    fo_eval.add_argument("--json", action="store_true")
+    for fo_name in ("switch-backup", "failback"):
+        fo_op = fo_cmds.add_parser(fo_name)
+        fo_mode = fo_op.add_mutually_exclusive_group(required=True)
+        fo_mode.add_argument("--dry-run", action="store_true")
+        fo_mode.add_argument("--confirm", action="store_true")
+        fo_op.add_argument("--operator", required=True)
+        fo_op.add_argument("--apply-gate", action="store_true")
+        fo_op.add_argument("--send-feishu", action="store_true")
+        fo_op.add_argument("--state-file", type=Path, default=None)
+        fo_op.add_argument("--json", action="store_true")
+        if fo_name == "switch-backup":
+            fo_op.add_argument("--reason", default="manual_switch")
+        else:
+            fo_op.add_argument("--force", action="store_true")
     return parser
 
 
 def _run(args):
+    if args.command == "failover":
+        from .failover import (
+            FAILOVER_STATE_FILE,
+            FailoverController,
+            apply_hub_xfrm_gate,
+            notify_feishu_failover,
+        )
+
+        state_file = args.state_file or FAILOVER_STATE_FILE
+        controller = FailoverController(state_file)
+        if args.failover_action == "status":
+            mode = controller.state["mode"]
+            active_path = controller.state["active_path"]
+            return {
+                "status": "PASS",
+                "detail": f"Failover mode={mode} active={active_path}.",
+                "state": dict(controller.state),
+            }
+        if args.failover_action == "evaluate":
+            out = controller.evaluate(
+                primary_healthy=args.primary_healthy,
+                backup_healthy=args.backup_healthy,
+                reason=args.reason,
+            )
+            if args.apply_gate and out["action"] == "SWITCH_TO_BACKUP":
+                out["hub_gate"] = apply_hub_xfrm_gate(True)
+            if args.send_feishu and out.get("notify_feishu"):
+                out["feishu_delivered"] = notify_feishu_failover(out["action"], out["state"])
+            return out
+        if not args.confirm:
+            return {
+                "status": "PASS",
+                "detail": f"Dry-run {args.failover_action}; failover state was not changed.",
+                "state": dict(controller.state),
+            }
+        if args.failover_action == "switch-backup":
+            out = controller.manual_switch_to_backup(operator=args.operator, reason=args.reason)
+            if args.apply_gate and out["action"] == "SWITCH_TO_BACKUP":
+                out["hub_gate"] = apply_hub_xfrm_gate(True)
+        else:
+            out = controller.confirm_failback(operator=args.operator, force=args.force)
+            if args.apply_gate and out["action"] == "SWITCH_TO_PRIMARY":
+                out["hub_gate"] = apply_hub_xfrm_gate(False)
+        if args.send_feishu and out["status"] == "PASS":
+            out["feishu_delivered"] = notify_feishu_failover(
+                out["action"], out["state"], out.get("detail", "")
+            )
+        return out
     if args.command == "monitor":
         from .monitoring.collector import collect
         from .monitoring.model import Settings
@@ -209,10 +290,8 @@ def _run(args):
 
 
 def _print_text(result):
-    print(
-        "FAIL/STOP" if result.get("decision") == "STOP" else result["status"],
-        result.get("detail", ""),
-    )
+    stopped = result.get("decision") == "STOP" or result.get("status") == "STOP"
+    print("FAIL/STOP" if stopped else result["status"], result.get("detail", ""))
     for site in result.get("sites", []):
         if "ike_state" in site:
             print(
@@ -261,7 +340,7 @@ def main(argv=None):
             print(f"{status} {result['detail']}", file=sys.stderr)
             return 1
     except (Stop, OSError, KeyError, ValueError) as exc:
-        if args.command not in (*HOST_ACTIONS, "monitor"):
+        if args.command not in (*HOST_ACTIONS, "monitor", "failover"):
             raise
         detail = (
             str(exc)
@@ -280,4 +359,4 @@ def main(argv=None):
         print(render_peer_markdown(result), end="")
     else:
         _print_text(result)
-    return int(result["status"] == "FAIL")
+    return int(result["status"] in {"FAIL", "STOP"})

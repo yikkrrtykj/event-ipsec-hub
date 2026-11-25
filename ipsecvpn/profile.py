@@ -110,9 +110,6 @@ def validate_profile(profile):
     if isinstance(profile, dict):
         if "schema_version" in profile and profile["schema_version"] != "2.0":
             raise ProfileError("Unsupported schema version. Start from the V2 example.")
-        sites = profile.get("sites")
-        if isinstance(sites, list) and len(sites) > 2:
-            raise ProfileError("UNSUPPORTED: PR #1 supports exactly two sites per profile.")
 
     error = next(schema_validator().iter_errors(profile), None)
     if error:
@@ -150,13 +147,28 @@ def _validate_topology(profile):
     if {link["site_id"] for link in links} != site_ids:
         raise ProfileError("Each site must have exactly one link and no unknown links.")
 
-    pair = profile["traffic_policy"]["allowed_site_pairs"][0]
-    if {pair["a"], pair["b"]} != site_ids:
-        raise ProfileError("The allowed pair must explicitly connect the two distinct sites.")
-    for side in ("a", "b"):
-        site = next(site for site in sites if site["id"] == pair[side])
-        if not set(pair.get(f"{side}_cidrs", ())).issubset(site["lan_cidrs"]):
-            raise ProfileError("Authorized CIDRs must be listed in the matching site LAN.")
+    site_map = {site["id"]: site for site in sites}
+    seen_pairs = set()
+    connected_sites = set()
+    for pair in profile["traffic_policy"]["allowed_site_pairs"]:
+        a_id, b_id = pair["a"], pair["b"]
+        if a_id == b_id or a_id not in site_ids or b_id not in site_ids:
+            raise ProfileError(
+                "Each allowed pair must explicitly connect two distinct defined sites."
+            )
+        pair_key = tuple(sorted((a_id, b_id)))
+        if pair_key in seen_pairs:
+            raise ProfileError("Duplicate allowed_site_pairs entries are not allowed.")
+        seen_pairs.add(pair_key)
+        connected_sites.update(pair_key)
+        for side in ("a", "b"):
+            site = site_map[pair[side]]
+            if not set(pair.get(f"{side}_cidrs", ())).issubset(site["lan_cidrs"]):
+                raise ProfileError("Authorized CIDRs must be listed in the matching site LAN.")
+    if connected_sites != site_ids:
+        raise ProfileError(
+            "Every declared site must participate in at least one allowed_site_pairs rule."
+        )
 
     networks = sorted(IPv4Network(cidr) for site in sites for cidr in site["lan_cidrs"])
     if any(network.prefixlen == 0 for network in networks):
@@ -197,11 +209,69 @@ def _validate_topology(profile):
     if any(address in network for address in outer_addresses for network in networks):
         raise ProfileError("A site LAN would capture an outer peer, gateway or source address.")
 
+    table_bindings = {}
+    for link in links:
+        outer = link["outer_path"]
+        if "route_table" in outer:
+            if outer["interface"] == "auto" or "source_ip" not in outer or "gateway" not in outer:
+                raise ProfileError(
+                    "Dual-ISP symmetric return (outer_path.route_table) requires explicit "
+                    "interface, source_ip, and gateway."
+                )
+            binding = (outer["interface"], outer["source_ip"], outer["gateway"])
+            existing = table_bindings.get(outer["route_table"])
+            if existing is not None and existing != binding:
+                raise ProfileError("Conflicting outer_path bindings share the same route_table.")
+            table_bindings[outer["route_table"]] = binding
+
+
+def authorized_pairs(profile):
+    """Return normalized bidirectional forwarding rules from allowed_site_pairs."""
+    site_lans = {site["id"]: site["lan_cidrs"] for site in profile["sites"]}
+    rules = []
+    for pair in profile["traffic_policy"]["allowed_site_pairs"]:
+        a_id, b_id = pair["a"], pair["b"]
+        a_cidrs = list(pair.get("a_cidrs", site_lans[a_id]))
+        b_cidrs = list(pair.get("b_cidrs", site_lans[b_id]))
+        rules.append(
+            {
+                "source_site_id": a_id,
+                "target_site_id": b_id,
+                "source_cidrs": a_cidrs,
+                "target_cidrs": b_cidrs,
+            }
+        )
+        rules.append(
+            {
+                "source_site_id": b_id,
+                "target_site_id": a_id,
+                "source_cidrs": b_cidrs,
+                "target_cidrs": a_cidrs,
+            }
+        )
+    return rules
+
 
 def authorized_lans(profile):
-    pair = profile["traffic_policy"]["allowed_site_pairs"][0]
-    site_lans = {site["id"]: site["lan_cidrs"] for site in profile["sites"]}
-    return {pair[side]: pair.get(f"{side}_cidrs", site_lans[pair[side]]) for side in ("a", "b")}
+    """Return the union of authorized local LAN CIDRs per site."""
+    result = {site["id"]: [] for site in profile["sites"]}
+    for rule in authorized_pairs(profile):
+        bucket = result[rule["source_site_id"]]
+        for cidr in rule["source_cidrs"]:
+            if cidr not in bucket:
+                bucket.append(cidr)
+    return result
+
+
+def authorized_remote_lans(profile, site_id):
+    """Return the union of remote CIDRs that site_id is authorized to reach."""
+    result = []
+    for rule in authorized_pairs(profile):
+        if rule["source_site_id"] == site_id:
+            for cidr in rule["target_cidrs"]:
+                if cidr not in result:
+                    result.append(cidr)
+    return result
 
 
 def backup_readiness(profile):
@@ -233,7 +303,6 @@ def backup_readiness(profile):
 def _validate_optional_paths(profile):
     sites = {site["id"]: site for site in profile["sites"]}
     backup = profile["backup"]
-    authorized = authorized_lans(profile)
     if backup["enabled"]:
         links = backup.get("links", [])
         _require_unique((link["site_id"] for link in links), "Backup link site IDs")
@@ -267,7 +336,7 @@ def _validate_optional_paths(profile):
             uplink_ids = {uplink["id"] for uplink in sites[site_id].get("uplinks", [])}
             if "local_uplink_id" in link and link["local_uplink_id"] not in uplink_ids:
                 raise ProfileError("A backup link references an unknown local uplink.")
-            remote_lans = next(lans for other, lans in authorized.items() if other != site_id)
+            remote_lans = authorized_remote_lans(profile, site_id)
             if not set(link.get("remote_cidrs", ())).issubset(remote_lans):
                 raise ProfileError("Backup route CIDRs exceed the authorized remote LANs.")
             primary_priority = primary_priorities[site_id]

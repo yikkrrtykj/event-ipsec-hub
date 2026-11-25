@@ -38,6 +38,13 @@ class Link:
     ike_lifetime: int
     child_lifetime: int
     dpd_delay: int
+    route_priority: int = int(XFRM_METRIC)
+    selector_mode: str = "exact"
+    start_action: str = HUB_START_ACTION
+    dpd_action: str = HUB_DPD_ACTION
+    close_action: str = "none"
+    route_table: int | None = None
+    policy_priority: int = 1000
 
     @property
     def name(self):
@@ -47,11 +54,42 @@ class Link:
     def child(self):
         return f"{self.name}-child"
 
+    def child_specs(self):
+        """Return (child_name, local_ts_tuple, remote_ts_tuple) entries for this link."""
+        if self.selector_mode == "route_based":
+            return ((self.child, ("0.0.0.0/0",), ("0.0.0.0/0",)),)
+        if self.selector_mode == "per_pair":
+            return tuple(
+                (f"{self.child}-{idx}", (local_cidr,), (remote_cidr,))
+                for idx, (local_cidr, remote_cidr) in enumerate(
+                    (l_cidr, r_cidr) for l_cidr in self.local_ts for r_cidr in self.remote_ts
+                )
+            )
+        return ((self.child, self.local_ts, self.remote_ts),)
+
 
 @dataclass(frozen=True)
 class DeploymentManifest:
     event_id: str
     links: tuple[Link, ...]
+    forward_rules: tuple[tuple[str, str, tuple[str, ...], tuple[str, ...]], ...] = ()
+
+    def resolved_forward_rules(self):
+        """Return (source_link, target_link, source_cidrs, target_cidrs) tuples."""
+        by_site = {link.site_id: link for link in self.links}
+        if self.forward_rules:
+            return tuple(
+                (by_site[src_id], by_site[dst_id], src_cidrs, dst_cidrs)
+                for src_id, dst_id, src_cidrs, dst_cidrs in self.forward_rules
+                if src_id in by_site and dst_id in by_site
+            )
+        if len(self.links) == 2:
+            a, b = self.links
+            return (
+                (a, b, a.remote_ts, b.remote_ts),
+                (b, a, b.remote_ts, a.remote_ts),
+            )
+        return ()
 
     @property
     def networks(self):
@@ -69,20 +107,51 @@ class DeploymentManifest:
                     "destination": cidr,
                     "interface": link.name,
                     "table": "main",
-                    "metric": int(XFRM_METRIC),
+                    "metric": link.route_priority,
                     "fallback": {"type": "blackhole", "metric": int(BLACKHOLE_METRIC)},
                 }
                 for link in self.links
                 for cidr in link.remote_ts
             ],
+            "outer_routes": [
+                {
+                    "destination": f"{link.peer}/32",
+                    "interface": link.wan,
+                    "gateway": link.gateway,
+                    "source_ip": link.source,
+                    "route_table": link.route_table,
+                }
+                for link in self.links
+            ],
+            "symmetric_return_rules": [
+                {
+                    "from_source": f"{source}/32",
+                    "table": table,
+                    "priority": priority,
+                    "interface": wan,
+                    "gateway": gateway,
+                }
+                for table, (wan, source, gateway, priority) in sorted(
+                    {
+                        link.route_table: (
+                            link.wan,
+                            link.source,
+                            link.gateway,
+                            link.policy_priority,
+                        )
+                        for link in self.links
+                        if link.route_table is not None
+                    }.items()
+                )
+            ],
             "forward_acl": [
                 {
                     "iif": source.name,
                     "oif": target.name,
-                    "source_cidrs": source.remote_ts,
-                    "destination_cidrs": target.remote_ts,
+                    "source_cidrs": source_cidrs,
+                    "destination_cidrs": target_cidrs,
                 }
-                for source, target in (self.links, self.links[::-1])
+                for source, target, source_cidrs, target_cidrs in self.resolved_forward_rules()
             ],
             "source_nat": False,
         }
@@ -90,8 +159,9 @@ class DeploymentManifest:
 
 def build_manifest(profile):
     validate_profile(profile)
+    plan = build_plan(profile)
     links = []
-    for item in build_plan(profile)["connections"]:
+    for item in plan["connections"]:
         outer = item["outer_path"]
         links.append(
             Link(
@@ -110,10 +180,32 @@ def build_manifest(profile):
                 ike_lifetime=item["ike"]["lifetime_seconds"],
                 child_lifetime=item["child"]["lifetime_seconds"],
                 dpd_delay=item["ike"]["dpd_delay_seconds"],
+                route_priority=(
+                    item["primary_route_priority"]
+                    if item.get("primary_route_priority") is not None
+                    else int(XFRM_METRIC)
+                ),
+                selector_mode=item.get("selector_mode", "exact"),
+                start_action=item["ike"].get("start_action", HUB_START_ACTION),
+                dpd_action=item["ike"].get("dpd_action", HUB_DPD_ACTION),
+                close_action=item["ike"].get("close_action", "none"),
+                route_table=outer.get("route_table"),
+                policy_priority=outer.get("policy_priority", 1000),
             )
         )
+    forward_rules = tuple(
+        (
+            rule["source_site_id"],
+            rule["target_site_id"],
+            tuple(rule["source_cidrs"]),
+            tuple(rule["destination_cidrs"]),
+        )
+        for rule in plan["forward_acl"]
+    )
     return DeploymentManifest(
-        profile["event"]["id"], tuple(sorted(links, key=lambda link: link.site_id))
+        profile["event"]["id"],
+        tuple(sorted(links, key=lambda link: link.site_id)),
+        forward_rules,
     )
 
 
@@ -131,19 +223,20 @@ def connection_settings(link):
         "local": {"auth": "psk", "id": link.local_id},
         "remote": {"auth": "psk", "id": link.remote_id},
         "children": {
-            link.child: {
+            child_name: {
                 "mode": "tunnel",
-                "local_ts": list(link.local_ts),
-                "remote_ts": list(link.remote_ts),
+                "local_ts": list(child_local_ts),
+                "remote_ts": list(child_remote_ts),
                 "esp_proposals": [link.esp_proposal],
                 "if_id_in": str(link.if_id),
                 "if_id_out": str(link.if_id),
                 "life_time": f"{link.child_lifetime}s",
                 "rekey_time": f"{child_rekey_seconds(link.child_lifetime)}s",
-                "start_action": HUB_START_ACTION,
-                "dpd_action": HUB_DPD_ACTION,
-                "close_action": "none",
+                "start_action": link.start_action,
+                "dpd_action": link.dpd_action,
+                "close_action": link.close_action,
             }
+            for child_name, child_local_ts, child_remote_ts in link.child_specs()
         },
     }
 
@@ -189,11 +282,13 @@ def nft_config(manifest, token, guarded=(), interfaces=(), handshake=None):
         "    chain forward {",
         "        type filter hook forward priority -5; policy accept;",
     ]
-    for source, target in ((links[0], links[1]), (links[1], links[0])) if links else ():
+    for source, target, source_cidrs, target_cidrs in (
+        manifest.resolved_forward_rules() if manifest else ()
+    ):
         lines.append(
             f'        iifname "{source.name}" oifname "{target.name}" '
-            f"ip saddr {{ {', '.join(source.remote_ts)} }} "
-            f"ip daddr {{ {', '.join(target.remote_ts)} }} accept"
+            f"ip saddr {{ {', '.join(source_cidrs)} }} "
+            f"ip daddr {{ {', '.join(target_cidrs)} }} accept"
         )
     for name in names:
         lines.extend([f'        iifname "{name}" drop', f'        oifname "{name}" drop'])
@@ -219,6 +314,15 @@ def nft_config(manifest, token, guarded=(), interfaces=(), handshake=None):
         lines.append(
             f'        iifname "{link.wan}" ip saddr {link.peer} ip daddr {link.source} '
             "udp dport { 500, 4500 } accept"
+        )
+        lines.append(
+            f'        iifname "{link.wan}" ip saddr {link.peer} ip daddr {link.source} '
+            "ip protocol esp accept"
+        )
+    for link in links:
+        lines.append(
+            f'        iifname "{link.name}" ip saddr {{ {", ".join(link.remote_ts)} }} '
+            "ct state established,related accept"
         )
     for name in names:
         lines.append(f'        iifname "{name}" drop')

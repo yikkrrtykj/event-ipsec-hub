@@ -33,13 +33,11 @@
     "sites": {
       "type": "array",
       "minItems": 2,
-      "maxItems": 2,
       "items": {"$ref": "#/$defs/site"}
     },
     "site_links": {
       "type": "array",
       "minItems": 2,
-      "maxItems": 2,
       "items": {"$ref": "#/$defs/site_link"}
     },
     "security": {"$ref": "#/$defs/security"},
@@ -51,7 +49,6 @@
         "allowed_site_pairs": {
           "type": "array",
           "minItems": 1,
-          "maxItems": 1,
           "items": {
             "type": "object",
             "additionalProperties": false,
@@ -81,7 +78,6 @@
         "country": {"$ref": "#/$defs/label"},
         "links": {
           "type": "array",
-          "maxItems": 2,
           "items": {"$ref": "#/$defs/backup_link"}
         }
       },
@@ -213,6 +209,10 @@
         "if_id": {"type": "integer", "minimum": 1, "maximum": 4294967295},
         "ike_proposal": {"$ref": "#/$defs/ike"},
         "esp_proposal": {"$ref": "#/$defs/esp"},
+        "selector_mode": {"enum": ["exact", "route_based", "per_pair"]},
+        "start_action": {"enum": ["none", "start", "trap"]},
+        "dpd_action": {"enum": ["clear", "restart"]},
+        "close_action": {"enum": ["none", "start"]},
         "route_priority": {"$ref": "#/$defs/priority"},
         "outer_path": {
           "type": "object",
@@ -225,7 +225,9 @@
             },
             "isp_label": {"$ref": "#/$defs/label"},
             "source_ip": {"$ref": "#/$defs/ipv4"},
-            "gateway": {"$ref": "#/$defs/ipv4"}
+            "gateway": {"$ref": "#/$defs/ipv4"},
+            "route_table": {"type": "integer", "minimum": 1, "maximum": 252},
+            "policy_priority": {"type": "integer", "minimum": 1, "maximum": 32765}
           }
         }
       }
@@ -246,7 +248,10 @@
         "esp_proposal": {"$ref": "#/$defs/esp"},
         "ike_lifetime_seconds": {"type": "integer", "minimum": 1},
         "child_lifetime_seconds": {"type": "integer", "minimum": 1},
-        "dpd_delay_seconds": {"type": "integer", "minimum": 1}
+        "dpd_delay_seconds": {"type": "integer", "minimum": 1},
+        "start_action": {"enum": ["none", "start", "trap"]},
+        "dpd_action": {"enum": ["clear", "restart"]},
+        "close_action": {"enum": ["none", "start"]}
       }
     },
     "priority": {"type": "integer", "minimum": 1},
