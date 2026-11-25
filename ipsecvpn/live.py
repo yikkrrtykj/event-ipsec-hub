@@ -47,34 +47,45 @@ AUTOSTART_WAIT_SECONDS = 15.0
 def await_autostart(host, manifest, pid, link, timeout=AUTOSTART_WAIT_SECONDS, interval=0.5):
     """Wait for a start_action=start load to finish before any explicit initiate."""
     deadline = time.monotonic() + timeout
+    partial = None
     last = None
     while True:
         try:
             already = inventory(host, manifest, pid, attempts=1).get(link.name)
             if already and already.child:
                 return already, None
+            partial = already
             last = None
         except SAError as exc:
             if exc.reason == "UNOWNED_DAEMON":
                 raise
             last = exc
         if time.monotonic() >= deadline:
-            return None, last
+            return partial, last
         time.sleep(interval)
 
 
 def initiate_link(host, manifest, pid, link):
+    installed = set()
     if link.start_action == "start":
         already, last = await_autostart(host, manifest, pid, link)
-        if already:
+        if already and already.child:
             return already
         if last is not None and last.reason == "UNOWNED_SA":
             raise last
+        if already:
+            installed = set(already.child_map())
+    elif len(link.child_specs()) > 1:
+        existing = inventory(host, manifest, pid).get(link.name)
+        if existing:
+            installed = set(existing.child_map())
     diagnostic = "IKE_NEGOTIATION_UNVERIFIED"
     with session(pid) as client:
         verify_initiate_config(client, manifest)
         try:
             for child_name, _, _ in link.child_specs():
+                if child_name in installed:
+                    continue
                 for event in client.initiate(
                     {"ike": link.name, "child": child_name, "timeout": "6000", "loglevel": "1"}
                 ):
@@ -388,7 +399,9 @@ def configure_scoped(host, pid, candidates, target, keys):
             raise Stop("A non-project connection or shared credential is loaded.")
         if client.get_keys().get("keys"):
             raise Stop("The daemon has an unowned private credential.")
-        for name in sorted(conns - desired.keys()):
+        # All active SAs were drained above; unload existing project conns before loading desired
+        # conns so removed children are cleared and start_action=start fires uniformly.
+        for name in sorted(conns):
             client.request("unload-conn", {"name": name})
         for key in sorted(shared - {f"ike-{name}" for name in desired}):
             client.request("unload-shared", {"id": key})

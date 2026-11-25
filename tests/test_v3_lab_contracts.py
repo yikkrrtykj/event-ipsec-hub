@@ -316,3 +316,36 @@ def test_live_maintenance_load_keeps_target_handshake_open(monkeypatch):
     dep.replace_live(FakeResources(), before, target, {}, 1, None)
     assert seen["guard"] is before
     assert seen["replace"]["handshake"] is target and seen["replace"]["hold"] is True
+
+
+def test_configure_scoped_unloads_existing_conns_and_initiate_skips_installed_children(monkeypatch):
+    from dataclasses import replace as dc_replace
+
+    manifest = build_manifest(load_profile(Path("config/esports-multi-ob-hillstone.example.yaml")))
+    ob2 = next(item for item in manifest.links if item.selector_mode == "per_pair")
+    ob2 = dc_replace(ob2, start_action="start", local_ts=("10.100.10.0/24", "10.100.20.0/24"))
+    partial_ike = type(
+        "Ike",
+        (),
+        {"child": None, "child_map": lambda _s: {ob2.child_specs()[1][0]: object()}},
+    )()
+    full_ike = type("Ike", (), {"child": object(), "child_map": lambda _s: {}})()
+    initiated = []
+
+    class FakeClient:
+        def initiate(self, params):
+            initiated.append(params["child"])
+            return iter(())
+
+    @contextmanager
+    def fake_session(_pid):
+        yield FakeClient()
+
+    monkeypatch.setattr(live, "await_autostart", lambda *_a, **_k: (partial_ike, None))
+    monkeypatch.setattr(live, "session", fake_session)
+    monkeypatch.setattr(live, "verify_initiate_config", lambda *_a: None)
+    monkeypatch.setattr(
+        live, "inventory", lambda *_a, **_k: type("S", (), {"get": lambda _s, _n: full_ike})()
+    )
+    assert live.initiate_link(None, manifest, 1, ob2) is full_ike
+    assert initiated == [ob2.child_specs()[0][0]]

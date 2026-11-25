@@ -635,7 +635,6 @@ def reload_peer_conns(site_id, manifest, keys):
                 rtr,
                 "/usr/sbin/swanctl",
                 "--load-all",
-                "--clear",
                 "--noprompt",
                 "--file",
                 str(cpath),
