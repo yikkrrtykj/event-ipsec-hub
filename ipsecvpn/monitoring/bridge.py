@@ -22,6 +22,7 @@ STATE = DIRECTORY / "delivery.json"
 MAX_BODY = 32 * 1024
 ALERTS = {
     "HubExporterDown": ("collector_healthy", 1),
+    "IpsecCollectorStale": ("collector_healthy", 1),
     "HubCollectorStale": ("collector_healthy", 1),
     "IpsecOwnershipUnknown": ("collector_healthy", 1),
     "IpsecIkeDown": ("site_ike_state", 1),
@@ -32,8 +33,12 @@ ALERTS = {
     "IpsecOneWay": ("business_state", 1),
     "IpsecFrequentRekey": ("site_rekeys_in_window", 0),
     "IpsecNoTraffic": ("site_traffic_idle", 0),
+    "IpsecAutoReconnectFailed": ("site_child_state", 1),
+    "IpsecFailoverSwitched": ("business_state", 1),
+    "IpsecFailoverManualRequired": ("business_state", 1),
+    "IpsecFailoverStopped": ("business_state", 1),
 }
-LABELS = ("event_id", "hub_id", "site_id", "src_site_id", "dst_site_id")
+LABELS = ("event_id", "hub_id", "site_id", "src_site_id", "dst_site_id", "source")
 ALERT_LEVELS = {"critical", "warning", "info"}
 RUNBOOK = "https://github.com/yikkrrtykj/event-ipsec-hub/blob/main/docs/pr4/OPERATIONS.md"
 

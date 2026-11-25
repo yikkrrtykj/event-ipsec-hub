@@ -42,6 +42,14 @@ def owned_resources(host, install, active):
 
 
 def initiate_link(host, manifest, pid, link):
+    if link.start_action == "start":
+        try:
+            already = inventory(host, manifest, pid, attempts=5, delay=0.3).get(link.name)
+            if already and already.child:
+                return already
+        except SAError as exc:
+            if exc.reason in {"UNOWNED_SA", "UNOWNED_DAEMON"}:
+                raise
     diagnostic = "IKE_NEGOTIATION_UNVERIFIED"
     with session(pid) as client:
         verify_initiate_config(client, manifest)
@@ -96,19 +104,29 @@ def verify_initiate_config(client, manifest):
         raise Stop("The loaded credential or connection inventory is not project-exclusive.")
 
 
-def rekey_ids(event, kind, link):
+def rekey_ids(event, kind, link, expected_old=None):
     item = event.get(link.name, {})
     if kind == "child":
         children = item.get("child-sas", {})
-        item = next(iter(children.values()), {}) if len(children) == 1 else {}
+        if expected_old is not None:
+            for candidate in children.values():
+                try:
+                    if int(candidate["old"]["uniqueid"]) == expected_old:
+                        item = candidate
+                        break
+                except (KeyError, ValueError, TypeError):
+                    continue
+            else:
+                item = {}
+        else:
+            item = next(iter(children.values()), {}) if len(children) == 1 else {}
     try:
         return int(item["old"]["uniqueid"]), int(item["new"]["uniqueid"])
     except (KeyError, ValueError, TypeError):
         return None
 
 
-def rekey_link(host, manifest, pid, link, old, kind):
-    previous = old.child.unique_id if kind == "child" else old.unique_id
+def _rekey_single(pid, link, kind, previous):
     with (
         session(pid) as watcher,
         closing(watcher.listen([f"{kind}-rekey"], timeout=0.15)) as events,
@@ -121,7 +139,11 @@ def rekey_link(host, manifest, pid, link, old, kind):
         deadline = time.monotonic() + 7
         relation = None
         for _, event in events:
-            relation = rekey_ids(event, kind, link) if event else None
+            relation = (
+                rekey_ids(event, kind, link, expected_old=previous if kind == "child" else None)
+                if event
+                else None
+            )
             if relation and relation[0] == previous and relation[1] != previous:
                 break
             if time.monotonic() >= deadline:
@@ -130,6 +152,29 @@ def rekey_link(host, manifest, pid, link, old, kind):
                 )
         if relation is None or relation[0] != previous or relation[1] == previous:
             raise SAError("SA_TRANSITION", "The daemon did not confirm the old/new SA relation.")
+    return relation
+
+
+def rekey_link(host, manifest, pid, link, old, kind):
+    old_children = getattr(old, "children", ())
+    if kind == "child" and len(old_children) > 1:
+        expected_new = {}
+        for c_name, c_obj in old_children:
+            relation = _rekey_single(pid, link, "child", c_obj.unique_id)
+            expected_new[c_name] = relation[1]
+        current = inventory(host, manifest, pid, attempts=10, delay=0.7).get(link.name)
+        if not current or not current.child:
+            raise SAError("SA_TRANSITION", "No stable CHILD was observed after rekey.")
+        cmap = current.child_map()
+        if any(
+            cmap.get(c_name, None) is None or cmap[c_name].unique_id != new_id
+            for c_name, new_id in expected_new.items()
+        ):
+            raise SAError("SA_TRANSITION", "The new SA did not match the daemon's rekey event.")
+        return current
+
+    previous = old.child.unique_id if kind == "child" else old.unique_id
+    relation = _rekey_single(pid, link, kind, previous)
     current = inventory(host, manifest, pid, attempts=10, delay=0.7).get(link.name)
     if not current or not current.child:
         raise SAError("SA_TRANSITION", "No stable CHILD was observed after rekey.")
@@ -139,34 +184,157 @@ def rekey_link(host, manifest, pid, link, old, kind):
     return current
 
 
-def drain_links(host, manifest, pid, live):
+def drain_links(host, manifest, pid, live, *, max_rechecks=2):
+    rechecks = 0
+    reverified = []
+    expected_names = {ike.name for ike in live.ikes}
     current = inventory(host, manifest, pid)
     if current != live:
-        raise SAError("SA_TRANSITION", "The active SAs changed after the maintenance snapshot.")
-    remaining = list(current.ikes)
-    for ike in current.ikes:
-        try:
-            with session(pid) as client:
-                reply = client.request(
-                    "terminate",
-                    {
-                        "ike-id": str(ike.unique_id),
-                        "force": "yes",
-                        "timeout": "2500",
-                        "loglevel": "0",
-                    },
-                )
-                if reply.get("matches") != b"1":
-                    raise SAError("SA_TRANSITION", "The verified termination target changed.")
-        except SAError as exc:
-            if exc.reason != "VICI_REJECTED":
-                raise
-            # 5.9.13 can force local deletion on timeout and still return failure.
-            # Verify the exact resulting inventory before issuing the next command.
-        remaining.remove(ike)
+        if {ike.name for ike in current.ikes} != expected_names or rechecks >= max_rechecks:
+            raise SAError("SA_TRANSITION", "The active SAs changed after the maintenance snapshot.")
+        rechecks += 1
+        reverified.append(
+            {
+                "phase": "pre_drain",
+                "before_ids": {ike.name: ike.unique_id for ike in live.ikes},
+                "after_ids": {ike.name: ike.unique_id for ike in current.ikes},
+            }
+        )
+    remaining_names = [ike.name for ike in current.ikes]
+    while remaining_names:
+        name = remaining_names[0]
+        ike = current.get(name)
+        if ike is None:
+            raise SAError("SA_TRANSITION", "An expected owned SA disappeared before termination.")
+        dispatched = False
+        while not dispatched:
+            try:
+                with session(pid) as client:
+                    reply = client.request(
+                        "terminate",
+                        {
+                            "ike-id": str(ike.unique_id),
+                            "force": "yes",
+                            "timeout": "2500",
+                            "loglevel": "0",
+                        },
+                    )
+                    if reply.get("matches") != b"1":
+                        refreshed = inventory(host, manifest, pid)
+                        if {item.name for item in refreshed.ikes} != set(
+                            remaining_names
+                        ) or rechecks >= max_rechecks:
+                            raise SAError(
+                                "SA_TRANSITION", "The verified termination target changed."
+                            )
+                        rechecks += 1
+                        new_ike = refreshed.get(name)
+                        reverified.append(
+                            {
+                                "phase": "mid_drain_target",
+                                "connection": name,
+                                "before_id": ike.unique_id,
+                                "after_id": new_ike.unique_id,
+                            }
+                        )
+                        current = refreshed
+                        ike = new_ike
+                        continue
+                    dispatched = True
+            except SAError as exc:
+                if exc.reason != "VICI_REJECTED":
+                    raise
+                dispatched = True
+        remaining_names.pop(0)
         observed = inventory(host, manifest, pid, attempts=8, delay=0.55)
-        if observed.ikes != tuple(remaining):
-            raise SAError("SA_TRANSITION", "The precise set of owned SAs did not drain.")
+        expected_remaining = tuple(current.get(rem) for rem in remaining_names)
+        if observed.ikes != expected_remaining:
+            if {item.name for item in observed.ikes} == set(
+                remaining_names
+            ) and rechecks < max_rechecks:
+                rechecks += 1
+                reverified.append(
+                    {
+                        "phase": "mid_drain_sibling",
+                        "remaining": list(remaining_names),
+                        "after_ids": {item.name: item.unique_id for item in observed.ikes},
+                    }
+                )
+            else:
+                raise SAError("SA_TRANSITION", "The precise set of owned SAs did not drain.")
+        current = observed
+    return reverified
+
+
+def reconnect_owned(host, install, active, *, site=None, max_attempts=3, base_delay=0.4):
+    """Bounded per-site reconnect that preserves healthy sibling SAs."""
+    manifest, live, pid = owned_resources(host, install, active)
+    if not manifest:
+        return {"status": "SKIP", "detail": "No active profile is deployed.", "links": []}
+    targets = [
+        link
+        for link in manifest.links
+        if site is None or link.site_id == site or link.key_id == site
+    ]
+    if site is not None and not targets:
+        raise Stop("Select a site or link in the current active profile.")
+    outcomes = []
+    exhausted = False
+    for link in targets:
+        existing = live.get(link.name)
+        if existing and existing.child:
+            outcomes.append(
+                {
+                    "site_id": link.site_id,
+                    "link_id": link.key_id,
+                    "action": "NOOP_HEALTHY",
+                    "ike_id": existing.unique_id,
+                    "child_id": existing.child.unique_id,
+                }
+            )
+            continue
+        last_reason = "UNVERIFIED_SA"
+        connected = None
+        for attempt in range(1, max(1, int(max_attempts)) + 1):
+            try:
+                connected = initiate_link(host, manifest, pid, link)
+                outcomes.append(
+                    {
+                        "site_id": link.site_id,
+                        "link_id": link.key_id,
+                        "action": "RECONNECTED",
+                        "attempts": attempt,
+                        "ike_id": connected.unique_id,
+                        "child_id": connected.child.unique_id,
+                    }
+                )
+                break
+            except SAError as exc:
+                last_reason = exc.reason
+                if exc.reason in {"UNOWNED_SA", "UNOWNED_DAEMON"}:
+                    raise
+                if attempt < max_attempts:
+                    time.sleep(base_delay * (2 ** (attempt - 1)))
+        if connected is None:
+            exhausted = True
+            outcomes.append(
+                {
+                    "site_id": link.site_id,
+                    "link_id": link.key_id,
+                    "action": "RECONNECT_EXHAUSTED",
+                    "attempts": max_attempts,
+                    "reason_code": last_reason,
+                }
+            )
+    return {
+        "status": "FAIL" if exhausted else "PASS",
+        "detail": (
+            "One or more links exhausted bounded reconnect attempts."
+            if exhausted
+            else "Owned links verified or reconnected."
+        ),
+        "links": outcomes,
+    }
 
 
 def configure_scoped(host, pid, candidates, target, keys):
@@ -190,7 +358,7 @@ def configure_scoped(host, pid, candidates, target, keys):
                 {
                     "id": f"ike-{name}",
                     "type": "IKE",
-                    "data": keys[link.site_id],
+                    "data": keys[link.key_id],
                     "owners": [link.local_id, link.remote_id],
                 },
             )

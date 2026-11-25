@@ -198,6 +198,24 @@ def metrics(snapshot):
             if "traffic_idle" in row
         ],
     )
+    if snapshot.get("links"):
+        for name, key in (("ike_state", "ike"), ("child_state", "child")):
+            family(
+                f"link_{name}",
+                "Verified Dual-ISP link observation, -1 unknown.",
+                [
+                    (
+                        {
+                            **dimensions,
+                            "site_id": row["site_id"],
+                            "link_id": row["link_id"],
+                            "isp": row.get("isp", ""),
+                        },
+                        int(row[key]),
+                    )
+                    for row in snapshot["links"]
+                ],
+            )
     paths = [
         ({**dimensions, "src_site_id": row["src_site_id"], "dst_site_id": row["dst_site_id"]}, row)
         for row in snapshot["paths"]

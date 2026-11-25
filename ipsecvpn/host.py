@@ -383,7 +383,7 @@ class Host:
         if any(link.wan == "auto" for link in manifest.links):
             raise Stop("outer_path.interface auto is an offline placeholder.")
         pending_policy = {
-            link.site_id
+            link.name
             for link in manifest.links
             if link.route_table is not None
             and (link.policy_priority, f"{link.source}/32", str(link.route_table))
@@ -391,8 +391,8 @@ class Host:
         }
         lookups = self.route_lookups(
             (
-                link.gateway if link.site_id in pending_policy else link.peer,
-                None if link.site_id in pending_policy else link.source,
+                link.gateway if link.name in pending_policy else link.peer,
+                None if link.name in pending_policy else link.source,
             )
             for link in manifest.links
         )
@@ -404,7 +404,7 @@ class Host:
                 raise Stop("The IKE source address is not assigned to the specified WAN interface.")
             if link.wan in names or link.wan in owned_links:
                 raise Stop("The existing peer route does not match the specified WAN path.")
-            if link.site_id in pending_policy:
+            if link.name in pending_policy:
                 gw_lookup = lookups[link.gateway, None]
                 if (
                     len(gw_lookup) != 1

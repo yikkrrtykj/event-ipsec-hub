@@ -95,11 +95,17 @@ def _connections(profile):
     authorized = authorized_lans(profile)
     for link in profile["site_links"]:
         site = sites[link["site_id"]]
+        peer_source = dict(site)
+        if "uplink_id" in link:
+            uplink = next(u for u in site.get("uplinks", []) if u["id"] == link["uplink_id"])
+            peer_source["public_endpoint"] = uplink["public_endpoint"]
+            peer_source["ike_identity"] = uplink.get("ike_identity", uplink["public_endpoint"])
         remote_ts = authorized_remote_lans(profile, site["id"])
         yield {
+            "link_id": link.get("id", site["id"]),
             "site_id": site["id"],
             "hub": hub,
-            "peer": _endpoint(site),
+            "peer": _endpoint(peer_source),
             "xfrm_if_id": link["if_id"],
             "outer_path": link["outer_path"],
             "hub_source": link["outer_path"].get("source_ip", hub["public_endpoint"]),
@@ -223,7 +229,9 @@ def _device(firewall):
 
 def build_plan(profile):
     connections = list(_connections(profile))
-    by_site = {conn["site_id"]: conn for conn in connections}
+    by_site = {}
+    for conn in connections:
+        by_site.setdefault(conn["site_id"], []).append(conn)
     backup = _backup(profile)
     return {
         "status": backup.get("status", "PASS"),
@@ -247,14 +255,16 @@ def build_plan(profile):
         ],
         "forward_acl": [
             {
-                "from_xfrm_if_id": by_site[rule["source_site_id"]]["xfrm_if_id"],
-                "to_xfrm_if_id": by_site[rule["target_site_id"]]["xfrm_if_id"],
+                "from_xfrm_if_id": src_conn["xfrm_if_id"],
+                "to_xfrm_if_id": dst_conn["xfrm_if_id"],
                 "source_site_id": rule["source_site_id"],
                 "target_site_id": rule["target_site_id"],
                 "source_cidrs": rule["source_cidrs"],
                 "destination_cidrs": rule["target_cidrs"],
             }
             for rule in authorized_pairs(profile)
+            for src_conn in by_site[rule["source_site_id"]]
+            for dst_conn in by_site[rule["target_site_id"]]
         ],
         "source_nat": False,
         "backup": backup,

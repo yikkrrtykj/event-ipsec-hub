@@ -10,16 +10,18 @@ from .model import PROBE_FILE, State
 
 
 def generation(live, manifest):
-    return {
-        link.site_id: [
-            ike.unique_id,
-            ike.child.unique_id,
-            ike.child.inbound.spi,
-            ike.child.outbound.spi,
-        ]
-        for link in manifest.links
-        if (ike := live.get(link.name)) and ike.child
-    }
+    result = {}
+    for link in manifest.links:
+        if link.site_id in result:
+            continue
+        if (ike := live.get(link.name)) and ike.child:
+            result[link.site_id] = [
+                ike.unique_id,
+                ike.child.unique_id,
+                ike.child.inbound.spi,
+                ike.child.outbound.spi,
+            ]
+    return result
 
 
 def in_network(address, cidrs):
@@ -39,9 +41,10 @@ def assess(paths, settings, install, manifest, live):
         if not math.isfinite(age) or not 0 <= age < settings.probe_ttl:
             return [{**row, "reason_code": "STALE"} for row in paths], State.UNKNOWN
         links = {link.site_id: link for link in manifest.links}
+        site_ids = {link.site_id for link in manifest.links}
         current = generation(live, manifest)
         if (
-            len(current) != len(manifest.links)
+            len(current) != len(site_ids)
             or proof["owner"] != install["token"]
             or proof["event_id"] != manifest.event_id
             or proof["generations"] != current

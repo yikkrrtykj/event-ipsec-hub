@@ -8,6 +8,7 @@ case "$suite" in
     pr3) extra_packages=(tcpdump) ;;
     pr4) extra_packages=(tcpdump prometheus prometheus-alertmanager) ;;
     pr5) extra_packages=() ;;
+    v3) extra_packages=(tcpdump prometheus) ;;
     *) printf '%s\n' 'Unknown isolated VM suite.' >&2; exit 2 ;;
 esac
 source_sha="$(git -C "$root" rev-parse --verify HEAD)"
@@ -37,6 +38,8 @@ cleanup() {
         evidence=/var/tmp/ipsecvpn-pr4-acceptance.jsonl
     elif [[ "$suite" == pr5 ]]; then
         evidence=/var/tmp/ipsecvpn-pr5-simulation.jsonl
+    elif [[ "$suite" == v3 ]]; then
+        evidence=/var/tmp/ipsecvpn-v3-acceptance.jsonl
     fi
     if [[ -s "$pidfile" ]] && guest "sudo cat $evidence" > "$work/acceptance.jsonl" 2>/dev/null; then
         expected_payload=
@@ -76,6 +79,8 @@ if [[ "$suite" == pr3 || "$suite" == pr4 ]]; then
     cp "$source"/scripts/pr3-lab/{verify.py,topology.py,traffic.py,topology.json} "$work/payload/"
 elif [[ "$suite" == pr5 ]]; then
     cp "$source"/scripts/pr5-lab/verify_failover.py "$source"/scripts/pr3-lab/traffic.py "$work/payload/"
+elif [[ "$suite" == v3 ]]; then
+    cp "$source"/scripts/v3-lab/verify_v3.py "$source"/scripts/pr3-lab/traffic.py "$work/payload/"
 else
     cp "$source"/scripts/pr2-vm/verify.py "$work/payload/"
 fi
@@ -167,4 +172,5 @@ if [[ -z "$after" || "$before" == "$after" ]]; then
 fi
 driver=verify.py
 if [[ "$suite" == pr4 ]]; then driver=verify_monitor.py; fi
+if [[ "$suite" == v3 ]]; then driver=verify_v3.py; fi
 guest "sudo /opt/ipsecvpn-lab/venv/bin/python /opt/ipsecvpn-lab/$driver after-reboot"

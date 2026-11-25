@@ -25,6 +25,7 @@ from .live import (
     drain_links,
     initiate_link,
     owned_resources,
+    reconnect_owned,
     rekey_link,
     verify_initiate_config,
 )
@@ -484,7 +485,9 @@ class Deployment:
     def replace_live(self, resources, before, target, keys, pid, live):
         resources.guard(handshake=before)
         self.step("VICI targeted drain", "STARTED")
-        drain_links(self.host, before, pid, live)
+        reverified = drain_links(self.host, before, pid, live)
+        if reverified:
+            self.record["sa_reverified"] = reverified
         self.step("VICI targeted drain", "DONE")
 
         def loader(model, credentials):
@@ -649,6 +652,13 @@ class Deployment:
             return self.install(confirmed)
         if action == "backup":
             return self.backup(confirmed)
+        if action == "reconnect":
+            if not confirmed:
+                return {"status": "PASS", "detail": "Dry-run reconnect; no SA was changed."}
+            install = installed_record()
+            active = read_record(ACTIVE)
+            keys_for(active)
+            return reconnect_owned(self.host, install, active, site=site)
         if action in {"initiate", "rekey"}:
             return self.sa_operation(action, site, kind, confirmed)
         profile = read_profile(config, confirmed) if action == "apply" else None
