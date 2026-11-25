@@ -5,11 +5,11 @@ __pycache__/
 *.egg-info/
 /build/
 /dist/
-profiles/
-secrets/
-exports/
-backups/
-diagnostics/
+/profiles/
+/secrets/
+/exports/
+/backups/
+/diagnostics/
 .env
 .env.*
 *.local.yaml
@@ -17,3 +17,7 @@ diagnostics/
 *.psk
 *.pem
 *.key
+/bin/
+/ipsecvpn.exe
+coverage.out
+/web/node_modules/
