@@ -578,7 +578,7 @@ def install_topology_unit():
     unit.write_text(
         f"""[Unit]
 Description=V3 disposable multi-site Dual-ISP peer network
-After=local-fs.target systemd-sysctl.service
+After=local-fs.target systemd-sysctl.service ipsecvpn-guard.service
 Before=ipsecvpn-restore.service
 
 [Service]
@@ -1415,13 +1415,15 @@ def verify_issue13_coordinated_failover(manifest, feishu_inbox):
 
 def before_reboot():
     assert cli("install", "--confirm")["status"] == "PASS"
+    # Activate the boot units while no profile is active and the daemon is idle. V3 profiles use
+    # start_action=start, so starting them after apply would make the guard see live SAs.
+    cmd("systemctl", "start", "ipsecvpn-guard.service", "ipsecvpn-restore.service")
     profile = create_v3_profile()
     install_topology_unit()
     manifest = build_manifest(profile)
     BASELINE_FILE.write_text(json.dumps(baseline_for(manifest)), encoding="utf-8")
 
     assert cli("apply", "-c", str(PROFILE), "--confirm")["status"] == "PASS"
-    cmd("systemctl", "start", "ipsecvpn-restore.service")
 
     verify_issue7_nsite_isolation_and_multichild(manifest)
     verify_issue8_dual_isp_hot_standby(manifest)
