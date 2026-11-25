@@ -46,18 +46,19 @@ def initiate_link(host, manifest, pid, link):
     with session(pid) as client:
         verify_initiate_config(client, manifest)
         try:
-            for event in client.initiate(
-                {"ike": link.name, "child": link.child, "timeout": "6000", "loglevel": "1"}
-            ):
-                msg = event.get("msg", b"").lower()
-                if b"ts_unacceptable" in msg or b"traffic selectors unacceptable" in msg:
-                    diagnostic = "CHILD_SELECTORS"
-                elif b"authentication_failed" in msg or b"no shared key" in msg:
-                    diagnostic = "IKE_AUTHENTICATION"
-                elif b"no_proposal_chosen" in msg or b"no proposal found" in msg:
-                    diagnostic = "PROPOSAL_REJECTED"
-                elif diagnostic == "IKE_NEGOTIATION_UNVERIFIED" and b"retransmit" in msg:
-                    diagnostic = "PEER_UNREACHABLE"
+            for child_name, _, _ in link.child_specs():
+                for event in client.initiate(
+                    {"ike": link.name, "child": child_name, "timeout": "6000", "loglevel": "1"}
+                ):
+                    msg = event.get("msg", b"").lower()
+                    if b"ts_unacceptable" in msg or b"traffic selectors unacceptable" in msg:
+                        diagnostic = "CHILD_SELECTORS"
+                    elif b"authentication_failed" in msg or b"no shared key" in msg:
+                        diagnostic = "IKE_AUTHENTICATION"
+                    elif b"no_proposal_chosen" in msg or b"no proposal found" in msg:
+                        diagnostic = "PROPOSAL_REJECTED"
+                    elif diagnostic == "IKE_NEGOTIATION_UNVERIFIED" and b"retransmit" in msg:
+                        diagnostic = "PEER_UNREACHABLE"
         except CommandException:
             raise SAError(
                 diagnostic, "The targeted IKE/CHILD negotiation did not complete."
@@ -118,6 +119,7 @@ def rekey_link(host, manifest, pid, link, old, kind):
             if reply.get("matches") != b"1":
                 raise SAError("SA_TRANSITION", "The verified rekey target changed before dispatch.")
         deadline = time.monotonic() + 7
+        relation = None
         for _, event in events:
             relation = rekey_ids(event, kind, link) if event else None
             if relation and relation[0] == previous and relation[1] != previous:
@@ -126,6 +128,8 @@ def rekey_link(host, manifest, pid, link, old, kind):
                 raise SAError(
                     "SA_TRANSITION", "The daemon did not confirm the old/new SA relation."
                 )
+        if relation is None or relation[0] != previous or relation[1] == previous:
+            raise SAError("SA_TRANSITION", "The daemon did not confirm the old/new SA relation.")
     current = inventory(host, manifest, pid, attempts=10, delay=0.7).get(link.name)
     if not current or not current.child:
         raise SAError("SA_TRANSITION", "No stable CHILD was observed after rekey.")

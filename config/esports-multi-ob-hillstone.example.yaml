@@ -1,0 +1,114 @@
+schema_version: "2.0"
+event:
+  id: esports-multi-ob-hillstone
+  name: Multi-OB Esports Tournament (Hillstone Route-Based)
+  purpose: Connect multiple isolated OB venues to central match servers via self-hosted Hub
+
+hub:
+  id: hub-vps-primary
+  platform: ubuntu-24.04
+  public_endpoint: 198.51.100.10
+  ike_identity: "@hub-vps-primary.example"
+  provider_label: VPS-Primary
+  location_label: Hong-Kong
+  country: CN-HK
+
+sites:
+  - id: server-core
+    display_name: Match Server Room
+    role: server
+    country: CN
+    location_label: Shanghai-IDC
+    public_endpoint: 203.0.113.10
+    ike_identity: "@server-core.example"
+    lan_cidrs:
+      - 10.100.10.0/24
+      - 10.100.20.0/24
+    firewall:
+      vendor: Hillstone
+      model: SG-6000-E3960
+      os_version: StoneOS 5.5R10
+
+  - id: ob-venue-1
+    display_name: OB Studio Alpha
+    role: ob
+    country: CN
+    location_label: Beijing-Studio
+    public_endpoint: 203.0.113.21
+    ike_identity: "@ob-venue-1.example"
+    lan_cidrs:
+      - 10.101.10.0/24
+    firewall:
+      vendor: Hillstone
+      model: SG-6000-E1700
+      os_version: StoneOS 5.5R10
+
+  - id: ob-venue-2
+    display_name: OB Studio Beta
+    role: ob
+    country: JP
+    location_label: Tokyo-Studio
+    public_endpoint: 203.0.113.22
+    ike_identity: "@ob-venue-2.example"
+    lan_cidrs:
+      - 10.102.10.0/24
+    firewall:
+      vendor: Hillstone
+      model: SG-6000-E1700
+      os_version: StoneOS 5.5R10
+
+security:
+  start_action: start
+  dpd_action: restart
+  close_action: start
+
+site_links:
+  - site_id: server-core
+    secret_ref: file:/etc/ipsecvpn/secrets/server-core.psk
+    if_id: 201
+    selector_mode: route_based
+    route_priority: 10
+    outer_path:
+      interface: eth0
+      isp_label: BGP-ISP-A
+      source_ip: 198.51.100.10
+      gateway: 198.51.100.1
+      route_table: 101
+      policy_priority: 1001
+
+  - site_id: ob-venue-1
+    secret_ref: file:/etc/ipsecvpn/secrets/ob-venue-1.psk
+    if_id: 202
+    selector_mode: route_based
+    route_priority: 10
+    outer_path:
+      interface: eth0
+      isp_label: BGP-ISP-A
+
+  - site_id: ob-venue-2
+    secret_ref: file:/etc/ipsecvpn/secrets/ob-venue-2.psk
+    if_id: 203
+    selector_mode: per_pair
+    route_priority: 10
+    outer_path:
+      interface: eth0
+      isp_label: BGP-ISP-A
+
+traffic_policy:
+  allowed_site_pairs:
+    - a: ob-venue-1
+      b: server-core
+      a_cidrs:
+        - 10.101.10.0/24
+      b_cidrs:
+        - 10.100.10.0/24
+        - 10.100.20.0/24
+    - a: ob-venue-2
+      b: server-core
+      a_cidrs:
+        - 10.102.10.0/24
+      b_cidrs:
+        - 10.100.10.0/24
+
+backup:
+  enabled: false

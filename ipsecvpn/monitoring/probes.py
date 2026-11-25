@@ -41,11 +41,11 @@ def assess(paths, settings, install, manifest, live):
         links = {link.site_id: link for link in manifest.links}
         current = generation(live, manifest)
         if (
-            len(current) != 2
+            len(current) != len(manifest.links)
             or proof["owner"] != install["token"]
             or proof["event_id"] != manifest.event_id
             or proof["generations"] != current
-            or len(proof["directions"]) != 2
+            or len(proof["directions"]) != len(paths)
             or not 0 <= proof["at"] - proof["started"] <= 12
         ):
             return unknown, State.UNKNOWN

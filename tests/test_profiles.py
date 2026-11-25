@@ -33,7 +33,7 @@ def test_shipped_profiles_use_documentation_wan_addresses(path):
     ("path", "value", "message"),
     [
         (("schema_version",), "1.0", "Unsupported schema version"),
-        (("sites",), [{}, {}, {}], "UNSUPPORTED"),
+        (("sites",), [{}, {}, {}], "required"),
         (("sites",), [{}], "minItems"),
         (("event", "unknown"), "unexpected", "additionalProperties"),
         (("sites", 0, "id"), "bad/id", "pattern"),

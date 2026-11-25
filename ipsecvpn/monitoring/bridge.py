@@ -128,7 +128,7 @@ def fresh(port, name, scope):
     try:
         conn.request("GET", "/metrics")
         response = conn.getresponse()
-        text = response.read(32769).decode("ascii")
+        text = response.read(262145).decode("ascii")
         if response.status != 200 or "event_ipsec_collector_healthy 1" not in text.splitlines():
             return False
         metric, expected = ALERTS[name]
@@ -241,6 +241,38 @@ class BridgeHandler(Handler):
         )
 
 
+def resolve_delivery_target(config, *, port, exporter_port):
+    """Resolve either an official Feishu webhook (production) or a loopback mock (lab)."""
+    if type(port) is not int or not 1024 <= port <= 65535:
+        raise Stop("The bridge port must be an integer between 1024 and 65535.")
+    if config.get("feishu_webhook_ref"):
+        ref = config["feishu_webhook_ref"]
+        if not isinstance(ref, str) or not ref.startswith("file:/etc/ipsecvpn/secrets/"):
+            raise Stop("The Feishu webhook secret reference path is invalid.")
+        url = (
+            read_file(Path(ref.removeprefix("file:")), limit=512, parent_mode=0o700)
+            .decode("ascii")
+            .strip()
+        )
+        return official_target(url)
+    if config.get("feishu_webhook"):
+        return official_target(config["feishu_webhook"])
+    if "mock_endpoint" not in config:
+        raise Stop("Configure feishu_webhook_ref (production) or mock_endpoint (lab).")
+    target = urlsplit(config["mock_endpoint"])
+    if (
+        target.scheme != "http"
+        or not re.fullmatch(r"127\.0\.0\.1:\d{4,5}", target.netloc)
+        or target.path != "/mock"
+        or target.query
+        or target.fragment
+        or not 1024 <= target.port <= 65535
+        or target.port in {port, exporter_port}
+    ):
+        raise Stop("The lab bridge requires an explicit loopback mock.")
+    return target
+
+
 def serve():
     settings = runtime_settings(endpoint_only=True)
     if not settings.enabled:
@@ -248,21 +280,8 @@ def serve():
     config = json.loads(read_file(CONFIG, limit=4096, parent_mode=0o700))
     if not config.get("enabled", False):
         return
-    # The authorized PR4 lab can exercise delivery only against a local fixture.
-    target = urlsplit(config["mock_endpoint"])
     port = config["port"]
-    if (
-        type(port) is not int
-        or not 1024 <= port <= 65535
-        or target.scheme != "http"
-        or not re.fullmatch(r"127\.0\.0\.1:\d{4,5}", target.netloc)
-        or target.path != "/mock"
-        or target.query
-        or target.fragment
-        or not 1024 <= target.port <= 65535
-        or target.port in {port, settings.port}
-    ):
-        raise Stop("The lab bridge requires an explicit loopback mock.")
+    target = resolve_delivery_target(config, port=port, exporter_port=settings.port)
     directory = Path("/etc/ipsecvpn/secrets")
     secret = read_file(directory / "monitor-signing", limit=256, parent_mode=0o700).strip()
     token = read_file(directory / "monitor-bearer", limit=128, parent_mode=0o700).strip()

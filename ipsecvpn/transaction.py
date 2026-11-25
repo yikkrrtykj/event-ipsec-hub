@@ -435,7 +435,6 @@ class Deployment:
                 observed = resources.verify(target, baseline)
             if requested:
                 requested = {**requested, "nft_sha256": observed, "host_baseline": baseline}
-            write_record(ACTIVE, requested)
             if action == "uninstall":
                 deactivate(self.host, install)
                 if live.ikes:
@@ -443,26 +442,29 @@ class Deployment:
                 if resources.baseline() != baseline:
                     raise Stop("Uninstall changed a protected host baseline.")
                 write_record(RETAINED, {"uninstall_id": self.record["id"]})
+                write_record(ACTIVE, None)
                 write_record(INSTALLED, None)
                 if live.ikes:
                     write_record(RECONNECT, None)
-            elif live.ikes:
-                remember_sites(
-                    install,
-                    requested,
-                    {
-                        link.site_id
-                        for link in target.links
-                        if link.site_id in self.record["live_sites"]
-                    },
-                )
+            else:
+                write_record(ACTIVE, requested)
+                if live.ikes:
+                    remember_sites(
+                        install,
+                        requested,
+                        {
+                            link.site_id
+                            for link in target.links
+                            if link.site_id in self.record["live_sites"]
+                        },
+                    )
             self.phase("VERIFIED")
             self.phase("COMMITTED")
         except (Stop, OSError, ValueError, KeyError) as exc:
             reason = str(exc) if isinstance(exc, Stop) else "protected host state operation"
             self.record["failure"] = reason
             self.phase("FAILED")
-            self.recover()
+            self.recover(maintenance=maintenance)
             raise Stop(
                 f"{action} failed; pre-state restored. {reason} Journal {self.record['id']}."
             ) from None
@@ -505,6 +507,8 @@ class Deployment:
     def recover_live(self, before, target, install):
         original, requested = snapshot(before), snapshot(target)
         resources = Resources(self.host, install["token"], (original, requested))
+        if self.record["action"] == "uninstall":
+            activate(self.host, install)
         pid = self.host.assert_daemon({name for name, _ in resources.links})
         if resources.preflight(original) != self.record["baseline"]:
             raise Stop("The protected baseline changed during the maintenance transaction.")
@@ -686,6 +690,10 @@ def boot(phase):
         if interrupted:
             candidates.extend((snapshot(pending["before"]), snapshot(pending["target"])))
             install = install or pending["install"]
+        if interrupted and phase != "guard":
+            raise Stop(
+                "An unfinished journal requires explicit rollback; boot guards remain active."
+            )
         if not install or not network_scope(candidates):
             return
         resources = Resources(host, install["token"], candidates)
@@ -693,15 +701,12 @@ def boot(phase):
             host.assert_no_other_ike()
             resources.guard()
             resources.purge_runtime()
-        elif interrupted:
-            raise Stop(
-                "An unfinished journal requires explicit rollback; boot guards remain active."
-            )
         else:
             installed_record()
             target = snapshot(active)
             host.assert_exclusive_ike({name for name, _ in link_specs((target,))})
             baseline = resources.preflight(target)
+            assert_baseline(active, baseline)
             resources.replace(target, keys_for(active))
             resources.verify(target, baseline, active.get("nft_sha256") if active else None)
             wanted = reconnect_sites(install, active)
