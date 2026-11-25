@@ -21,6 +21,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha }}
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
           python-version: '3.12'
@@ -28,6 +29,7 @@ jobs:
         run: shellcheck scripts/pr2-vm/*.sh
       - name: Verify inside a disposable isolated guest
         env:
+          IPSECVPN_EXPECTED_SHA: ${{ github.event.pull_request.head.sha }}
           IPSECVPN_EVIDENCE_FILE: ${{ runner.temp }}/ipsecvpn-acceptance.jsonl
         run: bash scripts/pr2-vm/run.sh
       - name: Save sanitized acceptance evidence

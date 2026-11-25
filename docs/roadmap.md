@@ -1,21 +1,13 @@
-# 能力与验收路线图
+# V2.0 能力与验收索引
 
-| 层级 | 能力 | PR #1 验证方式与状态 |
+| 交付 | 实际验证 | 保留的边界 |
 | --- | --- | --- |
-| P0 | 一台 Hub、两个可配置站点、授权 IPv4 多 CIDR、可选外部备 Hub | 测试示例与三套虚构赛事，覆盖方向互换、外层地址冲突、未知引用、无备网关和选择器越权。 |
-| P0 | 只读 CLI、山石与通用参数单、PSK 脱敏 | 离线校验、两端 Markdown / JSON 参数对照、引用文件访问防护和本机检查状态测试。 |
-| P0 | Ubuntu 24.04 双 XFRM、生产级安装和回滚、双向 IPsec 业务验收 | `SKIP`，需要 PR #2–#3 的隔离部署、故障注入及业务实测。 |
-| P0 | 外部备 Hub 与山石现场对接、双端切换与回切 | PR #5 提供人工参数单、备中转准入和隔离选路演练。厂商设备、外部实际中转及自动切换为 `SKIP`。 |
-| P1 | VICI / XFRM 指标、Prometheus / Grafana、固定路径业务探针、可选飞书告警 | `SKIP`，当前仅解析相关配置。 |
-| P2 | 三站及以上、并行赛事、多自建 Hub、重叠网段 NAT、更多品牌与高级自动故障协调 | `UNSUPPORTED`，等待后续范围和实验验收。 |
+| [只读配置与交接](https://github.com/yikkrrtykj/event-ipsec-hub/pull/1) | 一台 Hub、两个可配置站点、IPv4 多 CIDR、可选备网关。离线校验、授权方向、厂商中立和山石交接及 PSK 脱敏。 | V2.0 配置保持单活动 profile。 |
+| [隔离 Hub 安装与事务](https://github.com/yikkrrtykj/event-ipsec-hub/pull/2) | [Ubuntu 24.04 QEMU 验收](pr2/PR2_ACCEPTANCE.md)，覆盖精确路由、XFRM、独立 nft 表、重启、失败闭锁、事务和卸载重装。 | 生产部署 SKIP。 |
+| [IKE/CHILD 与业务数据面](https://github.com/yikkrrtykj/event-ipsec-hub/pull/3) | [三节点验收](pr3/PR3_ACCEPTANCE.md)，覆盖双向 UDP/TCP、源 IP、MTU/PMTUD、rekey、活动 SA 所有权及非授权流量拒绝。 | DPD 恢复已验证显式 initiate，无人值守重连 SKIP。 |
+| [可选监控与告警](https://github.com/yikkrrtykj/event-ipsec-hub/pull/4) | [隔离监控验收](pr4/PR4_ACCEPTANCE.md)，覆盖回环 Exporter、主路径双向探针、UNKNOWN/TTL、Alertmanager 和飞书 mock。 | 真实飞书、外部失联和持续备线验证待验收。 |
+| [设备交接与备路径模拟](https://github.com/yikkrrtykj/event-ipsec-hub/pull/5) | [交接与模拟验收](pr5/PR5_ACCEPTANCE.md)，覆盖备中转准入、双端 FIB、单侧不对称、双断、回切和签收模板。 | 实际厂商设备、外部中转、自动切换和真实赛事 SKIP。 |
 
-## 后续 PR 及完成门槛
-
-| PR | 计划与验收 |
-| --- | --- |
-| #2 安装、渲染与事务 | Ubuntu 24.04 发行版的 `charon-systemd`、`strongswan-swanctl` 与 VICI，确认服务和版本，避免 legacy starter 并行。渲染两条独立 XFRM 接口和 IKE/CHILD SA，区分外层 Peer 路由与内层精确 LAN 路由。以项目专用规则落实双向 ACL。故障注入验证 apply 原子更新、备份和失败回滚，仅恢复项目拥有的文件、路由和规则。前后比对默认路由、SSH 及既有防火墙规则。 |
-| #3 数据平面与诊断 | 在 Linux namespace 或隔离 VM 中建立双站 IPsec。验证每对授权 CIDR 的双向 UDP/TCP、原始源 IP、重协商、MTU、回程、重启恢复和非授权流量阻断。分别记录 IKE、CHILD、XFRM 计数及业务结果，无法执行的检查记为 `SKIP`。 |
-| #4 监控与告警 | exporter 默认监听本机。对照 VICI、XFRM 和业务探针状态，用 Grafana 展示各层状态。验证探针路径绑定和可选飞书告警的去重、恢复、脱敏，以及监控故障下的持续转发。 |
-| #5 设备和备路径交接 | 完善山石及厂商中立运行手册、现场验收模板。核对实际 StoneOS 版本和多选择器能力。分别验收主备隧道、Track、单侧故障、回程不对称与回切，记录实测时延和业务影响。 |
-
-每项验收记录场景、观测值和证据。实际验证符合预期记为 `PASS`，证据显示偏差记为 `FAIL`，缺少环境或尚未测量记为 `SKIP`。本轮停在 Draft PR #1。
+[长期证据归档](evidence/README.md)保留原执行环境、失败、重跑和各项验收边界。
+V3.0 需求、依赖和关闭条件在 [Epic #6](https://github.com/yikkrrtykj/event-ipsec-hub/issues/6) 跟踪。
+并行赛事、重叠网段 NAT、其他品牌与协议仍按 [V2.0 规范](SPEC.md)的扩展范围单独确认。

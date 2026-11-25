@@ -1,6 +1,6 @@
 # PR #4 隔离验收记录
 
-基线及 merge-base 为 `9fa763d40e0b81f7600f601e8b30c32f8d671233`。逐项 JSONL 与当前 HEAD 的四套工作流在 Draft PR #4 描述中更新。
+基线及 merge-base 为 `9fa763d40e0b81f7600f601e8b30c32f8d671233`。逐项 JSONL 与当前 HEAD 的四套工作流在 [PR #4](https://github.com/yikkrrtykj/event-ipsec-hub/pull/4)描述中留存，见[长期回执](../evidence/archive/pr4-final.jsonl)。
 
 ## 历史失败
 

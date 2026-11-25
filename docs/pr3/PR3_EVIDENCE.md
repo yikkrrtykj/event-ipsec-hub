@@ -40,4 +40,4 @@ iproute2 6.1 的单条 SA 删除按端点、ESP 协议和 SPI 寻址，`if_id` �
 
 ## 继续 SKIP 的范围
 
-现场厂商互操作、实际赛事与跨境公网 SLA、外部备用网关切换、监控告警、其他发行版、IPv6 和 N 站点为 SKIP。没有接触生产服务器或现场设备。PR #3 保持 Draft，等待人工代码审查。
+现场厂商互操作、实际赛事与跨境公网 SLA、外部备用网关切换、监控告警、其他发行版、IPv6 和 N 站点为 SKIP。没有接触生产服务器或现场设备。最终合并审查证据见 [PR #3](https://github.com/yikkrrtykj/event-ipsec-hub/pull/3)及[长期回执](../evidence/archive/pr3-final.jsonl)。

@@ -6,6 +6,7 @@ import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
 
 from ipsecvpn import cli
 from ipsecvpn.failover import PathProof, observe
@@ -493,9 +494,20 @@ def test_l09_cleanup_only_owned_and_revoke_credentials():
         assert term in page
 
 
-def test_l10_draft_contract_and_regression_workflows_present():
-    task = (ROOT / "CODEX_PR5_TASK.md").read_text(encoding="utf-8")
-    assert "**首提交**" in task and "PR 保持 Draft" in task
-    assert "6aacc03514ee98bea91e26bbba46a72451211715" in task
+def test_l10_regression_workflows_pin_checkout_and_preserve_evidence():
+    assert "| L10 |" in markdown("ACCEPTANCE")
+    assert (ROOT / "docs/evidence/document-migration.md").is_file()
     for name in ("ci.yml", "pr2-vm.yml", "pr3-lab.yml", "pr4-lab.yml", "pr5-lab.yml"):
-        assert (ROOT / ".github/workflows" / name).is_file()
+        workflow = yaml.safe_load((ROOT / ".github/workflows" / name).read_text(encoding="utf-8"))
+        steps = next(iter(workflow["jobs"].values()))["steps"]
+        checkout = next(
+            step for step in steps if step.get("uses", "").startswith("actions/checkout@")
+        )
+        assert "github.event.pull_request.head.sha" in checkout["with"]["ref"]
+        evidence = next(
+            step for step in steps if step.get("uses", "").startswith("actions/upload-artifact@")
+        )
+        assert evidence["with"]["path"].endswith(".jsonl")
+        if name != "ci.yml":
+            driver = next(step for step in steps if "IPSECVPN_EXPECTED_SHA" in step.get("env", {}))
+            assert driver["env"]["IPSECVPN_EXPECTED_SHA"] == checkout["with"]["ref"]

@@ -1,8 +1,8 @@
-# PR #5 — 设备对接、外部备路径及赛事验收开发手册
+# V2.0 设备交接、外部备路径及现场验收技术参考
 
-> 基线：`6aacc03514ee98bea91e26bbba46a72451211715`（event-ipsec-hub 的 main，PR #4 Merge commit）。本手册是**开发合同**而不是已验收报告。仓库包名/CLI 仍是 `ipsecvpn`。
+实现与隔离模拟见 [PR #5](https://github.com/yikkrrtykj/event-ipsec-hub/pull/5)与[证据索引](PR5_EVIDENCE.md)。
 
-## 0. 本期结论与边界
+## 0. V2.0 能力与边界
 
 - 本期交付：Hillstone/StoneOS 与厂商中立的**人工对接运行手册**、可由既有 V2 Profile 派生的离线 handoff、外部备用 VPN **可行性检查及交接流程**、主备切换/回切的标准实验和人工验收模板、脱敏的 CI/模拟测试。
 - 强制保留 P0：一个活动赛事 profile、一个 Ubuntu Hub、**恰好两个**任意 ID 外部站点、多 IPv4 CIDR 与显式授权站点对；不擅自改成 N 站点；**三层私网路由**，不是同 VLAN 的二层打通。
@@ -11,7 +11,7 @@
 - 不自动执行任何生产变更，不登陆防火墙、不连实际腾讯云 API、不购买资源、不分发 PSK、不连接真实飞书。不得为了文档要求放开 PR #2–#4 的 root-only QEMU lab marker。
 - **强制安全原则**：任何预检发现路由不对称、ECMP、未验证云端中转、未知 SA/所有权、未确认的 Proxy ID / TS 行为、缺带外访问或回滚条件 => `STOP`，而非“默认尝试自动切换”。
 
-## 1. 直接复用的仓库实现（必须读代码）
+## 1. 交接与授权数据源
 
 - `config/schema.json` V2.0：`sites[]`/`site_links[]`/`traffic_policy.allowed_site_pairs[]`/`backup`/`monitoring`。
 - `ipsecvpn/profile.py`：`authorized_lans` 是授权 CIDR 的单一事实来源；`backup_readiness` 两站字段及路由优先级必须齐全才能 COMPLETE；`_validate_optional_paths` 已检查备地址、备路由 CIDR 子集、uplink 引用及路由优先级方向。
@@ -77,15 +77,11 @@ C. 当前不输出未经设备型号/版本验证的、可直接粘贴生产的 
 
 `PRIMARY_VERIFIED`、`BACKUP_VERIFIED`、`SINGLE_SIDE_TRANSITION`、`ASYMMETRIC_STOP`、`BOTH_UNAVAILABLE`、`MANUAL_CUTOVER_REQUIRED`、`RECOVERY_PENDING`、`UNKNOWN`。状态只有在**双方**业务回执与路由表均对应时才能断言已安全切换；任何一次 SA-UP 的观测不应升级为路径业务 UP。
 
-## 5. 交付件与代码约束
+## 5. 交接输出约束
 
-建议在 `docs/pr5/` 提交：
-
-- `PR5_DEV_MANUAL.md`、`PR5_ACCEPTANCE.md`、`PR5_VENDOR_MATRIX.md`、`PR5_FAILOVER_RUNBOOK.md`、`PR5_SITE_ACCEPTANCE_TEMPLATE.md`、`PR5_REVIEW_CHECKLIST.md`。
-- 更新 README 指向 PR5 交接入口；更新 `docs/roadmap.md` 使 PR1–PR4 已完成、PR5 进行中且生产 SKIP，清除“当前 Draft PR #1”等陈旧状态。
-- **小范围**增加 `ipsecvpn/handoff.py` Markdown/JSON 改进或离线 report validator（如需求必要）；所有报告从 `authorized_lans`/`_connections`/`_backup` 推导，不得硬编码某次赛事地点/地址/StoneOS 型号。
+- Markdown/JSON 交接报告从 `authorized_lans`/`_connections`/`_backup` 推导，不得硬编码某次赛事地点/地址/StoneOS 型号。
 - 任何现场核对、对端签收模板，都不存真实 credential/PSK、未脱敏序列号、公网地址、真实敏感拓扑的 Git 版本。文档可用 RFC5737 `192.0.2.0/24` / `198.51.100.0/24` / `203.0.113.0/24` 和 RFC1918 私网。
-- 出站调度/自动路由动作不是 PR5 的隐性目标，**不得**新增 `ssh` 推送防火墙、Tencent API、`systemctl` 修改备网关或开公网管理端口。
+- V2.0 交接流程保持只读。**不得**使用 `ssh` 推送防火墙、Tencent API、`systemctl` 修改备网关或开公网管理端口。
 
 ## 6. 实验/CI 交付标准
 

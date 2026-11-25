@@ -97,7 +97,18 @@
 | F15 | 错/损坏的事务、备份或 PSK | 不解锁任何危险操作，保持安全状态 |
 | F16 | 测试中止/超时 | 持久证据不写恒真 PASS；可安全清理独立 lab |
 
-## 7. PR #3 必须继续 SKIP 的事项
+## 7. 活动 SA 安装幂等的补充回归
+
+| 编号 | 场景 | 通过条件 |
+| --- | --- | --- |
+| I01 | 已安装且无活动 profile，重复 install 的 dry-run 和 confirm | 完整只读归属检查后 PASS/NOOP，服务、包和 journal 不变。 |
+| I02 | 两条活动项目 CHILD 时重复两种 install | 完整只读归属检查后 PASS/NOOP，daemon PID、IKE/CHILD ID、双向 SPI 和 journal 不变，执行期间双向 UDP/TCP 与两端计数持续通过。 |
+| I03 | 外部 IKE、未映射 SAD/SPD 或额外监听者 | 两种 install 均 STOP，保留外来对象和主机基线，新安装安全门禁不放宽。 |
+
+初始证据见[最终 Review](https://github.com/yikkrrtykj/event-ipsec-hub/pull/3#pullrequestreview-5893821299)
+和[长期回执](../evidence/archive/pr3-final.jsonl)。
+
+## 8. 该阶段未验证的事项
 
 - 真实山石/其他品牌现场 IKE 互操作，双方公司 ISP WAN、跨境丢包与公网 QoS。
 - 腾讯云或其它外部备 Hub 的真实自动切换、双站 Track 联动、手动回切 SLA。
@@ -107,7 +118,7 @@
 
 上述 SKIP 不阻塞完成**Linux 三节点隔离实验**范围的 PR #3，但必须在 PR/README 标明“非生产验收”。
 
-## 8. 汇报格式
+## 9. 历史报告模板
 
 ```text
 PR #3 URL: ... (Draft)

@@ -31,6 +31,7 @@ jobs:
         run: shellcheck scripts/pr2-vm/*.sh
       - name: Run three-node experiment in a disposable VM
         env:
+          IPSECVPN_EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           IPSECVPN_EVIDENCE_FILE: ${{ runner.temp }}/ipsecvpn-pr3-acceptance.jsonl
         run: bash scripts/pr2-vm/run.sh pr3
       - name: Save sanitized case receipts
