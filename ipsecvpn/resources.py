@@ -273,8 +273,10 @@ class Resources:
         finally:
             self.purge_runtime()
 
-    def replace(self, target, keys, *, loader=None, hold=False):
-        self.guard()
+    def replace(self, target, keys, *, loader=None, hold=False, handshake=None):
+        # A live maintenance load may auto-start IKE (start_action=start); keep only the
+        # target's outer IKE/ESP handshake open while inner traffic stays guarded.
+        self.guard(handshake)
         self.host.assert_exclusive_ike({name for name, _ in self.links})
         _, _, links, routes, names, _, _, owned_rules = self.network()
         desired_links = link_specs((target,))
@@ -414,10 +416,15 @@ class Resources:
         inner_unicast = sorted(
             spec for spec in routes if spec in self.routes and spec[1] == "unicast"
         )
-        lookups = self.host.route_lookups((spec[0].split("/")[0], None) for spec in inner_unicast)
+        best_by_cidr = {}
         for spec in inner_unicast:
-            lookup = lookups[spec[0].split("/")[0], None]
-            if len(lookup) != 1 or lookup[0].get("dev") != spec[2]:
+            metric = int(spec[3])
+            if spec[0] not in best_by_cidr or metric < best_by_cidr[spec[0]][0]:
+                best_by_cidr[spec[0]] = (metric, spec[2])
+        lookups = self.host.route_lookups((cidr.split("/")[0], None) for cidr in best_by_cidr)
+        for cidr, (_, expected_dev) in best_by_cidr.items():
+            lookup = lookups[cidr.split("/")[0], None]
+            if len(lookup) != 1 or lookup[0].get("dev") != expected_dev:
                 raise ObservationStop(
                     "The kernel did not resolve a protected network through its XFRM.",
                     "ROUTING",

@@ -12,6 +12,7 @@ case "$suite" in
     pr3) extra_packages=(tcpdump) ;;
     pr4) extra_packages=(tcpdump prometheus prometheus-alertmanager) ;;
     pr5) extra_packages=() ;;
+    v3) extra_packages=(tcpdump prometheus) ;;
     *) exit 2 ;;
 esac
 guest_suite="$suite"
@@ -36,7 +37,7 @@ if [[ -f /etc/apt/sources.list.d/ubuntu.sources ]]; then
 fi
 printf 'deb [trusted=yes] file:/opt/ipsecvpn-lab/apt ./\n' > /etc/apt/sources.list.d/lab.list
 apt-get -qq update
-if [[ "$suite" == pr4 ]]; then
+if [[ "$suite" == pr4 || "$suite" == v3 ]]; then
     # Keep the distro monitoring units inactive. The verifier runs private instances.
     test ! -e /usr/sbin/policy-rc.d
     printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d
@@ -44,10 +45,10 @@ if [[ "$suite" == pr4 ]]; then
     trap 'rm -f /usr/sbin/policy-rc.d' EXIT
 fi
 apt-get -qq install -y --no-install-recommends nftables python3-venv iptables ufw "${extra_packages[@]}"
-if [[ "$suite" == pr4 ]]; then
+if [[ "$suite" == pr4 || "$suite" == v3 ]]; then
     rm -f /usr/sbin/policy-rc.d
     trap - EXIT
-    systemctl disable prometheus.service prometheus-alertmanager.service
+    systemctl disable prometheus.service prometheus-alertmanager.service 2>/dev/null || true
 fi
 python3 -m venv /opt/ipsecvpn-lab/venv
 /opt/ipsecvpn-lab/venv/bin/python -m pip install --no-index \
@@ -74,4 +75,5 @@ systemctl enable --now nftables.service
 driver=verify.py
 if [[ "$suite" == pr4 ]]; then driver=verify_monitor.py; fi
 if [[ "$suite" == pr5 ]]; then driver=verify_failover.py; fi
+if [[ "$suite" == v3 ]]; then driver=verify_v3.py; fi
 /opt/ipsecvpn-lab/venv/bin/python "/opt/ipsecvpn-lab/$driver" before-reboot

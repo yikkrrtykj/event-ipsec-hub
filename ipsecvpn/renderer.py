@@ -45,6 +45,12 @@ class Link:
     close_action: str = "none"
     route_table: int | None = None
     policy_priority: int = 1000
+    link_id: str = ""
+    isp_label: str = ""
+
+    @property
+    def key_id(self):
+        return self.link_id or self.site_id
 
     @property
     def name(self):
@@ -76,13 +82,20 @@ class DeploymentManifest:
 
     def resolved_forward_rules(self):
         """Return (source_link, target_link, source_cidrs, target_cidrs) tuples."""
-        by_site = {link.site_id: link for link in self.links}
+        by_site = {}
+        for link in self.links:
+            by_site.setdefault(link.site_id, []).append(link)
         if self.forward_rules:
-            return tuple(
-                (by_site[src_id], by_site[dst_id], src_cidrs, dst_cidrs)
-                for src_id, dst_id, src_cidrs, dst_cidrs in self.forward_rules
-                if src_id in by_site and dst_id in by_site
-            )
+            seen = set()
+            resolved = []
+            for src_id, dst_id, src_cidrs, dst_cidrs in self.forward_rules:
+                if (src_id, dst_id, src_cidrs, dst_cidrs) in seen:
+                    continue
+                seen.add((src_id, dst_id, src_cidrs, dst_cidrs))
+                for s_link in by_site.get(src_id, ()):
+                    for d_link in by_site.get(dst_id, ()):
+                        resolved.append((s_link, d_link, src_cidrs, dst_cidrs))
+            return tuple(resolved)
         if len(self.links) == 2:
             a, b = self.links
             return (
@@ -191,21 +204,24 @@ def build_manifest(profile):
                 close_action=item["ike"].get("close_action", "none"),
                 route_table=outer.get("route_table"),
                 policy_priority=outer.get("policy_priority", 1000),
+                link_id=item.get("link_id", item["site_id"]),
+                isp_label=outer.get("isp_label", ""),
             )
         )
-    forward_rules = tuple(
-        (
+    seen_rules = []
+    for rule in plan["forward_acl"]:
+        entry = (
             rule["source_site_id"],
             rule["target_site_id"],
             tuple(rule["source_cidrs"]),
             tuple(rule["destination_cidrs"]),
         )
-        for rule in plan["forward_acl"]
-    )
+        if entry not in seen_rules:
+            seen_rules.append(entry)
     return DeploymentManifest(
         profile["event"]["id"],
-        tuple(sorted(links, key=lambda link: link.site_id)),
-        forward_rules,
+        tuple(sorted(links, key=lambda link: (link.site_id, link.route_priority, link.if_id))),
+        tuple(seen_rules),
     )
 
 
@@ -261,7 +277,7 @@ def swanctl_config(manifest, keys=None):
             f"ike-{link.name}": {
                 "id-1": link.local_id,
                 "id-2": link.remote_id,
-                "secret": "0x" + keys[link.site_id].hex(),
+                "secret": "0x" + keys[link.key_id].hex(),
             }
             for link in links
             if keys is not None

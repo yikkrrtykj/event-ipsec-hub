@@ -16,7 +16,16 @@ from .secureio import Stop
 from .transaction import Deployment
 
 DEFAULT_PROFILES = Path("/etc/ipsecvpn/profiles")
-HOST_ACTIONS = ("install", "apply", "backup", "rollback", "uninstall", "initiate", "rekey")
+HOST_ACTIONS = (
+    "install",
+    "apply",
+    "backup",
+    "rollback",
+    "uninstall",
+    "initiate",
+    "rekey",
+    "reconnect",
+)
 
 
 def _check(check_id, status, detail):
@@ -145,6 +154,8 @@ def _parser():
             operation.add_argument("--maintenance", action="store_true")
         if action in {"initiate", "rekey"}:
             operation.add_argument("--site", required=True)
+        if action == "reconnect":
+            operation.add_argument("--site", default=None)
         if action == "rekey":
             kind = operation.add_mutually_exclusive_group(required=True)
             kind.add_argument("--child", dest="kind", action="store_const", const="child")

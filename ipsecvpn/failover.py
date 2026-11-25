@@ -91,7 +91,7 @@ def save_failover_state(state, state_file=FAILOVER_STATE_FILE):
 def apply_hub_xfrm_gate(locked: bool, *, host=None):
     """Set project-owned XFRM interfaces down while backup-locked to block premature failback."""
     from .host import Host
-    from .renderer import build_manifest
+    from .renderer import ROUTE_PROTOCOL, build_manifest
     from .secureio import Stop, read_record
     from .transaction import ACTIVE, installed_record
 
@@ -120,6 +120,25 @@ def apply_hub_xfrm_gate(locked: bool, *, host=None):
             desired_state,
             mutate=True,
         )
+        if not locked:
+            for cidr in link.remote_ts:
+                runner.command(
+                    "XFRM gate route restore",
+                    "ip",
+                    "-4",
+                    "route",
+                    "replace",
+                    cidr,
+                    "dev",
+                    link.name,
+                    "table",
+                    "main",
+                    "proto",
+                    ROUTE_PROTOCOL,
+                    "metric",
+                    str(link.route_priority),
+                    mutate=True,
+                )
         changed.append(link.name)
     return {"gate": "LOCKED_DOWN" if locked else "UNLOCKED_UP", "interfaces": changed}
 

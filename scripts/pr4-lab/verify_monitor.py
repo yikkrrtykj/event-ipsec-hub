@@ -476,6 +476,7 @@ def path_tests(model):
     evidence = probe_round(model, 31900)
     snapshot = assert_path(model, evidence, (State.UP, State.UP))
     assert snapshot["business"] == State.UP
+    evidence = probe_round(model, 31902)
     wait_for(lambda: line(scrape(), "business_state", 1))
     emit(
         "P02 P03 P04 P11",

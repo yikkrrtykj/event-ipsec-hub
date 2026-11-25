@@ -289,11 +289,15 @@ def collect(host=None):
         if not settings.enabled:
             return unavailable("DISABLED")
         sites = []
+        links_obs = []
+        by_site = {}
         for link in manifest.links:
             ike = live.get(link.name)
             child = ike.child if ike else None
             row = {
                 "site_id": link.site_id,
+                "link_id": link.key_id,
+                "isp": link.isp_label,
                 "ike": State.UP if ike else State.DOWN,
                 "child": State.UP if child else State.DOWN,
                 "kernel": State.UP if child else State.DOWN,
@@ -302,16 +306,44 @@ def collect(host=None):
             if child:
                 row["counts"] = child.counts
                 row["generation"] = [ike.unique_id, child.unique_id]
-            sites.append(row)
+            links_obs.append(row)
+            by_site.setdefault(link.site_id, []).append(row)
+        multi_link = any(len(rows) > 1 for rows in by_site.values())
+        for site_id, rows in by_site.items():
+            if len(rows) == 1:
+                single = {k: v for k, v in rows[0].items() if k not in {"link_id", "isp"}}
+                sites.append(single)
+            else:
+                up_rows = [r for r in rows if "counts" in r]
+                agg = {
+                    "site_id": site_id,
+                    "ike": State.UP if any(r["ike"] == State.UP for r in rows) else State.DOWN,
+                    "child": State.UP if any(r["child"] == State.UP for r in rows) else State.DOWN,
+                    "kernel": (
+                        State.UP if any(r["kernel"] == State.UP for r in rows) else State.DOWN
+                    ),
+                    "protected_route": State.UP,
+                }
+                if up_rows:
+                    agg["counts"] = tuple(
+                        sum(r["counts"][idx] for r in up_rows) for idx in range(4)
+                    )
+                    agg["generation"] = up_rows[0]["generation"]
+                sites.append(agg)
+        seen_dirs = []
+        for source, target, _, _ in manifest.resolved_forward_rules():
+            pair_dir = (source.site_id, target.site_id)
+            if pair_dir not in seen_dirs:
+                seen_dirs.append(pair_dir)
         paths, business = assess(
             [
                 {
-                    "src_site_id": source.site_id,
-                    "dst_site_id": target.site_id,
+                    "src_site_id": src_id,
+                    "dst_site_id": dst_id,
                     "state": State.UNKNOWN,
                     "reason_code": "NO_PROBE",
                 }
-                for source, target, _, _ in manifest.resolved_forward_rules()
+                for src_id, dst_id in seen_dirs
             ],
             settings,
             install,
@@ -328,6 +360,7 @@ def collect(host=None):
             "daemon": State.UP,
             "profile_active": True,
             "sites": sites,
+            **({"links": links_obs} if multi_link else {}),
             "paths": paths,
             "business": business,
         }

@@ -157,7 +157,7 @@ def read_keys(profile):
             raise Stop("An IKE key is missing or cannot be opened securely.") from None
         if not re.fullmatch(rb"[0-9a-f]{64}", data) or len(set(data)) < 8:
             raise Stop("An IKE key must be a 64-character lowercase random hexadecimal value.")
-        keys[link["site_id"]] = data
+        keys[link.get("id", link["site_id"])] = data
     if len(set(keys.values())) != len(keys):
-        raise Stop("The two site links must use distinct IKE keys.")
+        raise Stop("All site links must use distinct IKE keys.")
     return keys

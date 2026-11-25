@@ -196,6 +196,7 @@
         "id": {"$ref": "#/$defs/id"},
         "isp_label": {"$ref": "#/$defs/label"},
         "public_endpoint": {"$ref": "#/$defs/ipv4"},
+        "ike_identity": {"$ref": "#/$defs/label"},
         "interface": {"$ref": "#/$defs/label"}
       }
     },
@@ -204,7 +205,9 @@
       "additionalProperties": false,
       "required": ["site_id", "secret_ref", "if_id", "outer_path"],
       "properties": {
+        "id": {"$ref": "#/$defs/id"},
         "site_id": {"$ref": "#/$defs/id"},
+        "uplink_id": {"$ref": "#/$defs/id"},
         "secret_ref": {"$ref": "#/$defs/file_ref"},
         "if_id": {"type": "integer", "minimum": 1, "maximum": 4294967295},
         "ike_proposal": {"$ref": "#/$defs/ike"},

@@ -140,14 +140,40 @@ def _validate_topology(profile):
     sites = profile["sites"]
     links = profile["site_links"]
     _require_unique((site["id"] for site in sites), "Site IDs")
-    _require_unique((link["site_id"] for link in links), "Site link IDs")
+    _require_unique((link.get("id", link["site_id"]) for link in links), "Site link IDs")
     _require_unique((link["if_id"] for link in links), "XFRM interface IDs")
     _require_unique((link["secret_ref"] for link in links), "PSK references")
     site_ids = {site["id"] for site in sites}
     if {link["site_id"] for link in links} != site_ids:
-        raise ProfileError("Each site must have exactly one link and no unknown links.")
+        raise ProfileError(
+            "Each site must have exactly one link (or Dual-ISP links) and no unknown links."
+        )
 
     site_map = {site["id"]: site for site in sites}
+    links_by_site = {site_id: [] for site_id in site_ids}
+    for link in links:
+        links_by_site[link["site_id"]].append(link)
+    for site_id, site_links in links_by_site.items():
+        uplinks_map = {u["id"]: u for u in site_map[site_id].get("uplinks", [])}
+        for link in site_links:
+            if "uplink_id" in link and link["uplink_id"] not in uplinks_map:
+                raise ProfileError("A site_link references an unknown site uplink_id.")
+        if len(site_links) > 1:
+            if any("id" not in link or "uplink_id" not in link for link in site_links):
+                raise ProfileError(
+                    "Multi-link Dual-ISP sites require explicit id and uplink_id on each site_link."
+                )
+            _require_unique(
+                (link["uplink_id"] for link in site_links), "Uplink bindings within a site"
+            )
+            if any("route_priority" not in link for link in site_links):
+                raise ProfileError(
+                    "Multi-link Dual-ISP sites require distinct route_priority (ECMP unsupported)."
+                )
+            _require_unique(
+                (link["route_priority"] for link in site_links),
+                "Route priorities across same-site Dual-ISP links",
+            )
     seen_pairs = set()
     connected_sites = set()
     for pair in profile["traffic_policy"]["allowed_site_pairs"]:
