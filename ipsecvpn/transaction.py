@@ -464,7 +464,7 @@ class Deployment:
             reason = str(exc) if isinstance(exc, Stop) else "protected host state operation"
             self.record["failure"] = reason
             self.phase("FAILED")
-            self.recover(maintenance=maintenance)
+            self.recover()
             raise Stop(
                 f"{action} failed; pre-state restored. {reason} Journal {self.record['id']}."
             ) from None

@@ -136,3 +136,21 @@ def test_recover_live_reactivates_daemon_on_failed_uninstall(monkeypatch):
     monkeypatch.setattr(transaction, "activate", lambda _h, _i: activated.append("called"))
     with pytest.raises(Stop, match="stop-after-activate"):
         dep.recover_live({"profile": {}}, None, {"token": "tok"})
+
+
+def test_live_maintenance_failure_enters_stop_for_manual_until_explicit_rollback(monkeypatch):
+    dep = transaction.Deployment(host=type("H", (), {"step": None})())
+    dep.record = {
+        "id": "a" * 32,
+        "action": "apply",
+        "before": {"profile": {}},
+        "target": {"profile": {}},
+        "install": {"token": "tok"},
+        "live_maintenance": True,
+        "steps": [],
+    }
+    monkeypatch.setattr(transaction, "write_record", lambda *_a, **_kw: None)
+    with pytest.raises(Stop, match="STOP_FOR_MANUAL"):
+        dep.recover()  # default maintenance=False during mid-flight failure
+    assert dep.record["phase"] == "STOP_FOR_MANUAL"
+    assert not dep.record.get("configuration_restored")
