@@ -273,8 +273,10 @@ class Resources:
         finally:
             self.purge_runtime()
 
-    def replace(self, target, keys, *, loader=None, hold=False):
-        self.guard()
+    def replace(self, target, keys, *, loader=None, hold=False, handshake=None):
+        # A live maintenance load may auto-start IKE (start_action=start); keep only the
+        # target's outer IKE/ESP handshake open while inner traffic stays guarded.
+        self.guard(handshake)
         self.host.assert_exclusive_ike({name for name, _ in self.links})
         _, _, links, routes, names, _, _, owned_rules = self.network()
         desired_links = link_specs((target,))

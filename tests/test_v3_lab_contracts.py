@@ -176,9 +176,12 @@ def test_reconnect_owned_isolates_down_site_and_cli_dry_run(monkeypatch, capsys)
         raise SAError("PEER_UNREACHABLE", "peer unreachable")
 
     monkeypatch.setattr(live, "initiate_link", fake_initiate)
+    cleared = []
+    monkeypatch.setattr(live, "_clear_connecting_sa", lambda _p, name: cleared.append(name))
     res = live.reconnect_owned(None, {"token": "t"}, {"profile": {}}, max_attempts=2, base_delay=0)
     assert res["status"] == "FAIL"
     assert initiated == [down_link.site_id, down_link.site_id]
+    assert cleared == [down_link.name, down_link.name]
     by_site = {r["site_id"]: r for r in res["links"]}
     assert by_site[up_link.site_id]["action"] == "NOOP_HEALTHY"
     assert by_site[down_link.site_id]["action"] == "RECONNECT_EXHAUSTED"
@@ -231,3 +234,85 @@ def test_reconnect_owned_isolates_down_site_and_cli_dry_run(monkeypatch, capsys)
         'site_id="server-core",link_id="srv-isp2",isp="ISP-B"} 0'
     )
     assert expected_series in prom
+
+
+def test_connecting_ike_without_proposal_is_a_transition_not_unowned():
+    manifest = build_manifest(load_profile(Path("config/event.example.yaml")))
+    link = manifest.links[0]
+    row = {
+        "version": b"2",
+        "uniqueid": b"9",
+        "state": b"CONNECTING",
+        "local-host": link.source.encode(),
+        "remote-host": link.peer.encode(),
+    }
+    with pytest.raises(SAError) as exc:
+        parse_vici([{link.name: row}], manifest)
+    assert exc.value.reason == "SA_TRANSITION"
+    with pytest.raises(SAError) as exc_any:
+        parse_vici([{link.name: {**row, "local-id": b"%any"}}], manifest)
+    assert exc_any.value.reason == "SA_TRANSITION"
+    foreign = {**row, "remote-host": b"192.0.2.250"}
+    with pytest.raises(SAError) as exc:
+        parse_vici([{link.name: foreign}], manifest)
+    assert exc.value.reason == "UNOWNED_SA"
+
+
+def test_initiate_link_waits_for_start_action_autostart(monkeypatch):
+    from dataclasses import replace as dc_replace
+
+    manifest = build_manifest(load_profile(Path("config/event.example.yaml")))
+    link = dc_replace(manifest.links[0], start_action="start")
+    ready = type("Ike", (), {"child": object()})()
+    calls = []
+
+    class Snap:
+        def __init__(self, item):
+            self.item = item
+
+        def get(self, _name):
+            return self.item
+
+    def fake_inventory(*_args, **_kwargs):
+        calls.append(1)
+        if len(calls) < 3:
+            raise SAError("SA_TRANSITION", "connecting")
+        return Snap(ready)
+
+    monkeypatch.setattr(live, "inventory", fake_inventory)
+    monkeypatch.setattr(live, "session", lambda _pid: pytest.fail("explicit initiate used"))
+    monkeypatch.setattr(live.time, "sleep", lambda _s: None)
+    assert live.initiate_link(None, manifest, 1, link) is ready
+    assert len(calls) == 3
+
+
+def test_live_maintenance_load_keeps_target_handshake_open(monkeypatch):
+    from ipsecvpn import transaction
+
+    seen = {}
+
+    class FakeResources:
+        candidates = ()
+
+        def guard(self, handshake=None):
+            seen["guard"] = handshake
+
+        def replace(self, target, keys, **kwargs):
+            seen["replace"] = kwargs
+
+        def finish(self, target):
+            pass
+
+        def verify(self, *_args, **_kwargs):
+            return "sha"
+
+    dep = transaction.Deployment(host=object())
+    dep.record = {"live_sites": [], "baseline": {}, "steps": []}
+    monkeypatch.setattr(transaction, "drain_links", lambda *_a, **_k: [])
+    monkeypatch.setattr(transaction, "inventory", lambda *_a, **_k: None)
+    monkeypatch.setattr(dep, "step", lambda *_a: None)
+    target = build_manifest(load_profile(Path("config/event.example.yaml")))
+    before = object()
+    dep.replace_live(FakeResources(), before, target, {}, 1, None)
+    assert seen["guard"] is before
+    assert seen["replace"]["handshake"] is target and seen["replace"]["hold"] is True

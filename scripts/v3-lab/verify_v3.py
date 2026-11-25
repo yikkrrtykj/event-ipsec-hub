@@ -91,7 +91,13 @@ def cli(*args, expect=0):
     proc = cmd(str(CLI), *args, "--json", allowed=(0, 1))
     report = json.loads(proc.stdout)
     if expect is not None and proc.returncode != expect:
-        raise RuntimeError(f"cli {args} exited {proc.returncode}: {report}")
+        journal = read_record(JOURNAL) or {}
+        diagnostic = {
+            key: journal.get(key)
+            for key in ("id", "action", "phase", "failure", "recovery_failure")
+        }
+        diagnostic["steps"] = (journal.get("steps") or [])[-12:]
+        raise RuntimeError(f"cli {args} exited {proc.returncode}: {report} journal={diagnostic}")
     return report
 
 
@@ -969,11 +975,11 @@ def verify_issue10_maintenance_rekey_races(manifest):
             super().__init__()
             self.tripped = False
 
-        def command(self, label, *args, **kwargs):
-            if not self.tripped and label == "VICI scoped load":
+        def assert_exclusive_ike(self, permitted=()):
+            if not self.tripped:
                 self.tripped = True
-                raise Stop("Injected scoped load fault for #10")
-            return super().command(label, *args, **kwargs)
+                raise Stop("Injected post-drain fault for #10")
+            return super().assert_exclusive_ike(permitted)
 
     fault_dep = Deployment(FaultAfterDrainHost())
     try:
@@ -1199,6 +1205,7 @@ def verify_issue9_monitoring_and_feishu(manifest):
     finally:
         cli("monitor", "stop", "--confirm")
         mock_srv.shutdown()
+        Path(active_probe.PROBE_FILE).unlink(missing_ok=True)
         BRIDGE_CONF.unlink(missing_ok=True)
         (SECRETS / "monitor-signing").unlink(missing_ok=True)
         (SECRETS / "monitor-bearer").unlink(missing_ok=True)

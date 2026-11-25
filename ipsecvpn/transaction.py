@@ -495,7 +495,7 @@ class Deployment:
             configure_scoped(self.host, pid, resources.candidates, model, credentials)
             self.step("VICI scoped load", "DONE")
 
-        resources.replace(target, keys, loader=loader, hold=True)
+        resources.replace(target, keys, loader=loader, hold=True, handshake=target)
         if target is None:
             return None  # Keep the transition guards until the daemon is disabled.
         for link in target.links:

@@ -41,15 +41,35 @@ def owned_resources(host, install, active):
     return manifest, observed, pid
 
 
+AUTOSTART_WAIT_SECONDS = 15.0
+
+
+def await_autostart(host, manifest, pid, link, timeout=AUTOSTART_WAIT_SECONDS, interval=0.5):
+    """Wait for a start_action=start load to finish before any explicit initiate."""
+    deadline = time.monotonic() + timeout
+    last = None
+    while True:
+        try:
+            already = inventory(host, manifest, pid, attempts=1).get(link.name)
+            if already and already.child:
+                return already, None
+            last = None
+        except SAError as exc:
+            if exc.reason == "UNOWNED_DAEMON":
+                raise
+            last = exc
+        if time.monotonic() >= deadline:
+            return None, last
+        time.sleep(interval)
+
+
 def initiate_link(host, manifest, pid, link):
     if link.start_action == "start":
-        try:
-            already = inventory(host, manifest, pid, attempts=5, delay=0.3).get(link.name)
-            if already and already.child:
-                return already
-        except SAError as exc:
-            if exc.reason in {"UNOWNED_SA", "UNOWNED_DAEMON"}:
-                raise
+        already, last = await_autostart(host, manifest, pid, link)
+        if already:
+            return already
+        if last is not None and last.reason == "UNOWNED_SA":
+            raise last
     diagnostic = "IKE_NEGOTIATION_UNVERIFIED"
     with session(pid) as client:
         verify_initiate_config(client, manifest)
@@ -266,6 +286,25 @@ def drain_links(host, manifest, pid, live, *, max_rechecks=2):
     return reverified
 
 
+def _clear_connecting_sa(pid, name):
+    """Remove any half-open non-ESTABLISHED IKE SA for a target connection after timeout."""
+    try:
+        with session(pid) as client:
+            for event in client.list_sas():
+                row = event.get(name)
+                if row and row.get("state") != b"ESTABLISHED" and "uniqueid" in row:
+                    try:
+                        uid = int(row["uniqueid"])
+                    except (ValueError, TypeError):
+                        continue
+                    client.request(
+                        "terminate", {"ike-id": str(uid), "force": "yes", "timeout": "2500"}
+                    )
+    except SAError as exc:
+        if exc.reason == "UNOWNED_DAEMON":
+            raise
+
+
 def reconnect_owned(host, install, active, *, site=None, max_attempts=3, base_delay=0.4):
     """Bounded per-site reconnect that preserves healthy sibling SAs."""
     manifest, live, pid = owned_resources(host, install, active)
@@ -313,6 +352,7 @@ def reconnect_owned(host, install, active, *, site=None, max_attempts=3, base_de
                 last_reason = exc.reason
                 if exc.reason in {"UNOWNED_SA", "UNOWNED_DAEMON"}:
                     raise
+                _clear_connecting_sa(pid, link.name)
                 if attempt < max_attempts:
                     time.sleep(base_delay * (2 ** (attempt - 1)))
         if connected is None:

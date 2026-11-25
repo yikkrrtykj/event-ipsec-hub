@@ -169,13 +169,22 @@ def parse_ike(name, row, link):
         row.get("version") != b"2"
         or text(row, "local-host") != link.source
         or text(row, "remote-host") != link.peer
-        or identity(text(row, "local-id")) != identity(link.local_id)
+    ):
+        raise unowned("IKE identity, endpoint or proposal differs from the active manifest.")
+    if row.get("state") != b"ESTABLISHED":
+        for key, expected in (("local-id", link.local_id), ("remote-id", link.remote_id)):
+            if key in row and identity(text(row, key)) not in {"%any", identity(expected)}:
+                raise unowned(
+                    "IKE identity, endpoint or proposal differs from the active manifest."
+                )
+        # A connecting IKE SA has not completed IKE_AUTH or proposal negotiation yet.
+        raise transition("An IKE SA has not reached a stable established state.")
+    if (
+        identity(text(row, "local-id")) != identity(link.local_id)
         or identity(text(row, "remote-id")) != identity(link.remote_id)
         or not proposal(row, link.ike_proposal, ike=True)
     ):
         raise unowned("IKE identity, endpoint or proposal differs from the active manifest.")
-    if row.get("state") != b"ESTABLISHED":
-        raise transition("An IKE SA has not reached a stable established state.")
     specs = link.child_specs()
     expected_children = {
         c_name: (set(c_local), set(c_remote)) for c_name, c_local, c_remote in specs
