@@ -108,6 +108,17 @@ const secretBySite = computed(() => {
   for (const s of secretsMeta.value) m.set(s.site_id, s)
   return m
 })
+const availableInterfaces = computed(() => {
+  const list = [...(hostNet.value.interfaces || [])]
+  const cur = editingSite.value?.outer_interface?.trim()
+  if (cur && !list.some((i) => i.name === cur)) {
+    list.push({ name: cur, ip: '' })
+  }
+  if (list.length === 0) {
+    list.push({ name: hostNet.value.default_interface || 'eth0', ip: hostNet.value.default_ip || '' })
+  }
+  return list
+})
 
 const ipv4RE = /^(\d{1,3}\.){3}\d{1,3}$/
 
@@ -323,7 +334,7 @@ function hydrateFormFromProfile(p: any) {
     return {
       id: st.id || `site-${idx + 1}`,
       display_name: st.display_name || '',
-      role: st.role || 'ob',
+      role: st.role === 'server' ? 'venue' : (st.role || 'venue'),
       country: st.country || '',
       location_label: st.location_label || '',
       public_endpoint: st.public_endpoint || '',
@@ -432,8 +443,8 @@ function loadExampleTemplate() {
   sites.value = [
     {
       id: 'server-core',
-      display_name: isEn ? 'Match Server Room' : '比赛服务器机房',
-      role: 'server',
+      display_name: isEn ? 'Match Venue / Server Room' : '赛场主服务器机房',
+      role: 'venue',
       country: 'CN',
       location_label: 'Shanghai-IDC',
       public_endpoint: '203.0.113.10',
@@ -528,6 +539,12 @@ function selectorModeHint(mode: string): string {
   return t('modeHintExact')
 }
 
+function siteRoleLabel(role: string): string {
+  if (role === 'venue' || role === 'server') return t('roleVenue')
+  if (role === 'ob') return t('roleOb')
+  return t('roleOther')
+}
+
 function generateHex64(): string {
   const bytes = new Uint8Array(32)
   crypto.getRandomValues(bytes)
@@ -582,7 +599,7 @@ function openNewSiteDrawer() {
   sites.value.push({
     id,
     display_name: lang.value === 'en' ? `Peer Site ${nextIdx}` : `对端站点 ${nextIdx}`,
-    role: nextIdx === 1 ? 'server' : 'ob',
+    role: nextIdx === 1 ? 'venue' : 'ob',
     country: 'CN',
     location_label: '',
     public_endpoint: '',
@@ -972,7 +989,6 @@ onBeforeUnmount(() => {
               <th>{{ t('peerPublicIp') }}</th>
               <th>{{ t('colLanCidrs') }}</th>
               <th>{{ t('peerVendor') }} / {{ t('colSelectorMode') }}</th>
-              <th>if_id</th>
               <th>{{ t('colPskStatus') }}</th>
               <th>{{ t('colAction') }}</th>
             </tr>
@@ -981,7 +997,7 @@ onBeforeUnmount(() => {
             <tr v-for="(s, idx) in sites" :key="idx">
               <td>
                 <strong>{{ s.id || t('unnamed') }}</strong>
-                <div class="muted">{{ s.display_name }} · {{ s.role }}</div>
+                <div class="muted">{{ s.display_name }} · {{ siteRoleLabel(s.role) }}</div>
               </td>
               <td>
                 <code>{{ s.public_endpoint }}</code>
@@ -992,7 +1008,6 @@ onBeforeUnmount(() => {
                 <div>{{ s.vendor }}</div>
                 <div class="muted">{{ selectorModeLabel(s.selector_mode) }}</div>
               </td>
-              <td><span class="pill pill-info">{{ s.if_id }}</span></td>
               <td>
                 <button
                   class="pill"
@@ -1326,9 +1341,8 @@ onBeforeUnmount(() => {
             <div class="field">
               <label>{{ t('siteRole') }}</label>
               <select v-model="editingSite.role" class="select">
-                <option value="server">{{ t('roleServer') }}</option>
-                <option value="ob">{{ t('roleOb') }}</option>
                 <option value="venue">{{ t('roleVenue') }}</option>
+                <option value="ob">{{ t('roleOb') }}</option>
                 <option value="other">{{ t('roleOther') }}</option>
               </select>
             </div>
@@ -1371,30 +1385,13 @@ onBeforeUnmount(() => {
             <input v-model="editingSite.lan_cidrs_text" class="input" placeholder="10.101.10.0/24" />
           </div>
 
-          <div class="grid-2">
-            <div class="field">
-              <label>{{ t('selectorMode') }}</label>
-              <select v-model="editingSite.selector_mode" class="select">
-                <option value="route_based">{{ t('modeRouteBased') }}</option>
-                <option value="exact">{{ t('modeExact') }}</option>
-                <option value="per_pair">{{ t('modePerPair') }}</option>
-              </select>
-            </div>
-            <div class="field">
-              <label>{{ t('ifIdAndPrio') }}</label>
-              <div class="grid-2-tight">
-                <input v-model.number="editingSite.if_id" type="number" class="input" />
-                <input v-model.number="editingSite.route_priority" type="number" class="input" />
-              </div>
-            </div>
-            <div class="field">
-              <label>{{ t('localWanIf') }}</label>
-              <input v-model="editingSite.outer_interface" class="input" placeholder="eth0" />
-            </div>
-            <div class="field">
-              <label>{{ t('ispLabel') }}</label>
-              <input v-model="editingSite.isp_label" class="input" placeholder="BGP-ISP-A" />
-            </div>
+          <div class="field">
+            <label>{{ t('selectorMode') }}</label>
+            <select v-model="editingSite.selector_mode" class="select">
+              <option value="route_based">{{ t('modeRouteBased') }}</option>
+              <option value="exact">{{ t('modeExact') }}</option>
+              <option value="per_pair">{{ t('modePerPair') }}</option>
+            </select>
           </div>
 
           <div class="muted" style="font-size: 12px; margin: -4px 0 12px; padding: 8px 10px; border-radius: 6px; background: rgba(59, 130, 246, 0.08); border: 1px solid rgba(59, 130, 246, 0.2);">
@@ -1426,7 +1423,7 @@ onBeforeUnmount(() => {
                 :placeholder="t('pskHexPh')"
               />
             </div>
-            <div class="row" style="margin-bottom: 8px;">
+            <div class="row" style="margin-bottom: 6px;">
               <button class="btn btn-secondary btn-sm" @click="editingSite.psk_draft = generateHex64()">{{ t('btnRandomGen') }}</button>
               <button
                 class="btn btn-secondary btn-sm"
@@ -1443,11 +1440,7 @@ onBeforeUnmount(() => {
                 {{ t('btnWritePsk') }}
               </button>
             </div>
-            <div class="muted" style="font-size: 11.5px; margin-bottom: 8px;">{{ t('pskDrawerHint') }}</div>
-            <div class="field" style="margin-bottom: 0;">
-              <label>{{ t('secretPath') }}</label>
-              <input v-model="editingSite.secret_ref" class="input" />
-            </div>
+            <div class="muted" style="font-size: 11.5px;">{{ t('pskDrawerHint') }}</div>
           </div>
 
           <div style="margin-top: 12px;">
@@ -1457,6 +1450,31 @@ onBeforeUnmount(() => {
           </div>
 
           <div v-if="editingSite.show_advanced" style="margin-top: 12px; padding-top: 12px; border-top: 1px dashed var(--border);">
+            <div class="grid-2">
+              <div class="field">
+                <label>{{ t('localWanIf') }}</label>
+                <select v-model="editingSite.outer_interface" class="select">
+                  <option v-for="iface in availableInterfaces" :key="iface.name" :value="iface.name">
+                    {{ iface.ip ? `${iface.name} (${iface.ip})` : iface.name }}
+                  </option>
+                </select>
+              </div>
+              <div class="field">
+                <label>{{ t('ispLabel') }}</label>
+                <input v-model="editingSite.isp_label" class="input" placeholder="ISP-A" />
+              </div>
+              <div class="field">
+                <label>{{ t('ifIdAndPrio') }}</label>
+                <div class="grid-2-tight">
+                  <input v-model.number="editingSite.if_id" type="number" class="input" />
+                  <input v-model.number="editingSite.route_priority" type="number" class="input" />
+                </div>
+              </div>
+              <div class="field">
+                <label>{{ t('secretPath') }}</label>
+                <input v-model="editingSite.secret_ref" class="input" />
+              </div>
+            </div>
             <div class="grid-2">
               <div class="field">
                 <label>{{ t('localSourceIp') }}</label>

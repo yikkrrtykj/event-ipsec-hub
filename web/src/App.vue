@@ -177,7 +177,6 @@ onMounted(checkAuth)
           <span v-if="user.demo_mode" class="pill pill-warn">{{ t('demoEnv') }}</span>
         </div>
         <div class="row">
-          <a href="/metrics" target="_blank" class="muted" style="text-decoration: none;">{{ t('metricsLink') }}</a>
           <button class="btn btn-secondary" @click="toggleLang">{{ lang === 'zh' ? 'English' : '中文' }}</button>
           <button class="btn btn-secondary" @click="logout">{{ t('logout') }}</button>
         </div>

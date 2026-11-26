@@ -115,6 +115,7 @@ onMounted(load)
     <div class="row" style="margin-bottom: 14px;">
       <h2 style="margin: 0; font-size: 18px;">{{ t('navSecurity') }}</h2>
       <div class="spacer"></div>
+      <a href="/metrics" target="_blank" class="btn btn-secondary" style="text-decoration: none;">{{ t('metricsLink') }}</a>
       <button class="btn btn-secondary" @click="downloadSignoff">{{ t('exportSignoff') }}</button>
     </div>
 
