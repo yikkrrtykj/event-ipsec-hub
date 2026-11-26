@@ -3,10 +3,12 @@ import { onMounted, ref, watch } from 'vue'
 import { api, downloadTextFile } from '../api'
 import { t } from '../i18n'
 
+const props = defineProps<{ initialSite?: string }>()
+
 const profiles = ref<any[]>([])
 const profileId = ref('')
 const availableSites = ref<string[]>([])
-const siteId = ref('ob-venue-1')
+const siteId = ref(props.initialSite || 'ob-venue-1')
 const format = ref('tencent-json')
 const includePSK = ref(false)
 const confirmPassword = ref('')
@@ -41,6 +43,9 @@ async function refreshSites() {
 }
 
 watch(profileId, refreshSites)
+watch(() => props.initialSite, (v) => {
+  if (v) siteId.value = v
+})
 
 async function generate() {
   errMsg.value = ''

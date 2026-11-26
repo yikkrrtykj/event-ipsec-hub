@@ -1,15 +1,16 @@
 <script setup lang="ts">
 import { onMounted, ref, watch } from 'vue'
-import { api, type SyncedTimelineResponse } from '../api'
+import { api, fmtDateTime, type SyncedTimelineResponse } from '../api'
 import { causeLabel, causeSummary, t } from '../i18n'
 import SyncedFourLayerCharts from '../components/SyncedFourLayerCharts.vue'
 
-const props = defineProps<{ initialSite?: string }>()
+const props = defineProps<{ initialSite?: string; focusTsMs?: number | null }>()
 const emit = defineEmits<{ (e: 'navigate', tab: string, site?: string): void }>()
 
 const site = ref(props.initialSite || 'ob-venue-1')
 const siteOptions = ref<string[]>([])
 const minutes = ref(60)
+const activeFocusTs = ref<number | null>(props.focusTsMs ?? null)
 const timeline = ref<SyncedTimelineResponse | null>(null)
 const errMsg = ref('')
 
@@ -29,19 +30,37 @@ async function loadSites() {
 async function load() {
   errMsg.value = ''
   try {
-    const q = new URLSearchParams({ site: site.value, minutes: String(minutes.value) })
+    const q = new URLSearchParams({ site: site.value })
+    if (activeFocusTs.value && activeFocusTs.value > 0) {
+      q.set('from', String(activeFocusTs.value - 30 * 60_000))
+      q.set('to', String(activeFocusTs.value + 30 * 60_000))
+    } else {
+      q.set('minutes', String(minutes.value))
+    }
     timeline.value = await api<SyncedTimelineResponse>(`/api/v1/diagnostics/timeline?${q}`)
   } catch (e: any) {
     errMsg.value = e.message
   }
 }
 
-watch(() => props.initialSite, (v) => {
-  if (v) {
-    site.value = v
+function exitFocusMode() {
+  activeFocusTs.value = null
+  load()
+}
+
+function onRangeChange() {
+  activeFocusTs.value = null
+  load()
+}
+
+watch(
+  () => [props.initialSite, props.focusTsMs] as const,
+  ([newSite, newTs]) => {
+    if (newSite) site.value = newSite
+    activeFocusTs.value = newTs ?? null
     load()
   }
-})
+)
 
 onMounted(async () => {
   await loadSites()
@@ -57,7 +76,7 @@ onMounted(async () => {
       </select>
       <input v-else v-model="site" class="input" style="width: 190px;" :placeholder="t('sitePlaceholder')" />
 
-      <select v-model.number="minutes" class="select" style="width: 135px;" @change="load">
+      <select v-model.number="minutes" class="select" style="width: 135px;" @change="onRangeChange">
         <option :value="15">{{ t('range15m') }}</option>
         <option :value="60">{{ t('range1h') }}</option>
         <option :value="360">{{ t('range6h') }}</option>
@@ -67,6 +86,14 @@ onMounted(async () => {
       <button class="btn" @click="load">{{ t('refresh') }}</button>
       <div class="spacer"></div>
       <span class="muted">{{ t('chartsSyncHint') }}</span>
+    </div>
+
+    <div v-if="activeFocusTs" class="alert-banner alert-warn">
+      <div class="row">
+        <span>{{ t('focusedEventWindow', { time: fmtDateTime(activeFocusTs) }) }}</span>
+        <div class="spacer"></div>
+        <button class="btn btn-secondary" @click="exitFocusMode">{{ t('backToLiveWindow') }}</button>
+      </div>
     </div>
 
     <div v-if="errMsg" class="alert-banner alert-critical">{{ errMsg }}</div>
@@ -93,7 +120,11 @@ onMounted(async () => {
         </div>
       </div>
 
-      <SyncedFourLayerCharts :samples="timeline.samples" :events="timeline.events" />
+      <SyncedFourLayerCharts
+        :samples="timeline.samples"
+        :events="timeline.events"
+        :focus-ts-ms="activeFocusTs"
+      />
 
       <div class="card" style="padding: 12px 16px;">
         <div class="row">

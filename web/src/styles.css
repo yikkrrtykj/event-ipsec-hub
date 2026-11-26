@@ -64,6 +64,25 @@ html, body, #app {
   color: var(--text-muted);
 }
 
+.nav-group {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: #64748b;
+  padding: 10px 10px 4px;
+}
+
+.nav-group:first-of-type {
+  padding-top: 2px;
+}
+
+.input-combo {
+  display: grid;
+  grid-template-columns: 120px minmax(0, 1fr);
+  gap: 6px;
+}
+
 .nav-btn {
   display: flex;
   align-items: center;

@@ -3,6 +3,10 @@ import { computed, onMounted, ref } from 'vue'
 import { api, fmtDateTime } from '../api'
 import { lang, t } from '../i18n'
 
+const emit = defineEmits<{ (e: 'navigate', tab: string, site?: string): void }>()
+
+type IkeIdType = 'address' | 'fqdn' | 'user_fqdn'
+
 interface SiteForm {
   id: string
   display_name: string
@@ -10,7 +14,8 @@ interface SiteForm {
   country: string
   location_label: string
   public_endpoint: string
-  ike_identity: string
+  ike_id_type: IkeIdType
+  ike_id_value: string
   lan_cidrs_text: string
   vendor: string
   model: string
@@ -21,6 +26,7 @@ interface SiteForm {
   route_priority: number
   outer_interface: string
   isp_label: string
+  expanded: boolean
   show_advanced: boolean
   source_ip: string
   gateway: string
@@ -53,10 +59,17 @@ const form = ref({
   event_purpose: '',
   hub_id: 'hub-vps-primary',
   hub_public_ip: '198.51.100.10',
-  hub_ike_id: '',
+  hub_ike_type: 'address' as IkeIdType,
+  hub_ike_value: '',
   hub_provider: 'VPS-Primary',
   hub_location: 'Hong-Kong',
   hub_country: 'CN-HK',
+  ike_enc: 'aes256',
+  ike_hash: 'sha256',
+  ike_dh: 'modp2048',
+  esp_enc: 'aes256',
+  esp_hash: 'sha256',
+  esp_dh: 'modp2048',
   dpd_delay: 30,
   start_action: 'start',
   dpd_action: 'restart',
@@ -73,6 +86,64 @@ const secretRef = ref('file:/etc/ipsecvpn/secrets/ob-venue-1.psk')
 const secretPSK = ref('')
 
 const siteIDs = computed(() => sites.value.map((s) => s.id).filter(Boolean))
+const espIsGCM = computed(() => form.value.esp_enc.endsWith('gcm16'))
+
+const ipv4RE = /^(\d{1,3}\.){3}\d{1,3}$/
+
+function parseIdentityField(raw: string | undefined, fallbackIP: string): { type: IkeIdType; value: string } {
+  const s = (raw || '').trim()
+  if (!s) return { type: 'address', value: '' }
+  if (s.startsWith('@')) return { type: 'fqdn', value: s.slice(1) }
+  if (s.includes('@')) return { type: 'user_fqdn', value: s }
+  if (ipv4RE.test(s)) {
+    return { type: 'address', value: s === fallbackIP ? '' : s }
+  }
+  return { type: 'fqdn', value: s }
+}
+
+function formatIdentityValue(type: IkeIdType, value: string, fallbackIP: string): string {
+  const v = (value || '').trim()
+  if (type === 'fqdn') {
+    if (!v) return fallbackIP
+    return v.startsWith('@') ? v : `@${v}`
+  }
+  if (type === 'user_fqdn') {
+    return v || fallbackIP
+  }
+  return v || fallbackIP
+}
+
+function buildProposals() {
+  const f = form.value
+  const ikeProp = f.ike_enc.endsWith('gcm16')
+    ? `${f.ike_enc}-prf${f.ike_hash}-${f.ike_dh}`
+    : `${f.ike_enc}-${f.ike_hash}-prf${f.ike_hash}-${f.ike_dh}`
+  const espProp = f.esp_enc.endsWith('gcm16')
+    ? `${f.esp_enc}-${f.esp_dh}`
+    : `${f.esp_enc}-${f.esp_hash}-${f.esp_dh}`
+  return { ikeProp, espProp }
+}
+
+function parseProposalIntoForm(ikeProp?: string, espProp?: string) {
+  if (ikeProp) {
+    const parts = ikeProp.split('-')
+    if (parts.length >= 3) {
+      form.value.ike_enc = parts[0]
+      form.value.ike_dh = parts[parts.length - 1]
+      const prf = parts.find((p) => p.startsWith('prfsha'))
+      if (prf) form.value.ike_hash = prf.replace(/^prf/, '')
+    }
+  }
+  if (espProp) {
+    const parts = espProp.split('-')
+    if (parts.length >= 2) {
+      form.value.esp_enc = parts[0]
+      form.value.esp_dh = parts[parts.length - 1]
+      const hash = parts.find((p) => p.startsWith('sha'))
+      if (hash) form.value.esp_hash = hash
+    }
+  }
+}
 
 function q(v: string): string {
   const s = (v ?? '').trim()
@@ -92,6 +163,7 @@ function splitCIDRs(text: string): string[] {
 
 function buildYAMLFromForm(): string {
   const f = form.value
+  const { ikeProp, espProp } = buildProposals()
   const lines: string[] = [
     'schema_version: "2.0"',
     'event:',
@@ -101,6 +173,7 @@ function buildYAMLFromForm(): string {
   if (f.event_purpose.trim()) {
     lines.push(`  purpose: ${q(f.event_purpose)}`)
   }
+  const hubIke = formatIdentityValue(f.hub_ike_type, f.hub_ike_value, f.hub_public_ip)
   lines.push(
     '',
     'hub:',
@@ -108,7 +181,9 @@ function buildYAMLFromForm(): string {
     '  platform: ubuntu-24.04',
     `  public_endpoint: ${q(f.hub_public_ip)}`
   )
-  if (f.hub_ike_id.trim()) lines.push(`  ike_identity: ${q(f.hub_ike_id)}`)
+  if (hubIke && hubIke !== f.hub_public_ip.trim()) {
+    lines.push(`  ike_identity: ${q(hubIke)}`)
+  }
   lines.push(
     `  provider_label: ${q(f.hub_provider || 'VPS')}`,
     `  location_label: ${q(f.hub_location || 'Primary')}`
@@ -117,6 +192,7 @@ function buildYAMLFromForm(): string {
 
   lines.push('', 'sites:')
   for (const s of sites.value) {
+    const peerIke = formatIdentityValue(s.ike_id_type, s.ike_id_value, s.public_endpoint)
     lines.push(
       `  - id: ${q(s.id)}`,
       `    display_name: ${q(s.display_name || s.id)}`
@@ -126,7 +202,7 @@ function buildYAMLFromForm(): string {
     if (s.location_label.trim()) lines.push(`    location_label: ${q(s.location_label)}`)
     lines.push(
       `    public_endpoint: ${q(s.public_endpoint)}`,
-      `    ike_identity: ${q(s.ike_identity || s.public_endpoint)}`,
+      `    ike_identity: ${q(peerIke)}`,
       '    lan_cidrs:'
     )
     for (const c of splitCIDRs(s.lan_cidrs_text)) {
@@ -140,6 +216,8 @@ function buildYAMLFromForm(): string {
   lines.push(
     '',
     'security:',
+    `  ike_proposal: ${q(ikeProp)}`,
+    `  esp_proposal: ${q(espProp)}`,
     `  ike_lifetime_seconds: ${Number(f.ike_lifetime) || 86400}`,
     `  child_lifetime_seconds: ${Number(f.child_lifetime) || 14400}`,
     `  dpd_delay_seconds: ${Number(f.dpd_delay) || 30}`,
@@ -193,16 +271,24 @@ function buildYAMLFromForm(): string {
 
 function hydrateFormFromProfile(p: any) {
   if (!p) return
+  const hubIke = parseIdentityField(p.hub?.ike_identity, p.hub?.public_endpoint || '')
   form.value = {
     event_id: p.event?.id || '',
     event_name: p.event?.name || '',
     event_purpose: p.event?.purpose || '',
     hub_id: p.hub?.id || 'hub-vps-primary',
     hub_public_ip: p.hub?.public_endpoint || '',
-    hub_ike_id: p.hub?.ike_identity && p.hub?.ike_identity !== p.hub?.public_endpoint ? p.hub.ike_identity : '',
+    hub_ike_type: hubIke.type,
+    hub_ike_value: hubIke.value,
     hub_provider: p.hub?.provider_label || 'VPS',
     hub_location: p.hub?.location_label || '',
     hub_country: p.hub?.country || '',
+    ike_enc: 'aes256',
+    ike_hash: 'sha256',
+    ike_dh: 'modp2048',
+    esp_enc: 'aes256',
+    esp_hash: 'sha256',
+    esp_dh: 'modp2048',
     dpd_delay: p.security?.dpd_delay_seconds ?? 30,
     start_action: p.security?.start_action || 'start',
     dpd_action: p.security?.dpd_action || 'restart',
@@ -210,6 +296,7 @@ function hydrateFormFromProfile(p: any) {
     ike_lifetime: p.security?.ike_lifetime_seconds ?? 86400,
     child_lifetime: p.security?.child_lifetime_seconds ?? 14400
   }
+  parseProposalIntoForm(p.security?.ike_proposal, p.security?.esp_proposal)
 
   const linkBySite = new Map<string, any>()
   for (const sl of p.site_links || []) {
@@ -222,6 +309,7 @@ function hydrateFormFromProfile(p: any) {
     const sl = linkBySite.get(st.id) || {}
     const op = sl.outer_path || {}
     const hasAdv = Boolean(op.source_ip || op.gateway || op.route_table || op.policy_priority)
+    const peerIke = parseIdentityField(st.ike_identity, st.public_endpoint || '')
     return {
       id: st.id || `site-${idx + 1}`,
       display_name: st.display_name || '',
@@ -229,7 +317,8 @@ function hydrateFormFromProfile(p: any) {
       country: st.country || '',
       location_label: st.location_label || '',
       public_endpoint: st.public_endpoint || '',
-      ike_identity: st.ike_identity && st.ike_identity !== st.public_endpoint ? st.ike_identity : '',
+      ike_id_type: peerIke.type,
+      ike_id_value: peerIke.value,
       lan_cidrs_text: (st.lan_cidrs || []).join(', '),
       vendor: st.firewall?.vendor || 'Hillstone',
       model: st.firewall?.model || '',
@@ -240,6 +329,7 @@ function hydrateFormFromProfile(p: any) {
       route_priority: sl.route_priority ?? 10,
       outer_interface: op.interface || 'eth0',
       isp_label: op.isp_label || 'ISP-A',
+      expanded: idx === 0,
       show_advanced: hasAdv,
       source_ip: op.source_ip || '',
       gateway: op.gateway || '',
@@ -273,10 +363,17 @@ function loadExampleTemplate() {
       : '多演播室经自建 VPN 网关接入比赛服务器，演播室之间默认隔离',
     hub_id: 'hub-vps-primary',
     hub_public_ip: '198.51.100.10',
-    hub_ike_id: '',
+    hub_ike_type: 'address',
+    hub_ike_value: '',
     hub_provider: 'VPS-Primary',
     hub_location: 'Hong-Kong',
     hub_country: 'CN-HK',
+    ike_enc: 'aes256',
+    ike_hash: 'sha256',
+    ike_dh: 'modp2048',
+    esp_enc: 'aes256',
+    esp_hash: 'sha256',
+    esp_dh: 'modp2048',
     dpd_delay: 30,
     start_action: 'start',
     dpd_action: 'restart',
@@ -292,7 +389,8 @@ function loadExampleTemplate() {
       country: 'CN',
       location_label: 'Shanghai-IDC',
       public_endpoint: '203.0.113.10',
-      ike_identity: '',
+      ike_id_type: 'address',
+      ike_id_value: '',
       lan_cidrs_text: '10.100.10.0/24, 10.100.20.0/24',
       vendor: 'Hillstone',
       model: 'SG-6000-E3960',
@@ -303,6 +401,7 @@ function loadExampleTemplate() {
       route_priority: 10,
       outer_interface: 'eth0',
       isp_label: 'BGP-ISP-A',
+      expanded: true,
       show_advanced: false,
       source_ip: '',
       gateway: '',
@@ -316,7 +415,8 @@ function loadExampleTemplate() {
       country: 'CN',
       location_label: 'Beijing-Studio',
       public_endpoint: '203.0.113.21',
-      ike_identity: '',
+      ike_id_type: 'address',
+      ike_id_value: '',
       lan_cidrs_text: '10.101.10.0/24',
       vendor: 'Hillstone',
       model: 'SG-6000-E1700',
@@ -327,6 +427,7 @@ function loadExampleTemplate() {
       route_priority: 10,
       outer_interface: 'eth0',
       isp_label: 'BGP-ISP-A',
+      expanded: false,
       show_advanced: false,
       source_ip: '',
       gateway: '',
@@ -340,7 +441,8 @@ function loadExampleTemplate() {
       country: 'JP',
       location_label: 'Tokyo-Studio',
       public_endpoint: '203.0.113.22',
-      ike_identity: '',
+      ike_id_type: 'address',
+      ike_id_value: '',
       lan_cidrs_text: '10.102.10.0/24',
       vendor: 'Hillstone',
       model: 'SG-6000-E1700',
@@ -351,6 +453,7 @@ function loadExampleTemplate() {
       route_priority: 10,
       outer_interface: 'eth0',
       isp_label: 'BGP-ISP-A',
+      expanded: false,
       show_advanced: false,
       source_ip: '',
       gateway: '',
@@ -368,6 +471,16 @@ function loadExampleTemplate() {
   infoMsg.value = t('msgLoadedExample')
 }
 
+function setAllExpanded(val: boolean) {
+  for (const s of sites.value) s.expanded = val
+}
+
+function selectorModeLabel(mode: string): string {
+  if (mode === 'route_based') return t('modeRouteBased')
+  if (mode === 'per_pair') return t('modePerPair')
+  return t('modeExact')
+}
+
 function addSite() {
   const nextIdx = sites.value.length + 1
   const nextIfID = sites.value.reduce((mx, s) => Math.max(mx, Number(s.if_id) || 200), 200) + 1
@@ -379,7 +492,8 @@ function addSite() {
     country: 'CN',
     location_label: '',
     public_endpoint: `203.0.113.${20 + nextIdx}`,
-    ike_identity: '',
+    ike_id_type: 'address',
+    ike_id_value: '',
     lan_cidrs_text: `10.${100 + nextIdx}.10.0/24`,
     vendor: 'Hillstone',
     model: '',
@@ -390,6 +504,7 @@ function addSite() {
     route_priority: 10,
     outer_interface: 'eth0',
     isp_label: 'ISP-A',
+    expanded: true,
     show_advanced: false,
     source_ip: '',
     gateway: '',
@@ -656,7 +771,18 @@ onMounted(loadProfiles)
           </div>
           <div class="field">
             <label>{{ t('hubIkeId') }}</label>
-            <input v-model="form.hub_ike_id" class="input" :placeholder="t('hubIkeIdPh')" />
+            <div class="input-combo">
+              <select v-model="form.hub_ike_type" class="select">
+                <option value="address">{{ t('ikeTypeAddress') }}</option>
+                <option value="fqdn">{{ t('ikeTypeFqdn') }}</option>
+                <option v-if="form.hub_ike_type === 'user_fqdn'" value="user_fqdn">{{ t('ikeTypeUserFqdn') }}</option>
+              </select>
+              <input
+                v-model="form.hub_ike_value"
+                class="input"
+                :placeholder="form.hub_ike_type === 'address' ? t('hubIkeIdPh') : t('ikeFqdnPh')"
+              />
+            </div>
           </div>
           <div class="field">
             <label>{{ t('hubProvider') }}</label>
@@ -675,109 +801,132 @@ onMounted(loadProfiles)
 
       <div class="card">
         <div class="row" style="margin-bottom: 12px;">
-          <h3 style="margin: 0;">{{ t('peerSitesTitle') }}</h3>
+          <h3 style="margin: 0;">{{ t('peerSitesTitle') }} ({{ sites.length }})</h3>
           <div class="spacer"></div>
-          <button class="btn btn-secondary" @click="addSite">{{ t('addSite') }}</button>
+          <button v-if="sites.length > 1" class="btn btn-secondary" @click="setAllExpanded(true)">{{ t('expandAll') }}</button>
+          <button v-if="sites.length > 1" class="btn btn-secondary" @click="setAllExpanded(false)">{{ t('collapseAll') }}</button>
+          <button class="btn" @click="addSite">{{ t('addSite') }}</button>
         </div>
 
         <div v-for="(s, idx) in sites" :key="idx" class="sub-card">
-          <div class="row" style="margin-bottom: 10px;">
+          <div class="row" :style="{ marginBottom: s.expanded ? '12px' : '0' }">
             <strong style="color: #f8fafc;">{{ t('tunnelIndex') }} #{{ idx + 1 }} · {{ s.id || t('unnamed') }}</strong>
-            <span class="pill pill-info">XFRM if_id={{ s.if_id }}</span>
+            <span class="pill pill-info">if_id={{ s.if_id }}</span>
+            <span class="muted">{{ s.public_endpoint }} · {{ s.lan_cidrs_text }} · {{ s.vendor }} · {{ selectorModeLabel(s.selector_mode) }}</span>
             <div class="spacer"></div>
-            <button class="btn btn-secondary" @click="s.show_advanced = !s.show_advanced">
-              {{ s.show_advanced ? t('dualIspHide') : t('dualIspShow') }}
+            <button v-if="selectedId" class="btn btn-secondary" @click="emit('navigate', 'export', s.id)">{{ t('exportPeerBtn') }}</button>
+            <button class="btn btn-secondary" @click="s.expanded = !s.expanded">
+              {{ s.expanded ? t('collapse') : t('expand') }}
             </button>
             <button class="btn btn-danger" @click="removeSite(idx)">{{ t('deleteBtn') }}</button>
           </div>
 
-          <div class="grid-3">
-            <div class="field">
-              <label>{{ t('siteId') }}</label>
-              <input v-model="s.id" class="input" placeholder="ob-venue-1" />
-            </div>
-            <div class="field">
-              <label>{{ t('siteName') }}</label>
-              <input v-model="s.display_name" class="input" />
-            </div>
-            <div class="field">
-              <label>{{ t('siteRole') }}</label>
-              <select v-model="s.role" class="select">
-                <option value="server">{{ t('roleServer') }}</option>
-                <option value="ob">{{ t('roleOb') }}</option>
-                <option value="venue">{{ t('roleVenue') }}</option>
-                <option value="other">{{ t('roleOther') }}</option>
-              </select>
-            </div>
-            <div class="field">
-              <label>{{ t('peerPublicIp') }}</label>
-              <input v-model="s.public_endpoint" class="input" placeholder="203.0.113.21" />
-            </div>
-            <div class="field">
-              <label>{{ t('peerIkeId') }}</label>
-              <input v-model="s.ike_identity" class="input" :placeholder="t('peerIkeIdPh')" />
-            </div>
-            <div class="field">
-              <label>{{ t('peerLanCidrs') }}</label>
-              <input v-model="s.lan_cidrs_text" class="input" placeholder="10.101.10.0/24" />
-            </div>
-            <div class="field">
-              <label>{{ t('peerVendor') }}</label>
-              <select v-model="s.vendor" class="select">
-                <option value="Hillstone">{{ t('vendorHillstone') }}</option>
-                <option value="Huawei">{{ t('vendorHuawei') }}</option>
-                <option value="Fortinet">{{ t('vendorFortinet') }}</option>
-                <option value="Cisco">{{ t('vendorCisco') }}</option>
-                <option value="CloudVPN">{{ t('vendorCloud') }}</option>
-                <option value="Generic">{{ t('vendorGeneric') }}</option>
-              </select>
-            </div>
-            <div class="field">
-              <label>{{ t('selectorMode') }}</label>
-              <select v-model="s.selector_mode" class="select">
-                <option value="route_based">{{ t('modeRouteBased') }}</option>
-                <option value="exact">{{ t('modeExact') }}</option>
-                <option value="per_pair">{{ t('modePerPair') }}</option>
-              </select>
-            </div>
-            <div class="field">
-              <label>{{ t('ifIdAndPrio') }}</label>
-              <div class="grid-2-tight">
-                <input v-model.number="s.if_id" type="number" class="input" />
-                <input v-model.number="s.route_priority" type="number" class="input" />
+          <template v-if="s.expanded">
+            <div class="grid-3">
+              <div class="field">
+                <label>{{ t('siteId') }}</label>
+                <input v-model="s.id" class="input" placeholder="ob-venue-1" />
+              </div>
+              <div class="field">
+                <label>{{ t('siteName') }}</label>
+                <input v-model="s.display_name" class="input" />
+              </div>
+              <div class="field">
+                <label>{{ t('siteRole') }}</label>
+                <select v-model="s.role" class="select">
+                  <option value="server">{{ t('roleServer') }}</option>
+                  <option value="ob">{{ t('roleOb') }}</option>
+                  <option value="venue">{{ t('roleVenue') }}</option>
+                  <option value="other">{{ t('roleOther') }}</option>
+                </select>
+              </div>
+              <div class="field">
+                <label>{{ t('peerPublicIp') }}</label>
+                <input v-model="s.public_endpoint" class="input" placeholder="203.0.113.21" />
+              </div>
+              <div class="field">
+                <label>{{ t('peerIkeId') }}</label>
+                <div class="input-combo">
+                  <select v-model="s.ike_id_type" class="select">
+                    <option value="address">{{ t('ikeTypeAddress') }}</option>
+                    <option value="fqdn">{{ t('ikeTypeFqdn') }}</option>
+                    <option v-if="s.ike_id_type === 'user_fqdn'" value="user_fqdn">{{ t('ikeTypeUserFqdn') }}</option>
+                  </select>
+                  <input
+                    v-model="s.ike_id_value"
+                    class="input"
+                    :placeholder="s.ike_id_type === 'address' ? t('peerIkeIdPh') : t('peerIkeFqdnPh')"
+                  />
+                </div>
+              </div>
+              <div class="field">
+                <label>{{ t('peerLanCidrs') }}</label>
+                <input v-model="s.lan_cidrs_text" class="input" placeholder="10.101.10.0/24" />
+              </div>
+              <div class="field">
+                <label>{{ t('peerVendor') }}</label>
+                <select v-model="s.vendor" class="select">
+                  <option value="Hillstone">{{ t('vendorHillstone') }}</option>
+                  <option value="Huawei">{{ t('vendorHuawei') }}</option>
+                  <option value="Fortinet">{{ t('vendorFortinet') }}</option>
+                  <option value="Cisco">{{ t('vendorCisco') }}</option>
+                  <option value="CloudVPN">{{ t('vendorCloud') }}</option>
+                  <option value="Generic">{{ t('vendorGeneric') }}</option>
+                </select>
+              </div>
+              <div class="field">
+                <label>{{ t('selectorMode') }}</label>
+                <select v-model="s.selector_mode" class="select">
+                  <option value="route_based">{{ t('modeRouteBased') }}</option>
+                  <option value="exact">{{ t('modeExact') }}</option>
+                  <option value="per_pair">{{ t('modePerPair') }}</option>
+                </select>
+              </div>
+              <div class="field">
+                <label>{{ t('ifIdAndPrio') }}</label>
+                <div class="grid-2-tight">
+                  <input v-model.number="s.if_id" type="number" class="input" />
+                  <input v-model.number="s.route_priority" type="number" class="input" />
+                </div>
+              </div>
+              <div class="field">
+                <label>{{ t('localWanIf') }}</label>
+                <input v-model="s.outer_interface" class="input" placeholder="eth0" />
+              </div>
+              <div class="field">
+                <label>{{ t('ispLabel') }}</label>
+                <input v-model="s.isp_label" class="input" placeholder="BGP-ISP-A" />
+              </div>
+              <div class="field">
+                <label>{{ t('secretPath') }}</label>
+                <input v-model="s.secret_ref" class="input" />
               </div>
             </div>
-            <div class="field">
-              <label>{{ t('localWanIf') }}</label>
-              <input v-model="s.outer_interface" class="input" placeholder="eth0" />
-            </div>
-            <div class="field">
-              <label>{{ t('ispLabel') }}</label>
-              <input v-model="s.isp_label" class="input" placeholder="BGP-ISP-A" />
-            </div>
-            <div class="field">
-              <label>{{ t('secretPath') }}</label>
-              <input v-model="s.secret_ref" class="input" />
-            </div>
-          </div>
 
-          <div v-if="s.show_advanced" class="grid-3" style="margin-top: 8px; padding-top: 10px; border-top: 1px dashed var(--border);">
-            <div class="field">
-              <label>{{ t('localSourceIp') }}</label>
-              <input v-model="s.source_ip" class="input" placeholder="198.51.100.10" />
+            <div class="row" style="margin-top: 4px;">
+              <button class="btn btn-secondary" @click="s.show_advanced = !s.show_advanced">
+                {{ s.show_advanced ? t('dualIspHide') : t('dualIspShow') }}
+              </button>
             </div>
-            <div class="field">
-              <label>{{ t('egressGateway') }}</label>
-              <input v-model="s.gateway" class="input" placeholder="198.51.100.1" />
-            </div>
-            <div class="field">
-              <label>{{ t('routeTablePrio') }}</label>
-              <div class="grid-2-tight">
-                <input v-model="s.route_table" class="input" placeholder="101" />
-                <input v-model="s.policy_priority" class="input" placeholder="1001" />
+
+            <div v-if="s.show_advanced" class="grid-3" style="margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--border);">
+              <div class="field">
+                <label>{{ t('localSourceIp') }}</label>
+                <input v-model="s.source_ip" class="input" placeholder="198.51.100.10" />
+              </div>
+              <div class="field">
+                <label>{{ t('egressGateway') }}</label>
+                <input v-model="s.gateway" class="input" placeholder="198.51.100.1" />
+              </div>
+              <div class="field">
+                <label>{{ t('routeTablePrio') }}</label>
+                <div class="grid-2-tight">
+                  <input v-model="s.route_table" class="input" placeholder="101" />
+                  <input v-model="s.policy_priority" class="input" placeholder="1001" />
+                </div>
               </div>
             </div>
-          </div>
+          </template>
         </div>
       </div>
 
@@ -811,8 +960,65 @@ onMounted(loadProfiles)
 
         <div class="card">
           <h3>{{ t('secParamsTitle') }}</h3>
-          <div class="muted" style="margin-bottom: 10px;">{{ t('secParamsHint') }}</div>
-          <div class="grid-2">
+          <div class="grid-3">
+            <div class="field">
+              <label>{{ t('ikeEncAlg') }}</label>
+              <select v-model="form.ike_enc" class="select">
+                <option value="aes256">AES-256-CBC</option>
+                <option value="aes128">AES-128-CBC</option>
+                <option value="aes256gcm16">AES-256-GCM</option>
+                <option value="aes128gcm16">AES-128-GCM</option>
+              </select>
+            </div>
+            <div class="field">
+              <label>{{ t('ikeAuthAlg') }}</label>
+              <select v-model="form.ike_hash" class="select">
+                <option value="sha256">SHA-256</option>
+                <option value="sha384">SHA-384</option>
+                <option value="sha512">SHA-512</option>
+              </select>
+            </div>
+            <div class="field">
+              <label>{{ t('ikeDhGroup') }}</label>
+              <select v-model="form.ike_dh" class="select">
+                <option value="modp2048">GROUP14 (modp2048)</option>
+                <option value="modp3072">GROUP15 (modp3072)</option>
+                <option value="modp4096">GROUP16 (modp4096)</option>
+                <option value="ecp256">GROUP19 (ecp256)</option>
+                <option value="ecp384">GROUP20 (ecp384)</option>
+              </select>
+            </div>
+            <div class="field">
+              <label>{{ t('espEncAlg') }}</label>
+              <select v-model="form.esp_enc" class="select">
+                <option value="aes256">AES-256-CBC</option>
+                <option value="aes128">AES-128-CBC</option>
+                <option value="aes256gcm16">AES-256-GCM</option>
+                <option value="aes128gcm16">AES-128-GCM</option>
+              </select>
+            </div>
+            <div class="field">
+              <label>{{ t('espAuthAlg') }}</label>
+              <select v-if="!espIsGCM" v-model="form.esp_hash" class="select">
+                <option value="sha256">SHA-256</option>
+                <option value="sha384">SHA-384</option>
+                <option value="sha512">SHA-512</option>
+              </select>
+              <input v-else class="input" :value="t('aeadBuiltin')" disabled />
+            </div>
+            <div class="field">
+              <label>{{ t('espPfsGroup') }}</label>
+              <select v-model="form.esp_dh" class="select">
+                <option value="modp2048">GROUP14 (modp2048)</option>
+                <option value="modp3072">GROUP15 (modp3072)</option>
+                <option value="modp4096">GROUP16 (modp4096)</option>
+                <option value="ecp256">GROUP19 (ecp256)</option>
+                <option value="ecp384">GROUP20 (ecp384)</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="grid-3" style="margin-top: 6px; padding-top: 10px; border-top: 1px solid var(--border);">
             <div class="field">
               <label>{{ t('ikeLifetime') }}</label>
               <input v-model.number="form.ike_lifetime" type="number" class="input" />

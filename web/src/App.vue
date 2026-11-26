@@ -15,23 +15,46 @@ const user = ref<any>(null)
 const checking = ref(true)
 const activeTab = ref('dashboard')
 const diagSite = ref('ob-venue-1')
+const diagFocusTs = ref<number | null>(null)
 const eventSite = ref('')
+const exportSite = ref('')
 
 const username = ref('admin')
 const password = ref('')
 const totpCode = ref('')
 const loginErr = ref('')
 
-const navItems = computed(() => [
-  { id: 'dashboard', label: t('navDashboard') },
-  { id: 'config', label: t('navConfig') },
-  { id: 'diagnostics', label: t('navDiagnostics') },
-  { id: 'events', label: t('navEvents') },
-  { id: 'export', label: t('navExport') },
-  { id: 'failover', label: t('navFailover') },
-  { id: 'alerts', label: t('navAlerts') },
-  { id: 'security', label: t('navSecurity') }
+const navGroups = computed(() => [
+  {
+    title: t('navGroupGateway'),
+    items: [
+      { id: 'dashboard', label: t('navDashboard') },
+      { id: 'config', label: t('navConfig') },
+      { id: 'export', label: t('navExport') }
+    ]
+  },
+  {
+    title: t('navGroupOps'),
+    items: [
+      { id: 'diagnostics', label: t('navDiagnostics') },
+      { id: 'events', label: t('navEvents') },
+      { id: 'failover', label: t('navFailover') },
+      { id: 'alerts', label: t('navAlerts') }
+    ]
+  },
+  {
+    title: t('navGroupSystem'),
+    items: [{ id: 'security', label: t('navSecurity') }]
+  }
 ])
+
+const activeLabel = computed(() => {
+  for (const g of navGroups.value) {
+    const hit = g.items.find((i) => i.id === activeTab.value)
+    if (hit) return hit.label
+  }
+  return ''
+})
 
 async function checkAuth() {
   checking.value = true
@@ -67,9 +90,21 @@ async function logout() {
   user.value = null
 }
 
-function navigate(tab: string, site?: string) {
-  if (tab === 'diagnostics' && site) diagSite.value = site
-  if (tab === 'events') eventSite.value = site || ''
+function selectTab(id: string) {
+  if (id === 'diagnostics') diagFocusTs.value = null
+  if (id === 'events') eventSite.value = ''
+  activeTab.value = id
+}
+
+function navigate(tab: string, site?: string, focusTsMs?: number) {
+  if (tab === 'diagnostics') {
+    if (site) diagSite.value = site
+    diagFocusTs.value = focusTsMs ?? null
+  } else if (tab === 'events') {
+    eventSite.value = site || ''
+  } else if (tab === 'export') {
+    exportSite.value = site || ''
+  }
   activeTab.value = tab
 }
 
@@ -114,15 +149,18 @@ onMounted(checkAuth)
         <h1>{{ t('brandTitle') }}</h1>
         <span>event-ipsec-hub</span>
       </div>
-      <button
-        v-for="item in navItems"
-        :key="item.id"
-        class="nav-btn"
-        :class="{ active: activeTab === item.id }"
-        @click="activeTab = item.id"
-      >
-        {{ item.label }}
-      </button>
+      <template v-for="group in navGroups" :key="group.title">
+        <div class="nav-group">{{ group.title }}</div>
+        <button
+          v-for="item in group.items"
+          :key="item.id"
+          class="nav-btn"
+          :class="{ active: activeTab === item.id }"
+          @click="selectTab(item.id)"
+        >
+          {{ item.label }}
+        </button>
+      </template>
       <div class="spacer"></div>
       <div class="muted" style="padding: 10px 8px; border-top: 1px solid var(--border);">
         {{ user.username }} · {{ user.role === 'admin' ? t('roleAdmin') : t('roleReadonly') }}
@@ -135,7 +173,7 @@ onMounted(checkAuth)
     <div class="main">
       <header class="topbar">
         <div class="row">
-          <strong style="font-size: 14px;">{{ navItems.find((n) => n.id === activeTab)?.label }}</strong>
+          <strong style="font-size: 14px;">{{ activeLabel }}</strong>
           <span v-if="user.demo_mode" class="pill pill-warn">{{ t('demoEnv') }}</span>
         </div>
         <div class="row">
@@ -147,10 +185,15 @@ onMounted(checkAuth)
 
       <main class="content">
         <DashboardView v-if="activeTab === 'dashboard'" @navigate="navigate" />
-        <SitesConfigView v-else-if="activeTab === 'config'" />
-        <DiagnosticsView v-else-if="activeTab === 'diagnostics'" :initial-site="diagSite" @navigate="navigate" />
+        <SitesConfigView v-else-if="activeTab === 'config'" @navigate="navigate" />
+        <DiagnosticsView
+          v-else-if="activeTab === 'diagnostics'"
+          :initial-site="diagSite"
+          :focus-ts-ms="diagFocusTs"
+          @navigate="navigate"
+        />
         <EventsView v-else-if="activeTab === 'events'" :initial-site="eventSite" @navigate="navigate" />
-        <PeerExportView v-else-if="activeTab === 'export'" />
+        <PeerExportView v-else-if="activeTab === 'export'" :initial-site="exportSite" />
         <FailoverView v-else-if="activeTab === 'failover'" />
         <AlertsView v-else-if="activeTab === 'alerts'" />
         <SecurityAuditView v-else-if="activeTab === 'security'" />

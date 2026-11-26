@@ -4,7 +4,7 @@ import { api, downloadTextFile, fmtDateTime, type TimelineEvent } from '../api'
 import { sourceLabel, t } from '../i18n'
 
 const props = defineProps<{ initialSite?: string }>()
-const emit = defineEmits<{ (e: 'navigate', tab: string, site?: string): void }>()
+const emit = defineEmits<{ (e: 'navigate', tab: string, site?: string, focusTsMs?: number): void }>()
 
 const events = ref<TimelineEvent[]>([])
 const total = ref(0)
@@ -213,6 +213,7 @@ onMounted(async () => {
             <th style="width: 160px;">{{ t('colEvent') }}</th>
             <th style="width: 110px;">{{ t('colSource') }}</th>
             <th>{{ t('colDetail') }}</th>
+            <th style="width: 105px;">{{ t('colAction') }}</th>
           </tr>
         </thead>
         <tbody>
@@ -229,7 +230,7 @@ onMounted(async () => {
                 v-if="ev.site_id"
                 href="#"
                 style="color: #60a5fa; text-decoration: none; font-weight: 500;"
-                @click.prevent="emit('navigate', 'diagnostics', ev.site_id)"
+                @click.prevent="emit('navigate', 'diagnostics', ev.site_id, ev.ts_ms)"
               >
                 {{ ev.site_id }}
               </a>
@@ -238,6 +239,17 @@ onMounted(async () => {
             <td><code>{{ ev.category }}</code></td>
             <td>{{ sourceLabel(ev.source) }}</td>
             <td>{{ ev.title }}</td>
+            <td>
+              <button
+                v-if="ev.site_id"
+                class="btn btn-secondary"
+                style="padding: 4px 10px; font-size: 12px;"
+                @click="emit('navigate', 'diagnostics', ev.site_id, ev.ts_ms)"
+              >
+                {{ t('viewChartBtn') }}
+              </button>
+              <span v-else class="muted">-</span>
+            </td>
           </tr>
         </tbody>
       </table>

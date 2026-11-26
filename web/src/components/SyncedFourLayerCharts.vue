@@ -7,6 +7,7 @@ import { causeLabel, lang, t } from '../i18n'
 const props = defineProps<{
   samples: MetricSample[]
   events: TimelineEvent[]
+  focusTsMs?: number | null
 }>()
 
 const c1 = ref<HTMLElement | null>(null)
@@ -46,7 +47,24 @@ function renderCharts() {
   const samples = props.samples || []
   const times = samples.map((s) => fmtTime(s.ts_ms))
   const markLines = buildMarkLines(times, samples, props.events || [])
-  hovered.value = samples.length ? samples[samples.length - 1] : null
+  if (samples.length) {
+    if (props.focusTsMs && props.focusTsMs > 0) {
+      let best = samples[0]
+      let bestDiff = Math.abs(samples[0].ts_ms - props.focusTsMs)
+      for (const s of samples) {
+        const d = Math.abs(s.ts_ms - props.focusTsMs)
+        if (d < bestDiff) {
+          bestDiff = d
+          best = s
+        }
+      }
+      hovered.value = best
+    } else {
+      hovered.value = samples[samples.length - 1]
+    }
+  } else {
+    hovered.value = null
+  }
 
   const baseGrid = { left: 56, right: 54, top: 34, bottom: 26 }
   const axisLabel = { color: '#94a3b8', fontSize: 11 }
@@ -231,7 +249,7 @@ onBeforeUnmount(() => {
   for (const ch of charts) ch.dispose()
 })
 
-watch(() => [props.samples, props.events, lang.value], renderCharts, { deep: true })
+watch(() => [props.samples, props.events, props.focusTsMs, lang.value], renderCharts, { deep: true })
 
 function stText(v: number) {
   if (v === 1) return t('stOnline')
