@@ -140,6 +140,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/profiles/{id}/render", s.requireAuth(s.handleProfileRender))
 	mux.HandleFunc("POST /api/v1/profiles/{id}/apply", s.requireAdmin(s.handleProfileApply))
 	mux.HandleFunc("POST /api/v1/profiles/{id}/secrets", s.requireAdmin(s.handleWriteSecret))
+	mux.HandleFunc("POST /api/v1/secrets", s.requireAdmin(s.handleWriteSecret))
+	mux.HandleFunc("POST /api/v1/secrets/reveal", s.requireAdmin(s.handleRevealSecret))
 	mux.HandleFunc("POST /api/v1/profiles/{id}/export-peer", s.requireAuth(s.handleExportPeer))
 
 	// Single-tunnel live operations (reconnect / rekey)
@@ -859,6 +861,57 @@ func (s *Server) handleWriteSecret(w http.ResponseWriter, r *http.Request, sess 
 	}
 	_ = s.store.RecordAudit(sess.Username, extractClientIP(r.RemoteAddr), "write_secret", req.SiteID, "PASS", map[string]any{"secret_ref": req.SecretRef})
 	writeJSONResp(w, http.StatusOK, out)
+}
+
+func (s *Server) handleRevealSecret(w http.ResponseWriter, r *http.Request, sess sessionEntry) {
+	var req struct {
+		SiteID    string `json:"site_id"`
+		SecretRef string `json:"secret_ref"`
+	}
+	if err := decodeJSONBody(r, &req); err != nil {
+		writeJSONResp(w, http.StatusBadRequest, map[string]any{"error": "Invalid JSON."})
+		return
+	}
+	secretRef := strings.TrimSpace(req.SecretRef)
+	if secretRef == "" && strings.TrimSpace(req.SiteID) != "" {
+		if metas, err := s.store.ListSecretsMeta(); err == nil {
+			for _, m := range metas {
+				if m.SiteID == req.SiteID && m.Ref != "" {
+					secretRef = m.Ref
+					break
+				}
+			}
+		}
+		if secretRef == "" {
+			secretRef = fmt.Sprintf("file:/etc/ipsecvpn/secrets/%s.psk", strings.TrimSpace(req.SiteID))
+		}
+	}
+	if secretRef == "" {
+		writeJSONResp(w, http.StatusBadRequest, map[string]any{"error": "site_id or secret_ref is required."})
+		return
+	}
+	if s.agent == nil {
+		writeJSONResp(w, http.StatusServiceUnavailable, map[string]any{"error": "Privileged Hub Agent is required to read root-owned PSK files."})
+		return
+	}
+	var res struct {
+		PSK string `json:"psk"`
+	}
+	if err := s.agent.Call(r.Context(), rpc.MethodReadSecretAudit, rpc.ReadSecretAuditParams{
+		SecretRef: secretRef,
+		SiteID:    req.SiteID,
+		Operator:  sess.Username,
+		RemoteIP:  extractClientIP(r.RemoteAddr),
+	}, &res); err != nil {
+		writeJSONResp(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSONResp(w, http.StatusOK, map[string]any{
+		"site_id":    req.SiteID,
+		"secret_ref": secretRef,
+		"psk_hex":    res.PSK,
+	})
 }
 
 func (s *Server) handleExportPeer(w http.ResponseWriter, r *http.Request, sess sessionEntry) {

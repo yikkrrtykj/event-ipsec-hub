@@ -224,4 +224,23 @@ func TestWebAPIEndToEndLoginProfileExportAndTimeline(t *testing.T) {
 	if _, ok := hnet["interfaces"].([]any); !ok {
 		t.Fatalf("expected interfaces array in host-network response: %+v", hnet)
 	}
+
+	// Direct secret write & audited reveal endpoints
+	resp = postJSON("/api/v1/secrets", map[string]any{
+		"site_id":    "ob-venue-1",
+		"secret_ref": "file:/etc/ipsecvpn/secrets/ob-venue-1.psk",
+		"psk_hex":    "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+	})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("POST /api/v1/secrets failed: %d", resp.StatusCode)
+	}
+	resp = postJSON("/api/v1/secrets/reveal", map[string]any{
+		"site_id":    "ob-venue-1",
+		"secret_ref": "file:/etc/ipsecvpn/secrets/ob-venue-1.psk",
+	})
+	var rev map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&rev)
+	if resp.StatusCode != http.StatusOK || rev["psk_hex"] != "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" || resp.Header.Get("Cache-Control") != "no-store" {
+		t.Fatalf("POST /api/v1/secrets/reveal unexpected: status=%d cc=%q body=%+v", resp.StatusCode, resp.Header.Get("Cache-Control"), rev)
+	}
 }

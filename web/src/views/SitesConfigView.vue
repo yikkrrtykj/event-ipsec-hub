@@ -31,6 +31,7 @@ interface SiteForm {
   gateway: string
   route_table: string
   policy_priority: string
+  psk_draft?: string
 }
 
 interface PairForm {
@@ -95,6 +96,9 @@ const pairs = ref<PairForm[]>([])
 const secretSite = ref('')
 const secretRef = ref('')
 const secretPSK = ref('')
+const revealedPSKs = ref<Record<string, string>>({})
+const copiedTag = ref('')
+const revealingSite = ref('')
 
 const siteIDs = computed(() => sites.value.map((s) => s.id).filter(Boolean))
 const espIsGCM = computed(() => form.value.esp_enc.endsWith('gcm16'))
@@ -518,6 +522,54 @@ function selectorModeLabel(mode: string): string {
   return t('modeExact')
 }
 
+function selectorModeHint(mode: string): string {
+  if (mode === 'route_based') return t('modeHintRouteBased')
+  if (mode === 'per_pair') return t('modeHintPerPair')
+  return t('modeHintExact')
+}
+
+function generateHex64(): string {
+  const bytes = new Uint8Array(32)
+  crypto.getRandomValues(bytes)
+  return Array.from(bytes).map((b) => b.toString(16).padStart(2, '0')).join('')
+}
+
+async function copyText(val: string, tag: string) {
+  if (!val) return
+  try {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(val)
+    } else {
+      throw new Error('fallback')
+    }
+  } catch {
+    const ta = document.createElement('textarea')
+    ta.value = val
+    ta.style.position = 'fixed'
+    ta.style.opacity = '0'
+    document.body.appendChild(ta)
+    ta.select()
+    document.execCommand('copy')
+    document.body.removeChild(ta)
+  }
+  copiedTag.value = tag
+  setTimeout(() => {
+    if (copiedTag.value === tag) copiedTag.value = ''
+  }, 1600)
+}
+
+function onEditSiteIdInput() {
+  const s = editingSite.value
+  if (!s) return
+  const cleanId = s.id.trim()
+  if (!cleanId) return
+  if (!s.secret_ref || /^file:\/etc\/ipsecvpn\/secrets\/[A-Za-z0-9_.-]+\.psk$/.test(s.secret_ref)) {
+    if (isNewSite.value || !secretBySite.value.has(cleanId)) {
+      s.secret_ref = `file:/etc/ipsecvpn/secrets/${cleanId}.psk`
+    }
+  }
+}
+
 function openNewSiteDrawer() {
   const nextIdx = sites.value.length + 1
   const nextIfID = sites.value.reduce((mx, s) => Math.max(mx, Number(s.if_id) || 200), 200) + 1
@@ -550,7 +602,8 @@ function openNewSiteDrawer() {
     source_ip: natSource,
     gateway: '',
     route_table: '',
-    policy_priority: ''
+    policy_priority: '',
+    psk_draft: generateHex64()
   })
   isNewSite.value = true
   editingSiteIdx.value = sites.value.length - 1
@@ -558,6 +611,10 @@ function openNewSiteDrawer() {
 
 function openEditSiteDrawer(idx: number) {
   isNewSite.value = false
+  const s = sites.value[idx]
+  if (s && !s.psk_draft && revealedPSKs.value[s.id]) {
+    s.psk_draft = revealedPSKs.value[s.id]
+  }
   editingSiteIdx.value = idx
 }
 
@@ -588,6 +645,10 @@ function openPSKForSite(siteId: string) {
   secretSite.value = siteId
   onSecretSiteChange()
   subTab.value = 'psk'
+  if (secretBySite.value.has(siteId) && !revealedPSKs.value[siteId]) {
+    const hit = sites.value.find((s) => s.id === siteId)
+    void revealSitePSK(siteId, hit?.secret_ref || secretRef.value)
+  }
 }
 
 function onSecretSiteChange() {
@@ -596,6 +657,11 @@ function onSecretSiteChange() {
     secretRef.value = hit.secret_ref
   } else if (secretSite.value) {
     secretRef.value = `file:/etc/ipsecvpn/secrets/${secretSite.value}.psk`
+  }
+  if (revealedPSKs.value[secretSite.value]) {
+    secretPSK.value = revealedPSKs.value[secretSite.value]
+  } else if (hit?.psk_draft) {
+    secretPSK.value = hit.psk_draft
   }
 }
 
@@ -679,6 +745,15 @@ async function saveProfile(activate = true) {
   errMsg.value = ''
   infoMsg.value = ''
   try {
+    // Capture pending drawer PSKs before loadProfiles() re-hydrates form
+    const pendingSecrets = sites.value
+      .filter((s) => s.id && s.psk_draft && s.psk_draft.trim() && (!secretBySite.value.has(s.id) || revealedPSKs.value[s.id] !== s.psk_draft.trim()))
+      .map((s) => ({
+        site_id: s.id.trim(),
+        secret_ref: s.secret_ref.trim() || `file:/etc/ipsecvpn/secrets/${s.id.trim()}.psk`,
+        psk_hex: s.psk_draft!.trim()
+      }))
+
     const bodyYAML = currentYAML()
     const res = await api('/api/v1/profiles', {
       method: 'POST',
@@ -690,6 +765,13 @@ async function saveProfile(activate = true) {
       })
     })
     selectedId.value = res.id
+    for (const sec of pendingSecrets) {
+      await api('/api/v1/secrets', {
+        method: 'POST',
+        body: JSON.stringify(sec)
+      })
+      revealedPSKs.value[sec.site_id] = sec.psk_hex
+    }
     output.value = JSON.stringify(res, null, 2)
     infoMsg.value = t('msgSaved', { id: res.id })
     note.value = ''
@@ -733,33 +815,74 @@ async function applyProfile(confirmed: boolean) {
 }
 
 function randomHex64() {
-  const bytes = new Uint8Array(32)
-  crypto.getRandomValues(bytes)
-  secretPSK.value = Array.from(bytes).map((b) => b.toString(16).padStart(2, '0')).join('')
+  secretPSK.value = generateHex64()
 }
 
-async function saveSecret() {
-  if (!selectedId.value) {
-    errMsg.value = t('msgNeedSavePsk')
-    return
-  }
+async function writeSitePSK(siteId: string, refPath: string, pskHex: string) {
   errMsg.value = ''
   infoMsg.value = ''
   try {
-    const res = await api(`/api/v1/profiles/${encodeURIComponent(selectedId.value)}/secrets`, {
+    const cleanRef = (refPath || '').trim() || `file:/etc/ipsecvpn/secrets/${siteId}.psk`
+    const cleanPSK = (pskHex || '').trim()
+    const res = await api('/api/v1/secrets', {
       method: 'POST',
       body: JSON.stringify({
-        site_id: secretSite.value,
-        secret_ref: secretRef.value,
-        psk_hex: secretPSK.value
+        site_id: siteId,
+        secret_ref: cleanRef,
+        psk_hex: cleanPSK
       })
     })
-    secretPSK.value = ''
+    revealedPSKs.value[siteId] = cleanPSK
     output.value = JSON.stringify(res, null, 2)
-    infoMsg.value = t('msgPskWritten', { site: secretSite.value })
-    await loadProfiles()
+    infoMsg.value = t('msgPskWritten', { site: siteId })
+    const resP = await api('/api/v1/profiles')
+    secretsMeta.value = resP.secrets_meta || []
   } catch (e: any) {
     errMsg.value = e.message
+  }
+}
+
+async function saveSecret() {
+  await writeSitePSK(secretSite.value, secretRef.value, secretPSK.value)
+}
+
+async function revealSitePSK(siteId: string, refPath?: string): Promise<string> {
+  errMsg.value = ''
+  revealingSite.value = siteId
+  try {
+    const res = await api('/api/v1/secrets/reveal', {
+      method: 'POST',
+      body: JSON.stringify({
+        site_id: siteId,
+        secret_ref: refPath || ''
+      })
+    })
+    if (res.psk_hex) {
+      revealedPSKs.value[siteId] = res.psk_hex
+      if (secretSite.value === siteId) secretPSK.value = res.psk_hex
+      if (editingSite.value && editingSite.value.id === siteId) editingSite.value.psk_draft = res.psk_hex
+      return res.psk_hex
+    }
+    return ''
+  } catch (e: any) {
+    errMsg.value = e.message
+    return ''
+  } finally {
+    revealingSite.value = ''
+  }
+}
+
+function hideSitePSK(siteId: string) {
+  delete revealedPSKs.value[siteId]
+}
+
+async function copySitePSK(siteId: string, refPath?: string) {
+  let key = revealedPSKs.value[siteId]
+  if (!key) {
+    key = await revealSitePSK(siteId, refPath)
+  }
+  if (key) {
+    await copyText(key, `row-${siteId}`)
   }
 }
 
@@ -1056,9 +1179,20 @@ onBeforeUnmount(() => {
           </div>
           <div class="field">
             <label>{{ t('pskHexLabel') }}</label>
+            <div class="row" style="margin-bottom: 8px;">
+              <input
+                v-model="secretPSK"
+                class="input"
+                style="flex: 1; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px;"
+                type="text"
+                :placeholder="t('pskHexPh')"
+              />
+            </div>
             <div class="row">
-              <input v-model="secretPSK" class="input" style="flex: 1;" type="password" :placeholder="t('pskHexPh')" />
               <button class="btn btn-secondary" @click="randomHex64">{{ t('btnRandomGen') }}</button>
+              <button class="btn btn-secondary" :disabled="!secretPSK" @click="copyText(secretPSK, 'psk-input')">
+                {{ copiedTag === 'psk-input' ? t('btnCopied') : t('btnCopyPsk') }}
+              </button>
               <button class="btn" @click="saveSecret">{{ t('btnWritePsk') }}</button>
             </div>
           </div>
@@ -1071,7 +1205,8 @@ onBeforeUnmount(() => {
               <tr>
                 <th>{{ t('colSite') }}</th>
                 <th>{{ t('colPskStatus') }}</th>
-                <th>{{ t('colDigest') }}</th>
+                <th>{{ t('colPskKey') }}</th>
+                <th>{{ t('colAction') }}</th>
               </tr>
             </thead>
             <tbody>
@@ -1082,7 +1217,30 @@ onBeforeUnmount(() => {
                     {{ secretBySite.has(s.id) ? t('pskConfigured') : t('pskUnconfigured') }}
                   </span>
                 </td>
-                <td><code>{{ secretBySite.get(s.id)?.sha256?.slice(0, 12) || '-' }}</code></td>
+                <td style="max-width: 260px;">
+                  <code v-if="revealedPSKs[s.id]" style="word-break: break-all; font-size: 11.5px;">{{ revealedPSKs[s.id] }}</code>
+                  <code v-else-if="secretBySite.has(s.id)" class="muted">SHA256: {{ secretBySite.get(s.id)?.sha256?.slice(0, 12) }}…</code>
+                  <span v-else class="muted">-</span>
+                </td>
+                <td>
+                  <div v-if="secretBySite.has(s.id)" class="row" style="gap: 6px;">
+                    <button
+                      v-if="!revealedPSKs[s.id]"
+                      class="btn btn-secondary btn-sm"
+                      :disabled="revealingSite === s.id"
+                      @click="revealSitePSK(s.id, s.secret_ref)"
+                    >
+                      {{ t('btnShowPsk') }}
+                    </button>
+                    <button v-else class="btn btn-secondary btn-sm" @click="hideSitePSK(s.id)">
+                      {{ t('btnHidePsk') }}
+                    </button>
+                    <button class="btn btn-secondary btn-sm" @click="copySitePSK(s.id, s.secret_ref)">
+                      {{ copiedTag === `row-${s.id}` ? t('btnCopied') : t('btnCopyPsk') }}
+                    </button>
+                  </div>
+                  <span v-else class="muted">-</span>
+                </td>
               </tr>
             </tbody>
           </table>
@@ -1154,10 +1312,12 @@ onBeforeUnmount(() => {
           <button class="btn btn-secondary btn-sm" @click="closeDrawers">{{ t('btnClose') }}</button>
         </div>
         <div class="drawer-body">
+          <div v-if="errMsg" class="alert-banner alert-critical">{{ errMsg }}</div>
+          <div v-if="infoMsg" class="alert-banner alert-ok">{{ infoMsg }}</div>
           <div class="grid-2">
             <div class="field">
               <label>{{ t('siteId') }}</label>
-              <input v-model="editingSite.id" class="input" placeholder="ob-venue-1" />
+              <input v-model="editingSite.id" class="input" placeholder="ob-venue-1" @input="onEditSiteIdInput" />
             </div>
             <div class="field">
               <label>{{ t('siteName') }}</label>
@@ -1237,9 +1397,57 @@ onBeforeUnmount(() => {
             </div>
           </div>
 
-          <div class="field">
-            <label>{{ t('secretPath') }}</label>
-            <input v-model="editingSite.secret_ref" class="input" />
+          <div class="muted" style="font-size: 12px; margin: -4px 0 12px; padding: 8px 10px; border-radius: 6px; background: rgba(59, 130, 246, 0.08); border: 1px solid rgba(59, 130, 246, 0.2);">
+            {{ selectorModeHint(editingSite.selector_mode) }}
+          </div>
+
+          <div class="sub-card" style="padding: 12px; margin-bottom: 12px;">
+            <div class="row" style="margin-bottom: 8px;">
+              <strong style="font-size: 13px;">{{ t('pskTitle') }}</strong>
+              <span class="pill" :class="secretBySite.has(editingSite.id) ? 'pill-ok' : 'pill-warn'">
+                {{ secretBySite.has(editingSite.id) ? t('pskConfigured') : t('pskUnconfigured') }}
+              </span>
+              <div class="spacer"></div>
+              <button
+                v-if="secretBySite.has(editingSite.id)"
+                class="btn btn-secondary btn-sm"
+                :disabled="revealingSite === editingSite.id"
+                @click="revealSitePSK(editingSite.id, editingSite.secret_ref)"
+              >
+                {{ t('btnShowPsk') }}
+              </button>
+            </div>
+            <div class="field" style="margin-bottom: 8px;">
+              <input
+                v-model="editingSite.psk_draft"
+                class="input"
+                type="text"
+                style="font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px;"
+                :placeholder="t('pskHexPh')"
+              />
+            </div>
+            <div class="row" style="margin-bottom: 8px;">
+              <button class="btn btn-secondary btn-sm" @click="editingSite.psk_draft = generateHex64()">{{ t('btnRandomGen') }}</button>
+              <button
+                class="btn btn-secondary btn-sm"
+                :disabled="!editingSite.psk_draft"
+                @click="copyText(editingSite.psk_draft || '', 'drawer-psk')"
+              >
+                {{ copiedTag === 'drawer-psk' ? t('btnCopied') : t('btnCopyPsk') }}
+              </button>
+              <button
+                class="btn btn-sm"
+                :disabled="!editingSite.psk_draft || !editingSite.id"
+                @click="writeSitePSK(editingSite.id, editingSite.secret_ref, editingSite.psk_draft || '')"
+              >
+                {{ t('btnWritePsk') }}
+              </button>
+            </div>
+            <div class="muted" style="font-size: 11.5px; margin-bottom: 8px;">{{ t('pskDrawerHint') }}</div>
+            <div class="field" style="margin-bottom: 0;">
+              <label>{{ t('secretPath') }}</label>
+              <input v-model="editingSite.secret_ref" class="input" />
+            </div>
           </div>
 
           <div style="margin-top: 12px;">
@@ -1282,6 +1490,8 @@ onBeforeUnmount(() => {
           <button class="btn btn-secondary btn-sm" @click="closeDrawers">{{ t('btnClose') }}</button>
         </div>
         <div class="drawer-body">
+          <div v-if="errMsg" class="alert-banner alert-critical">{{ errMsg }}</div>
+          <div v-if="infoMsg" class="alert-banner alert-ok">{{ infoMsg }}</div>
           <div class="grid-2">
             <div class="field">
               <label>{{ t('cfgId') }}</label>
