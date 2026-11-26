@@ -355,8 +355,8 @@ func (d *Daemon) HandleRPC(ctx context.Context, method string, raw json.RawMessa
 		if _, err := alert.ValidateFeishuTarget(targetURL, d.cfg.AllowLoopback); err != nil {
 			return nil, err
 		}
-		msg := fmt.Sprintf("[测试] VPN 网关飞书告警通道正常\n操作人: %s\n时间: %s UTC", p.Operator, time.Now().UTC().Format(time.RFC3339))
-		if err := alert.DeliverFeishu(ctx, nil, targetURL, []byte(secret), msg); err != nil {
+		card := alert.BuildTestFeishuCard(p.Operator, "", "", time.Now())
+		if err := alert.DeliverFeishuCard(ctx, nil, targetURL, []byte(secret), card); err != nil {
 			return nil, err
 		}
 		return map[string]any{"status": "PASS", "masked_url": alert.MaskFeishuURL(targetURL)}, nil

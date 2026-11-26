@@ -47,6 +47,43 @@ func TestFeishuValidationSigningAndRetryDelivery(t *testing.T) {
 	if calls.Load() != 2 {
 		t.Fatalf("expected 2 attempts (1 retry), got %d", calls.Load())
 	}
+
+	// Verify rich interactive card delivery + header color mapping
+	var gotCard map[string]any
+	cardSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if body["msg_type"] != "interactive" || body["sign"] == "" {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		gotCard, _ = body["card"].(map[string]any)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"code":0,"msg":"success"}`))
+	}))
+	defer cardSrv.Close()
+
+	testCard := BuildTestFeishuCard("admin", "hub-01", "", time.Unix(1_700_000_000, 0))
+	if err := DeliverFeishuCard(context.Background(), cardSrv.Client(), cardSrv.URL, []byte("secret-key"), testCard); err != nil {
+		t.Fatalf("DeliverFeishuCard failed: %v", err)
+	}
+	hdr, _ := gotCard["header"].(map[string]any)
+	if hdr["template"] != "blue" {
+		t.Fatalf("expected blue header on test card, got %+v", hdr)
+	}
+
+	critCard := BuildAlertFeishuCard(storage.AlertHistoryRecord{
+		AlertName: "IpsecChildDown", Status: "FIRING", Severity: "critical", SiteID: "venue-1", RootCause: "IPSEC_SA_EVENT",
+	})
+	if critCard["header"].(map[string]any)["template"] != "red" {
+		t.Fatalf("expected red header on critical FIRING alert card")
+	}
+	recCard := BuildAlertFeishuCard(storage.AlertHistoryRecord{
+		AlertName: "IpsecChildDown", Status: "RECOVERED", Severity: "info", SiteID: "venue-1", RootCause: "VPN_HEALTHY_APP_SUSPECT",
+	})
+	if recCard["header"].(map[string]any)["template"] != "green" {
+		t.Fatalf("expected green header on RECOVERED alert card")
+	}
 }
 
 func TestAlertEngineDedupAntiFalseRecoveryAndSourceTagging(t *testing.T) {

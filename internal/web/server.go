@@ -1353,8 +1353,12 @@ func (s *Server) handleFeishuTest(w http.ResponseWriter, r *http.Request, sess s
 		writeJSONResp(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
-	msg := fmt.Sprintf("[测试] VPN 网关飞书告警通道正常\n操作人: %s\n时间: %s UTC", sess.Username, time.Now().UTC().Format(time.RFC3339))
-	if err := alert.DeliverFeishu(r.Context(), nil, req.WebhookURL, []byte(req.Secret), msg); err != nil {
+	hostLabel := ""
+	if len(s.cfg.PublicIPs) > 0 {
+		hostLabel = s.cfg.PublicIPs[0]
+	}
+	card := alert.BuildTestFeishuCard(sess.Username, hostLabel, "", time.Now())
+	if err := alert.DeliverFeishuCard(r.Context(), nil, req.WebhookURL, []byte(req.Secret), card); err != nil {
 		writeJSONResp(w, http.StatusBadGateway, map[string]any{"error": err.Error()})
 		return
 	}

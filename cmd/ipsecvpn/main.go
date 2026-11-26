@@ -32,7 +32,7 @@ import (
 	webassets "github.com/yikkrrtykj/event-ipsec-hub/web"
 )
 
-var Version = "4.0.3"
+var Version = "4.0.4"
 
 const (
 	DefaultProfiles = "/etc/ipsecvpn/profiles"
@@ -726,19 +726,10 @@ func runAlert(args []string, stdout, stderr io.Writer) int {
 	if _, err := alert.ValidateFeishuTarget(*webhook, false); err != nil {
 		return emitError(err, false, true, stdout, stderr)
 	}
-	text := *message
-	if text == "" {
-		cst := time.FixedZone("Asia/Shanghai", 8*3600)
-		now := time.Now()
-		text = fmt.Sprintf(
-			"[测试] event-ipsec-hub V4 飞书告警通道连通性验证成功\n时间: %s UTC / %s Asia/Shanghai\n来源: self_hosted_hub",
-			now.UTC().Format(time.RFC3339),
-			now.In(cst).Format(time.RFC3339),
-		)
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := alert.DeliverFeishu(ctx, nil, *webhook, []byte(*secret), text); err != nil {
+	card := alert.BuildTestFeishuCard("cli", "", *message, time.Now())
+	if err := alert.DeliverFeishuCard(ctx, nil, *webhook, []byte(*secret), card); err != nil {
 		return emitError(err, false, false, stdout, stderr)
 	}
 	fmt.Fprintf(stdout, "PASS Feishu test alert delivered (%s)\n", alert.MaskFeishuURL(*webhook))
