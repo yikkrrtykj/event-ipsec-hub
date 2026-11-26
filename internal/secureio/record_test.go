@@ -25,6 +25,28 @@ func TestRecordEnvelopeIntegrity(t *testing.T) {
 	if _, err := UnmarshalRecord(tampered); err == nil {
 		t.Fatal("expected integrity check failure for tampered record")
 	}
+
+	// Regression: Go structs with non-alphabetical field order must round-trip cleanly!
+	type nested struct {
+		Zebra string `json:"zebra"`
+		Alpha int    `json:"alpha"`
+	}
+	type sampleStruct struct {
+		Token  string            `json:"token"`
+		Binary string            `json:"binary"`
+		Nested map[string]nested `json:"nested"`
+	}
+	sraw, err := MarshalRecord(sampleStruct{
+		Token:  "abc",
+		Binary: "/usr/local/sbin/ipsecvpn",
+		Nested: map[string]nested{"b": {Zebra: "z", Alpha: 1}},
+	})
+	if err != nil {
+		t.Fatalf("MarshalRecord(struct): %v", err)
+	}
+	if _, err := UnmarshalRecord(sraw); err != nil {
+		t.Fatalf("UnmarshalRecord(struct) failed integrity check: %v", err)
+	}
 }
 
 func TestSecretRefAndPSKValidation(t *testing.T) {

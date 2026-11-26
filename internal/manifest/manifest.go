@@ -1,6 +1,7 @@
 package manifest
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -29,10 +30,20 @@ func Digest(data []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// CanonicalJSON serializes any JSON-compatible value deterministically with sorted keys.
+// CanonicalJSON serializes any JSON-compatible value deterministically with all object keys
+// recursively sorted lexicographically, including nested Go structs.
 func CanonicalJSON(v any) ([]byte, error) {
-	// Go's encoding/json sorts map keys lexicographically and produces compact JSON without whitespace.
-	return json.Marshal(v)
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return nil, err
+	}
+	var generic any
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	if err := dec.Decode(&generic); err != nil {
+		return nil, err
+	}
+	return json.Marshal(generic)
 }
 
 func ChildRekeySeconds(lifetime int) int {
