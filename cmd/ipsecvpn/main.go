@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/yikkrrtykj/event-ipsec-hub/internal/agent"
+	"github.com/yikkrrtykj/event-ipsec-hub/internal/alert"
 	"github.com/yikkrrtykj/event-ipsec-hub/internal/diagnostics"
 	"github.com/yikkrrtykj/event-ipsec-hub/internal/failover"
 	"github.com/yikkrrtykj/event-ipsec-hub/internal/handoff"
@@ -87,6 +88,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runProbe(rest, stdout, stderr)
 	case "monitor":
 		return runMonitor(rest, stdout, stderr)
+	case "alert":
+		return runAlert(rest, stdout, stderr)
 	case "agent":
 		return runAgent(rest, stdout, stderr)
 	case "web":
@@ -103,7 +106,7 @@ func printUsage(w io.Writer) {
 	fmt.Fprintln(w, "Commands: profiles list | validate | check | status | doctor | plan | render | export-peer")
 	fmt.Fprintln(w, "          install | apply | backup | rollback | uninstall | initiate | rekey | reconnect")
 	fmt.Fprintln(w, "          failover status|evaluate|switch-backup|failback|set-role | probe respond|run")
-	fmt.Fprintln(w, "          monitor validate|timeline|metrics | agent serve | web serve | boot guard|restore | version")
+	fmt.Fprintln(w, "          monitor validate|timeline|metrics | alert test-feishu | agent serve | web serve | boot guard|restore | version")
 }
 
 func writeJSON(w io.Writer, v any) {
@@ -703,6 +706,41 @@ func runMonitor(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "unknown monitor subcommand: %s\n", sub)
 		return 2
 	}
+}
+
+func runAlert(args []string, stdout, stderr io.Writer) int {
+	if len(args) == 0 || args[0] != "test-feishu" {
+		fmt.Fprintln(stderr, "usage: ipsecvpn alert test-feishu --webhook URL [--secret SECRET] [--message TEXT]")
+		return 2
+	}
+	fs := flag.NewFlagSet("alert test-feishu", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	webhook := fs.String("webhook", "", "official Feishu bot webhook URL")
+	secret := fs.String("secret", "", "optional Feishu signing secret")
+	message := fs.String("message", "", "optional custom message text")
+	if err := fs.Parse(args[1:]); err != nil {
+		return 2
+	}
+	if _, err := alert.ValidateFeishuTarget(*webhook, false); err != nil {
+		return emitError(err, false, true, stdout, stderr)
+	}
+	text := *message
+	if text == "" {
+		cst := time.FixedZone("Asia/Shanghai", 8*3600)
+		now := time.Now()
+		text = fmt.Sprintf(
+			"[测试] event-ipsec-hub V4 飞书告警通道连通性验证成功\n时间: %s UTC / %s Asia/Shanghai\n来源: self_hosted_hub",
+			now.UTC().Format(time.RFC3339),
+			now.In(cst).Format(time.RFC3339),
+		)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := alert.DeliverFeishu(ctx, nil, *webhook, []byte(*secret), text); err != nil {
+		return emitError(err, false, false, stdout, stderr)
+	}
+	fmt.Fprintf(stdout, "PASS Feishu test alert delivered (%s)\n", alert.MaskFeishuURL(*webhook))
+	return 0
 }
 
 func runAgent(args []string, stdout, stderr io.Writer) int {

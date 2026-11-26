@@ -96,6 +96,76 @@ func ProbeOuter(ctx context.Context, target, sourceIP string, count int, disable
 	}
 }
 
+// InnerProbeResult captures Layer 4 (end-to-end encrypted LAN) probe metrics.
+type InnerProbeResult struct {
+	State int
+	RTTMs float64
+	P95Ms float64
+	Loss  float64
+}
+
+// ProbeInner runs one bounded Layer 4 probe (icmp or authenticated udp_echo) across an established tunnel.
+func ProbeInner(ctx context.Context, protocol, target string, port int, localSource, keyFile string) InnerProbeResult {
+	if target == "" {
+		return InnerProbeResult{State: StateUnknown}
+	}
+	switch strings.ToLower(strings.TrimSpace(protocol)) {
+	case "icmp":
+		res := ProbeOuter(ctx, target, localSource, 3, false)
+		return InnerProbeResult{
+			State: res.State,
+			RTTMs: res.RTTMs,
+			P95Ms: res.RTTMs,
+			Loss:  res.Loss,
+		}
+	case "udp_echo":
+		if keyFile == "" {
+			keyFile = "/etc/ipsecvpn/secrets/monitor-probe"
+		}
+		key, err := os.ReadFile(keyFile)
+		if err != nil || len(key) != 32 || port < 1024 || port >= 65535 || localSource == "" {
+			return InnerProbeResult{State: StateUnknown}
+		}
+		localAddr, err := ValidateLANEndpoint(localSource, 0+41501)
+		if err != nil {
+			return InnerProbeResult{State: StateUnknown}
+		}
+		peerAddr, err := ValidateLANEndpoint(target, port)
+		if err != nil {
+			return InnerProbeResult{State: StateUnknown}
+		}
+		receipts, err := ProbeUDP(key, localAddr, peerAddr, 3, 500*time.Millisecond)
+		if err != nil || len(receipts) == 0 {
+			return InnerProbeResult{State: StateDown, Loss: 1.0}
+		}
+		var okRtts []float64
+		for _, r := range receipts {
+			if r.RTT != nil {
+				okRtts = append(okRtts, *r.RTT*1000.0)
+			}
+		}
+		loss := float64(len(receipts)-len(okRtts)) / float64(len(receipts))
+		if len(okRtts) == 0 {
+			return InnerProbeResult{State: StateDown, Loss: 1.0}
+		}
+		var sum, maxRtt float64
+		for _, v := range okRtts {
+			sum += v
+			if v > maxRtt {
+				maxRtt = v
+			}
+		}
+		return InnerProbeResult{
+			State: StateUp,
+			RTTMs: sum / float64(len(okRtts)),
+			P95Ms: maxRtt,
+			Loss:  loss,
+		}
+	default:
+		return InnerProbeResult{State: StateUnknown}
+	}
+}
+
 // ParseXFRMStat parses Linux `/proc/net/xfrm_stat` counters into a map.
 func ParseXFRMStat(content string) map[string]uint64 {
 	res := make(map[string]uint64)

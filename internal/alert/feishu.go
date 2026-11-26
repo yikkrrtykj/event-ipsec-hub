@@ -11,12 +11,98 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/yikkrrtykj/event-ipsec-hub/internal/secureio"
+	"github.com/yikkrrtykj/event-ipsec-hub/internal/storage"
 )
+
+const DefaultAlertChannelFile = "/etc/ipsecvpn/secrets/feishu-channel.json"
+
+// FeishuChannelConfig stores the persisted Feishu notification channel outside SQLite (root 0600).
+type FeishuChannelConfig struct {
+	Enabled    bool   `json:"enabled"`
+	WebhookURL string `json:"webhook_url"`
+	Secret     string `json:"secret,omitempty"`
+}
+
+// MaskFeishuURL returns a safe display summary of an official Feishu webhook URL without leaking the full token.
+func MaskFeishuURL(rawURL string) string {
+	u, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || u.Path == "" {
+		return ""
+	}
+	parts := strings.Split(strings.TrimSuffix(u.Path, "/"), "/")
+	token := parts[len(parts)-1]
+	if len(token) > 10 {
+		token = token[:4] + "****" + token[len(token)-4:]
+	} else if len(token) > 0 {
+		token = "****"
+	}
+	parts[len(parts)-1] = token
+	return fmt.Sprintf("%s://%s%s", u.Scheme, u.Host, strings.Join(parts, "/"))
+}
+
+// SaveFeishuChannel atomically writes the channel config to a mode-0600 file (never inside SQLite).
+func SaveFeishuChannel(path string, cfg FeishuChannelConfig, allowLoopback bool) error {
+	if path == "" {
+		path = DefaultAlertChannelFile
+	}
+	if cfg.WebhookURL != "" {
+		if _, err := ValidateFeishuTarget(cfg.WebhookURL, allowLoopback); err != nil {
+			return err
+		}
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return err
+	}
+	data = append(data, '\n')
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+// LoadFeishuChannel loads the persisted Feishu channel file if present.
+func LoadFeishuChannel(path string) (FeishuChannelConfig, bool, error) {
+	if path == "" {
+		path = DefaultAlertChannelFile
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return FeishuChannelConfig{}, false, nil
+		}
+		return FeishuChannelConfig{}, false, err
+	}
+	var cfg FeishuChannelConfig
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		return FeishuChannelConfig{}, false, err
+	}
+	return cfg, true, nil
+}
+
+// NewFeishuSender builds a live alert.Sender backed by DeliverFeishu.
+func NewFeishuSender(cfg FeishuChannelConfig, client *http.Client) Sender {
+	if !cfg.Enabled || strings.TrimSpace(cfg.WebhookURL) == "" {
+		return nil
+	}
+	urlStr := strings.TrimSpace(cfg.WebhookURL)
+	sec := []byte(cfg.Secret)
+	return SenderFunc(func(ctx context.Context, rec storage.AlertHistoryRecord) error {
+		return DeliverFeishu(ctx, client, urlStr, sec, rec.Message)
+	})
+}
 
 var (
 	feishuPathRE = regexp.MustCompile(`^/open-apis/bot/v2/hook/[A-Za-z0-9-]{20,80}$`)

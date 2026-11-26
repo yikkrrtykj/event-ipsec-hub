@@ -23,30 +23,40 @@ import (
 
 // Config controls the privileged root Hub Agent daemon.
 type Config struct {
-	SocketPath    string
-	SocketGID     int
-	DBPath        string
-	Interval      time.Duration
-	RetentionDays int
-	AllowedUIDs   map[uint32]bool
+	SocketPath       string
+	SocketGID        int
+	DBPath           string
+	AlertChannelFile string
+	Interval         time.Duration
+	RetentionDays    int
+	AllowedUIDs      map[uint32]bool
+	AllowLoopback    bool // test-only override for loopback mock Feishu server
 }
 
 // Daemon runs as root on Linux, owning strongSwan VICI, XFRM, nftables, secret files,
-// 4-layer telemetry sampling, built-in alerting, and the SO_PEERCRED Unix Socket RPC server.
+// 4-layer telemetry sampling, VICI event watching, built-in alerting, and the SO_PEERCRED RPC server.
 type Daemon struct {
-	cfg        Config
-	store      *storage.Store
-	host       host.Runner
-	alertEng   *alert.Engine
-	mu         sync.Mutex
-	prevXFRM   map[string]uint64
-	prevRxTx   map[string][3]uint64 // tsMs, rxBytes, txBytes
-	rekeyTimes map[string][]int64
+	cfg           Config
+	store         *storage.Store
+	host          host.Runner
+	alertEng      *alert.Engine
+	mu            sync.Mutex
+	prevXFRM      map[string]uint64
+	prevNFTDrops  uint64
+	hasNFTBase    bool
+	prevRxTx      map[string][3]uint64 // tsMs, rxBytes, txBytes
+	rekeyTimes    map[string][]int64
+	connToSite    map[string]string
+	watcherPID    int
+	watcherCancel context.CancelFunc
 }
 
 func New(cfg Config, store *storage.Store, h host.Runner) *Daemon {
 	if cfg.SocketPath == "" {
 		cfg.SocketPath = rpc.DefaultSocketPath
+	}
+	if cfg.AlertChannelFile == "" {
+		cfg.AlertChannelFile = alert.DefaultAlertChannelFile
 	}
 	if cfg.Interval <= 0 {
 		cfg.Interval = 15 * time.Second
@@ -57,7 +67,7 @@ func New(cfg Config, store *storage.Store, h host.Runner) *Daemon {
 	if h == nil {
 		h = host.NewOSHost()
 	}
-	return &Daemon{
+	d := &Daemon{
 		cfg:        cfg,
 		store:      store,
 		host:       h,
@@ -65,7 +75,73 @@ func New(cfg Config, store *storage.Store, h host.Runner) *Daemon {
 		prevXFRM:   make(map[string]uint64),
 		prevRxTx:   make(map[string][3]uint64),
 		rekeyTimes: make(map[string][]int64),
+		connToSite: make(map[string]string),
 	}
+	d.reloadAlertSender()
+	return d
+}
+
+func (d *Daemon) reloadAlertSender() {
+	cfg, ok, err := alert.LoadFeishuChannel(d.cfg.AlertChannelFile)
+	if err != nil || !ok {
+		d.alertEng.SetSender(nil)
+		return
+	}
+	d.alertEng.SetSender(alert.NewFeishuSender(cfg, nil))
+}
+
+// OnVICIEvent persists a real-time strongSwan VICI lifecycle event and tracks recent rekeys.
+func (d *Daemon) OnVICIEvent(ev storage.TimelineEvent) {
+	if ev.SiteID == "" && ev.LinkID != "" {
+		d.mu.Lock()
+		if s, ok := d.connToSite[ev.LinkID]; ok {
+			ev.SiteID = s
+		}
+		d.mu.Unlock()
+	}
+	if ev.Category == "IKE_REKEY" || ev.Category == "CHILD_REKEY" {
+		if ev.SiteID != "" {
+			d.mu.Lock()
+			d.rekeyTimes[ev.SiteID] = append(d.rekeyTimes[ev.SiteID], ev.TsMs)
+			d.mu.Unlock()
+		}
+	}
+	if d.store != nil {
+		_ = d.store.InsertTimelineEvent(ev)
+	}
+}
+
+func (d *Daemon) ensureVICIWatcher(ctx context.Context, pid int, m *manifest.DeploymentManifest) {
+	if pid <= 0 || m == nil {
+		return
+	}
+	mapping := make(map[string]string, len(m.Links))
+	for _, l := range m.Links {
+		mapping[l.Name()] = l.SiteID
+	}
+	d.mu.Lock()
+	d.connToSite = mapping
+	if d.watcherPID == pid {
+		d.mu.Unlock()
+		return
+	}
+	if d.watcherCancel != nil {
+		d.watcherCancel()
+	}
+	watchCtx, cancel := context.WithCancel(ctx)
+	d.watcherPID = pid
+	d.watcherCancel = cancel
+	d.mu.Unlock()
+
+	go func(targetPID int, snapMap map[string]string) {
+		_ = telemetry.WatchVICIEvents(watchCtx, targetPID, snapMap, d.OnVICIEvent)
+		d.mu.Lock()
+		if d.watcherPID == targetPID {
+			d.watcherPID = 0
+			d.watcherCancel = nil
+		}
+		d.mu.Unlock()
+	}(pid, mapping)
 }
 
 // HandleRPC dispatches strictly typed privileged requests from the non-root Web process.
@@ -230,8 +306,62 @@ func (d *Daemon) HandleRPC(ctx context.Context, method string, raw json.RawMessa
 		}
 		return res, err
 
+	case rpc.MethodSaveAlertChannel:
+		var p rpc.SaveAlertChannelParams
+		if err := json.Unmarshal(raw, &p); err != nil {
+			return nil, secureio.Stop("Invalid alert channel parameters.")
+		}
+		existing, _, _ := alert.LoadFeishuChannel(d.cfg.AlertChannelFile)
+		cfg := alert.FeishuChannelConfig{
+			Enabled:    p.Enabled,
+			WebhookURL: p.WebhookURL,
+			Secret:     p.Secret,
+		}
+		if cfg.WebhookURL == "" && existing.WebhookURL != "" {
+			cfg.WebhookURL = existing.WebhookURL
+		}
+		if p.KeepSecret && cfg.Secret == "" {
+			cfg.Secret = existing.Secret
+		}
+		if err := alert.SaveFeishuChannel(d.cfg.AlertChannelFile, cfg, d.cfg.AllowLoopback); err != nil {
+			return nil, err
+		}
+		d.reloadAlertSender()
+		return map[string]any{
+			"status":     "PASS",
+			"configured": cfg.WebhookURL != "",
+			"enabled":    cfg.Enabled,
+			"masked_url": alert.MaskFeishuURL(cfg.WebhookURL),
+			"has_secret": cfg.Secret != "",
+		}, nil
+
+	case rpc.MethodTestAlertChannel:
+		var p rpc.TestAlertChannelParams
+		if err := json.Unmarshal(raw, &p); err != nil {
+			return nil, secureio.Stop("Invalid alert test parameters.")
+		}
+		targetURL := p.WebhookURL
+		secret := p.Secret
+		if targetURL == "" {
+			existing, ok, err := alert.LoadFeishuChannel(d.cfg.AlertChannelFile)
+			if err != nil || !ok || existing.WebhookURL == "" {
+				return nil, secureio.Stop("Feishu channel is not configured.")
+			}
+			targetURL = existing.WebhookURL
+			if secret == "" {
+				secret = existing.Secret
+			}
+		}
+		if _, err := alert.ValidateFeishuTarget(targetURL, d.cfg.AllowLoopback); err != nil {
+			return nil, err
+		}
+		msg := fmt.Sprintf("[测试] VPN 网关飞书告警通道正常\n操作人: %s\n时间: %s UTC", p.Operator, time.Now().UTC().Format(time.RFC3339))
+		if err := alert.DeliverFeishu(ctx, nil, targetURL, []byte(secret), msg); err != nil {
+			return nil, err
+		}
+		return map[string]any{"status": "PASS", "masked_url": alert.MaskFeishuURL(targetURL)}, nil
+
 	case rpc.MethodSyncAllowlist:
-		// Guarded no-op placeholder until nftables management chain is explicitly installed.
 		var p rpc.SyncAllowlistParams
 		if err := json.Unmarshal(raw, &p); err != nil {
 			return nil, secureio.Stop("Invalid allowlist parameters.")
@@ -243,6 +373,93 @@ func (d *Daemon) HandleRPC(ctx context.Context, method string, raw json.RawMessa
 	}
 }
 
+// ComputeNFTDropDelta inspects the owned nftables table and computes positive drop counter delta.
+func (d *Daemon) ComputeNFTDropDelta() uint64 {
+	if d.host == nil {
+		return 0
+	}
+	items, err := d.host.NFT()
+	if err != nil {
+		return 0
+	}
+	var owned []map[string]any
+	for _, it := range items {
+		rule, ok := it["rule"].(map[string]any)
+		if !ok {
+			continue
+		}
+		if fmt.Sprint(rule["table"]) == manifest.Table && fmt.Sprint(rule["family"]) == "ip" {
+			owned = append(owned, it)
+		}
+	}
+	cur := telemetry.SumNFTDropCounters(owned)
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if !d.hasNFTBase {
+		d.prevNFTDrops = cur
+		d.hasNFTBase = true
+		return 0
+	}
+	var delta uint64
+	if cur > d.prevNFTDrops {
+		delta = cur - d.prevNFTDrops
+	}
+	d.prevNFTDrops = cur
+	return delta
+}
+
+type activeProbeSpec struct {
+	Protocol string
+	Target   string
+	Port     int
+}
+
+func extractPrimaryProbes(active *live.ActiveRecord) map[string]activeProbeSpec {
+	out := make(map[string]activeProbeSpec)
+	if active == nil || active.Profile == nil {
+		return out
+	}
+	mon, ok := active.Profile["monitoring"].(map[string]any)
+	if !ok {
+		return out
+	}
+	if en, ok := mon["enabled"].(bool); ok && !en {
+		return out
+	}
+	rawProbes, ok := mon["probes"].([]any)
+	if !ok {
+		return out
+	}
+	for _, item := range rawProbes {
+		pm, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		path := fmt.Sprint(pm["path"])
+		if path != "" && path != "primary" {
+			continue
+		}
+		siteID := fmt.Sprint(pm["site_id"])
+		target := fmt.Sprint(pm["target"])
+		proto := fmt.Sprint(pm["protocol"])
+		port := 0
+		switch pv := pm["port"].(type) {
+		case float64:
+			port = int(pv)
+		case int:
+			port = pv
+		case json.Number:
+			if v, err := pv.Int64(); err == nil {
+				port = int(v)
+			}
+		}
+		if siteID != "" && target != "" && proto != "" {
+			out[siteID] = activeProbeSpec{Protocol: proto, Target: target, Port: port}
+		}
+	}
+	return out
+}
+
 // CollectOnce performs one 4-layer synchronized telemetry collection cycle and persists results.
 func (d *Daemon) CollectOnce(ctx context.Context) error {
 	if d.store == nil {
@@ -252,10 +469,12 @@ func (d *Daemon) CollectOnce(ctx context.Context) error {
 	if err != nil {
 		return nil // Not installed yet; skip quietly.
 	}
-	active, m, liveSnap, _, err := diagnostics.InspectOwned(d.host, inst, false)
+	active, m, liveSnap, pid, err := diagnostics.InspectOwned(d.host, inst, false)
 	if err != nil || m == nil || active == nil {
 		return err
 	}
+	d.ensureVICIWatcher(ctx, pid, m)
+
 	now := time.Now().UTC()
 	nowMs := now.UnixMilli()
 
@@ -265,6 +484,19 @@ func (d *Daemon) CollectOnce(ctx context.Context) error {
 	d.prevXFRM = curXFRM
 	d.mu.Unlock()
 
+	nftDelta := d.ComputeNFTDropDelta()
+	if nftDelta > 0 {
+		_ = d.store.InsertTimelineEvent(storage.TimelineEvent{
+			TsMs:     nowMs,
+			Layer:    "L3_XFRM",
+			Category: "ACL_DROP",
+			Severity: "warning",
+			Source:   "self_hosted_hub",
+			Title:    fmt.Sprintf("防火墙转发策略拦截增量 +%d 包", nftDelta),
+		})
+	}
+
+	innerProbes := extractPrimaryProbes(active)
 	rules, _ := d.store.ListAlertRules()
 	recentEvents, _ := d.store.QueryTimelineEvents("", nowMs-60_000, nowMs+1000, 100)
 
@@ -301,6 +533,12 @@ func (d *Daemon) CollectOnce(ctx context.Context) error {
 		rekeys := d.countRecentRekeys(l.SiteID, nowMs)
 		d.mu.Unlock()
 
+		// Layer 4 end-to-end inner probe (if configured for this site in active profile)
+		l4Res := telemetry.InnerProbeResult{State: telemetry.StateUnknown}
+		if ps, ok := innerProbes[l.SiteID]; ok {
+			l4Res = telemetry.ProbeInner(ctx, ps.Protocol, ps.Target, ps.Port, "", "")
+		}
+
 		sample := storage.MetricSample{
 			TsMs:           nowMs,
 			EventID:        m.EventID,
@@ -320,7 +558,11 @@ func (d *Daemon) CollectOnce(ctx context.Context) error {
 			L3RxBytes:      rxBytes,
 			L3TxBytes:      txBytes,
 			L3XFRMErrDelta: xfrmDelta,
-			L4UDPState:     telemetry.StateUnknown,
+			L3NFTDropDelta: nftDelta,
+			L4UDPState:     l4Res.State,
+			L4UDPRTTMs:     l4Res.RTTMs,
+			L4UDPP95Ms:     l4Res.P95Ms,
+			L4UDPLoss:      l4Res.Loss,
 		}
 		diag := telemetry.Diagnose(sample, recentEvents)
 		sample.RootCause = diag.Code

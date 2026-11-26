@@ -154,6 +154,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/alerts/rules", s.requireAuth(s.handleListAlertRules))
 	mux.HandleFunc("PUT /api/v1/alerts/rules", s.requireAdmin(s.handleUpsertAlertRule))
 	mux.HandleFunc("GET /api/v1/alerts/history", s.requireAuth(s.handleAlertHistory))
+	mux.HandleFunc("GET /api/v1/alerts/channel", s.requireAuth(s.handleGetAlertChannel))
+	mux.HandleFunc("PUT /api/v1/alerts/channel", s.requireAdmin(s.handleSaveAlertChannel))
 	mux.HandleFunc("POST /api/v1/alerts/feishu/test", s.requireAdmin(s.handleFeishuTest))
 
 	// Audit, Security Allowlist, Tournament Expiry & #14 Sign-off Checklist
@@ -1184,6 +1186,88 @@ func (s *Server) handleAlertHistory(w http.ResponseWriter, _ *http.Request, _ se
 	writeJSONResp(w, http.StatusOK, map[string]any{"history": hist})
 }
 
+func (s *Server) handleGetAlertChannel(w http.ResponseWriter, _ *http.Request, _ sessionEntry) {
+	meta := map[string]any{
+		"configured": false,
+		"enabled":    false,
+		"masked_url": "",
+		"has_secret": false,
+	}
+	if raw, ok, _ := s.store.GetKV("feishu_channel_meta"); ok && raw != "" {
+		_ = json.Unmarshal([]byte(raw), &meta)
+	}
+	writeJSONResp(w, http.StatusOK, meta)
+}
+
+func (s *Server) handleSaveAlertChannel(w http.ResponseWriter, r *http.Request, sess sessionEntry) {
+	var req struct {
+		Enabled    bool   `json:"enabled"`
+		WebhookURL string `json:"webhook_url"`
+		Secret     string `json:"secret"`
+		KeepSecret bool   `json:"keep_secret"`
+	}
+	if err := decodeJSONBody(r, &req); err != nil {
+		writeJSONResp(w, http.StatusBadRequest, map[string]any{"error": "Invalid JSON."})
+		return
+	}
+	if req.WebhookURL != "" {
+		if _, err := alert.ValidateFeishuTarget(req.WebhookURL, s.cfg.DemoMode); err != nil {
+			writeJSONResp(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+			return
+		}
+	}
+	meta := map[string]any{
+		"configured": req.WebhookURL != "",
+		"enabled":    req.Enabled,
+		"masked_url": alert.MaskFeishuURL(req.WebhookURL),
+		"has_secret": req.Secret != "",
+		"updated_at": time.Now().UnixMilli(),
+	}
+	if s.agent != nil {
+		var out map[string]any
+		if err := s.agent.Call(r.Context(), rpc.MethodSaveAlertChannel, rpc.SaveAlertChannelParams{
+			Enabled:    req.Enabled,
+			WebhookURL: req.WebhookURL,
+			Secret:     req.Secret,
+			KeepSecret: req.KeepSecret,
+			Operator:   sess.Username,
+		}, &out); err != nil {
+			writeJSONResp(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
+			return
+		}
+		meta["configured"] = out["configured"]
+		meta["enabled"] = out["enabled"]
+		meta["masked_url"] = out["masked_url"]
+		meta["has_secret"] = out["has_secret"]
+	} else if !s.cfg.DemoMode {
+		writeJSONResp(w, http.StatusServiceUnavailable, map[string]any{"error": "Gateway Agent is required to persist root-protected Feishu channel credentials."})
+		return
+	} else {
+		// In demo mode, preserve existing masked_url / has_secret if left blank
+		if raw, ok, _ := s.store.GetKV("feishu_channel_meta"); ok && raw != "" {
+			var prev map[string]any
+			if json.Unmarshal([]byte(raw), &prev) == nil {
+				if req.WebhookURL == "" && prev["masked_url"] != "" {
+					meta["configured"] = prev["configured"]
+					meta["masked_url"] = prev["masked_url"]
+				}
+				if req.KeepSecret && req.Secret == "" {
+					meta["has_secret"] = prev["has_secret"]
+				}
+			}
+		}
+	}
+	// Never write plaintext webhook URL or secret into SQLite — store masked metadata only.
+	rawMeta, _ := json.Marshal(meta)
+	_ = s.store.SetKV("feishu_channel_meta", string(rawMeta))
+	_ = s.store.RecordAudit(sess.Username, extractClientIP(r.RemoteAddr), "save_feishu_channel", "feishu", "PASS", map[string]any{
+		"enabled":    meta["enabled"],
+		"masked_url": meta["masked_url"],
+		"has_secret": meta["has_secret"],
+	})
+	writeJSONResp(w, http.StatusOK, meta)
+}
+
 func (s *Server) handleFeishuTest(w http.ResponseWriter, r *http.Request, sess sessionEntry) {
 	var req struct {
 		WebhookURL string `json:"webhook_url"`
@@ -1191,6 +1275,22 @@ func (s *Server) handleFeishuTest(w http.ResponseWriter, r *http.Request, sess s
 	}
 	if err := decodeJSONBody(r, &req); err != nil {
 		writeJSONResp(w, http.StatusBadRequest, map[string]any{"error": "Invalid JSON."})
+		return
+	}
+	if strings.TrimSpace(req.WebhookURL) == "" {
+		if s.agent == nil {
+			writeJSONResp(w, http.StatusBadRequest, map[string]any{"error": "Please enter a Feishu webhook URL."})
+			return
+		}
+		var out map[string]any
+		if err := s.agent.Call(r.Context(), rpc.MethodTestAlertChannel, rpc.TestAlertChannelParams{
+			Operator: sess.Username,
+		}, &out); err != nil {
+			writeJSONResp(w, http.StatusBadGateway, map[string]any{"error": err.Error()})
+			return
+		}
+		_ = s.store.RecordAudit(sess.Username, extractClientIP(r.RemoteAddr), "feishu_test", "webhook", "PASS", nil)
+		writeJSONResp(w, http.StatusOK, map[string]any{"ok": true})
 		return
 	}
 	if _, err := alert.ValidateFeishuTarget(req.WebhookURL, s.cfg.DemoMode); err != nil {

@@ -28,6 +28,9 @@ func (f *fakeAgent) Call(_ context.Context, method string, _ any, out any) error
 	case "secret.read_for_export":
 		b, _ := json.Marshal(map[string]any{"psk": f.psk})
 		return json.Unmarshal(b, out)
+	case "alert.save_channel":
+		b, _ := json.Marshal(map[string]any{"status": "PASS", "configured": true, "enabled": true, "masked_url": "https://open.feishu.cn/open-apis/bot/v2/hook/aaaa****zzzz", "has_secret": true})
+		return json.Unmarshal(b, out)
 	default:
 		b, _ := json.Marshal(map[string]any{"status": "PASS"})
 		return json.Unmarshal(b, out)
@@ -182,6 +185,25 @@ func TestWebAPIEndToEndLoginProfileExportAndTimeline(t *testing.T) {
 	resp = postJSON("/api/v1/tunnels/ob-venue-1/rekey", map[string]any{"kind": "child"})
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("tunnel rekey failed: %d", resp.StatusCode)
+	}
+
+	// Persistent Feishu channel metadata (PUT + GET without leaking raw URL/secret)
+	putBody, _ := json.Marshal(map[string]any{
+		"enabled":     true,
+		"webhook_url": "https://open.feishu.cn/open-apis/bot/v2/hook/aaaa1111-2222-3333-4444-55556666zzzz",
+		"secret":      "my-feishu-sign",
+	})
+	putReq, _ := http.NewRequest(http.MethodPut, ts.URL+"/api/v1/alerts/channel", bytes.NewReader(putBody))
+	putReq.Header.Set("Content-Type", "application/json")
+	resp, err = client.Do(putReq)
+	if err != nil || resp.StatusCode != http.StatusOK {
+		t.Fatalf("PUT /api/v1/alerts/channel failed: %v %v", resp, err)
+	}
+	resp, _ = client.Get(ts.URL + "/api/v1/alerts/channel")
+	var ch map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&ch)
+	if resp.StatusCode != http.StatusOK || ch["configured"] != true || strings.Contains(ch["masked_url"].(string), "2222-3333") {
+		t.Fatalf("unexpected alert channel metadata: %+v", ch)
 	}
 
 	// Signoff checklist

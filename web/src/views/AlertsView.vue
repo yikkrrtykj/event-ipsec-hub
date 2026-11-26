@@ -5,15 +5,62 @@ import { alertStatusLabel, sourceLabel, t } from '../i18n'
 
 const rules = ref<any[]>([])
 const history = ref<any[]>([])
+const channelMeta = ref<{ configured: boolean; enabled: boolean; masked_url: string; has_secret: boolean }>({
+  configured: false,
+  enabled: false,
+  masked_url: '',
+  has_secret: false
+})
+const feishuEnabled = ref(true)
 const feishuURL = ref('')
 const feishuSecret = ref('')
 const msg = ref('')
 const errMsg = ref('')
 
 async function load() {
-  const [r1, r2] = await Promise.all([api('/api/v1/alerts/rules'), api('/api/v1/alerts/history')])
+  const [r1, r2, r3] = await Promise.all([
+    api('/api/v1/alerts/rules'),
+    api('/api/v1/alerts/history'),
+    api('/api/v1/alerts/channel')
+  ])
   rules.value = r1.rules || []
   history.value = r2.history || []
+  channelMeta.value = {
+    configured: Boolean(r3.configured),
+    enabled: Boolean(r3.enabled),
+    masked_url: r3.masked_url || '',
+    has_secret: Boolean(r3.has_secret)
+  }
+  if (channelMeta.value.configured) {
+    feishuEnabled.value = channelMeta.value.enabled
+  }
+}
+
+async function saveChannel() {
+  errMsg.value = ''
+  msg.value = ''
+  try {
+    const res = await api('/api/v1/alerts/channel', {
+      method: 'PUT',
+      body: JSON.stringify({
+        enabled: feishuEnabled.value,
+        webhook_url: feishuURL.value.trim(),
+        secret: feishuSecret.value,
+        keep_secret: feishuSecret.value === ''
+      })
+    })
+    channelMeta.value = {
+      configured: Boolean(res.configured),
+      enabled: Boolean(res.enabled),
+      masked_url: res.masked_url || '',
+      has_secret: Boolean(res.has_secret)
+    }
+    feishuURL.value = ''
+    feishuSecret.value = ''
+    msg.value = t('msgChannelSaved')
+  } catch (e: any) {
+    errMsg.value = e.message
+  }
 }
 
 async function saveRule(rule: any) {
@@ -33,7 +80,7 @@ async function testFeishu() {
   try {
     await api('/api/v1/alerts/feishu/test', {
       method: 'POST',
-      body: JSON.stringify({ webhook_url: feishuURL.value, secret: feishuSecret.value })
+      body: JSON.stringify({ webhook_url: feishuURL.value.trim(), secret: feishuSecret.value })
     })
     msg.value = t('msgFeishuSent')
   } catch (e: any) {
@@ -51,7 +98,16 @@ onMounted(load)
     <div v-if="msg" class="alert-banner alert-ok">{{ msg }}</div>
 
     <div class="card">
-      <h3>{{ t('feishuTitle') }}</h3>
+      <div class="row" style="margin-bottom: 12px;">
+        <h3 style="margin: 0;">{{ t('feishuTitle') }}</h3>
+        <span class="pill" :class="channelMeta.configured && channelMeta.enabled ? 'pill-ok' : 'pill-warn'">
+          {{ channelMeta.configured ? t('feishuConfigured') : t('feishuNotConfigured') }}
+        </span>
+        <code v-if="channelMeta.masked_url" class="muted">{{ channelMeta.masked_url }}</code>
+      </div>
+      <div v-if="channelMeta.configured" class="muted" style="margin-bottom: 10px;">
+        {{ t('feishuLeaveBlankHint') }}
+      </div>
       <div class="grid-2">
         <div class="field">
           <label>{{ t('webhookUrl') }}</label>
@@ -62,7 +118,15 @@ onMounted(load)
           <input v-model="feishuSecret" type="password" class="input" :placeholder="t('signSecretPh')" />
         </div>
       </div>
-      <button class="btn" @click="testFeishu">{{ t('btnSendTest') }}</button>
+      <div class="row">
+        <label style="display: flex; align-items: center; gap: 6px; cursor: pointer;">
+          <input type="checkbox" v-model="feishuEnabled" />
+          <span>{{ t('feishuEnabledCb') }}</span>
+        </label>
+        <div class="spacer"></div>
+        <button class="btn btn-secondary" @click="testFeishu">{{ t('btnSendTest') }}</button>
+        <button class="btn" @click="saveChannel">{{ t('btnSaveChannel') }}</button>
+      </div>
     </div>
 
     <div class="card">

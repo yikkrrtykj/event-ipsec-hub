@@ -372,6 +372,12 @@ const dict: Record<Lang, Record<string, string>> = {
 
     // AlertsView
     feishuTitle: '飞书通知',
+    feishuEnabledCb: '启用飞书自动告警推送',
+    feishuConfigured: '已配置',
+    feishuNotConfigured: '未配置',
+    btnSaveChannel: '保存通道配置',
+    msgChannelSaved: '飞书告警通道配置已保存（密钥仅写入主机受保护文件）。',
+    feishuLeaveBlankHint: '已配置通道，留空则沿用原地址/密钥',
     webhookUrl: 'Webhook 地址（仅支持 open.feishu.cn）',
     signSecret: '签名密钥（可选）',
     signSecretPh: '机器人安全设置中的加签密钥',
@@ -754,6 +760,12 @@ const dict: Record<Lang, Record<string, string>> = {
 
     // AlertsView
     feishuTitle: 'Feishu Webhook',
+    feishuEnabledCb: 'Enable automatic Feishu alerts',
+    feishuConfigured: 'Configured',
+    feishuNotConfigured: 'Not Configured',
+    btnSaveChannel: 'Save Channel',
+    msgChannelSaved: 'Feishu alert channel saved (credentials stored in root-protected file).',
+    feishuLeaveBlankHint: 'Channel configured; leave blank to keep existing URL/secret',
     webhookUrl: 'Webhook URL (open.feishu.cn only)',
     signSecret: 'Signing Secret (optional)',
     signSecretPh: 'Bot security signing secret',

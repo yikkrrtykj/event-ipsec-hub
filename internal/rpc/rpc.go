@@ -38,8 +38,10 @@ const (
 	MethodRekey           = "hub.rekey"
 	MethodWriteSecret     = "secret.write"
 	MethodReadSecretAudit = "secret.read_for_export"
-	MethodFailoverGate    = "failover.gate"
-	MethodSyncAllowlist   = "firewall.sync_web_allowlist"
+	MethodFailoverGate     = "failover.gate"
+	MethodSyncAllowlist    = "firewall.sync_web_allowlist"
+	MethodSaveAlertChannel = "alert.save_channel"
+	MethodTestAlertChannel = "alert.test_channel"
 )
 
 type ApplyParams struct {
@@ -89,6 +91,20 @@ type FailoverGateParams struct {
 type SyncAllowlistParams struct {
 	Port  int      `json:"port"`
 	CIDRs []string `json:"cidrs"`
+}
+
+type SaveAlertChannelParams struct {
+	Enabled    bool   `json:"enabled"`
+	WebhookURL string `json:"webhook_url"`
+	Secret     string `json:"secret,omitempty"`
+	KeepSecret bool   `json:"keep_secret,omitempty"`
+	Operator   string `json:"operator"`
+}
+
+type TestAlertChannelParams struct {
+	WebhookURL string `json:"webhook_url,omitempty"`
+	Secret     string `json:"secret,omitempty"`
+	Operator   string `json:"operator"`
 }
 
 // Handler executes one validated RPC method on the privileged agent side.
