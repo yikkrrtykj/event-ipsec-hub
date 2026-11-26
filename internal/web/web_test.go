@@ -166,6 +166,14 @@ func TestWebAPIEndToEndLoginProfileExportAndTimeline(t *testing.T) {
 		t.Fatalf("expected >=50 synced timeline samples, got %d %+v", resp.StatusCode, tl)
 	}
 
+	// Searchable paginated event log endpoint
+	resp, _ = client.Get(ts.URL + "/api/v1/events?site=ob-venue-1&severity=critical&q=DPD&limit=10&offset=0")
+	var evRes map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&evRes)
+	if resp.StatusCode != http.StatusOK || int(evRes["total"].(float64)) != 1 {
+		t.Fatalf("expected 1 filtered DPD critical event, got %d %+v", resp.StatusCode, evRes)
+	}
+
 	// Signoff checklist
 	resp, _ = client.Get(ts.URL + "/api/v1/system/signoff")
 	var so map[string]any

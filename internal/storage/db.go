@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -640,6 +641,85 @@ func (s *Store) QueryTimelineEvents(siteID string, fromMs, toMs int64, limit int
 		out = append(out, ev)
 	}
 	return out, rows.Err()
+}
+
+// EventSearchFilter controls paginated event log search.
+type EventSearchFilter struct {
+	SiteID   string
+	Severity string
+	Layer    string
+	Query    string
+	FromMs   int64
+	ToMs     int64
+	Limit    int
+	Offset   int
+}
+
+// SearchTimelineEvents queries timeline events newest-first with time range, severity, layer,
+// site, and keyword filtering plus pagination total count.
+func (s *Store) SearchTimelineEvents(f EventSearchFilter) ([]TimelineEvent, int, error) {
+	if f.Limit <= 0 || f.Limit > 200 {
+		f.Limit = 50
+	}
+	if f.Offset < 0 {
+		f.Offset = 0
+	}
+	var conds []string
+	var args []any
+	if f.SiteID != "" {
+		conds = append(conds, "site_id = ?")
+		args = append(args, f.SiteID)
+	}
+	if f.Severity != "" {
+		conds = append(conds, "severity = ?")
+		args = append(args, f.Severity)
+	}
+	if f.Layer != "" {
+		conds = append(conds, "layer = ?")
+		args = append(args, f.Layer)
+	}
+	if f.FromMs > 0 {
+		conds = append(conds, "ts_ms >= ?")
+		args = append(args, f.FromMs)
+	}
+	if f.ToMs > 0 {
+		conds = append(conds, "ts_ms <= ?")
+		args = append(args, f.ToMs)
+	}
+	if q := strings.TrimSpace(strings.ToLower(f.Query)); q != "" {
+		like := "%" + q + "%"
+		conds = append(conds, "(LOWER(title) LIKE ? OR LOWER(category) LIKE ? OR LOWER(site_id) LIKE ? OR LOWER(root_cause) LIKE ? OR LOWER(detail_json) LIKE ?)")
+		args = append(args, like, like, like, like, like)
+	}
+	where := ""
+	if len(conds) > 0 {
+		where = " WHERE " + strings.Join(conds, " AND ")
+	}
+
+	var total int
+	if err := s.db.QueryRow("SELECT COUNT(*) FROM timeline_events"+where, args...).Scan(&total); err != nil {
+		return nil, 0, err
+	}
+
+	pageArgs := append(append([]any{}, args...), f.Limit, f.Offset)
+	rows, err := s.db.Query(
+		`SELECT id, ts_ms, layer, category, severity, site_id, link_id, source, title, detail_json, root_cause
+		 FROM timeline_events`+where+` ORDER BY ts_ms DESC, id DESC LIMIT ? OFFSET ?`,
+		pageArgs...,
+	)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	out := make([]TimelineEvent, 0)
+	for rows.Next() {
+		var ev TimelineEvent
+		if err := rows.Scan(&ev.ID, &ev.TsMs, &ev.Layer, &ev.Category, &ev.Severity, &ev.SiteID, &ev.LinkID, &ev.Source, &ev.Title, &ev.DetailJSON, &ev.RootCause); err != nil {
+			return nil, 0, err
+		}
+		out = append(out, ev)
+	}
+	return out, total, rows.Err()
 }
 
 // PruneOlderThan deletes metric samples and timeline events older than cutoffMs (7-30d retention).

@@ -152,7 +152,11 @@ onMounted(load)
       </div>
 
       <div class="card">
-        <h3>{{ t('recentEvents') }}</h3>
+        <div class="row" style="margin-bottom: 10px;">
+          <h3 style="margin: 0;">{{ t('recentEvents') }}</h3>
+          <div class="spacer"></div>
+          <button class="btn btn-secondary" @click="emit('navigate', 'events')">{{ t('viewAllEvents') }}</button>
+        </div>
         <table v-if="overview.recent_events?.length" class="table">
           <thead>
             <tr>
@@ -164,7 +168,7 @@ onMounted(load)
             </tr>
           </thead>
           <tbody>
-            <tr v-for="ev in (overview.recent_events as TimelineEvent[]).slice().reverse().slice(0, 12)" :key="ev.id || ev.ts_ms">
+            <tr v-for="ev in (overview.recent_events as TimelineEvent[]).slice().reverse().slice(0, 5)" :key="ev.id || ev.ts_ms">
               <td>{{ fmtDateTime(ev.ts_ms) }}</td>
               <td><code>{{ ev.category }}</code></td>
               <td>{{ ev.site_id || '-' }}</td>

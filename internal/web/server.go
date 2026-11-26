@@ -122,9 +122,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/auth/totp/setup", s.requireAdmin(s.handleTOTPSetup))
 	mux.HandleFunc("POST /api/v1/auth/totp/enable", s.requireAdmin(s.handleTOTPEnable))
 
-	// Overview & 4-layer synced diagnostics
+	// Overview, 4-layer synced diagnostics & searchable event log
 	mux.HandleFunc("GET /api/v1/overview", s.requireAuth(s.handleOverview))
 	mux.HandleFunc("GET /api/v1/diagnostics/timeline", s.requireAuth(s.handleTimeline))
+	mux.HandleFunc("GET /api/v1/events", s.requireAuth(s.handleListEvents))
 	mux.HandleFunc("POST /api/v1/diagnostics/seed-demo", s.requireAdmin(s.handleSeedDemo))
 	mux.HandleFunc("GET /api/v1/stream", s.requireAuth(s.handleSSEStream))
 
@@ -514,6 +515,40 @@ func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request, _ sessio
 		Samples:   samples,
 		Events:    events,
 		Diagnosis: telemetry.SummarizeWindow(samples, events),
+	})
+}
+
+func (s *Server) handleListEvents(w http.ResponseWriter, r *http.Request, _ sessionEntry) {
+	q := r.URL.Query()
+	var f storage.EventSearchFilter
+	f.SiteID = strings.TrimSpace(q.Get("site"))
+	f.Severity = strings.TrimSpace(q.Get("severity"))
+	f.Layer = strings.TrimSpace(q.Get("layer"))
+	f.Query = strings.TrimSpace(q.Get("q"))
+	if v, err := strconv.ParseInt(q.Get("from"), 10, 64); err == nil && v > 0 {
+		f.FromMs = v
+	}
+	if v, err := strconv.ParseInt(q.Get("to"), 10, 64); err == nil && v > 0 {
+		f.ToMs = v
+	}
+	if v, err := strconv.Atoi(q.Get("limit")); err == nil && v > 0 {
+		f.Limit = v
+	} else {
+		f.Limit = 50
+	}
+	if v, err := strconv.Atoi(q.Get("offset")); err == nil && v >= 0 {
+		f.Offset = v
+	}
+	events, total, err := s.store.SearchTimelineEvents(f)
+	if err != nil {
+		writeJSONResp(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	writeJSONResp(w, http.StatusOK, map[string]any{
+		"events": events,
+		"total":  total,
+		"limit":  f.Limit,
+		"offset": f.Offset,
 	})
 }
 

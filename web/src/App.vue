@@ -4,6 +4,7 @@ import { api } from './api'
 import { lang, t, toggleLang } from './i18n'
 import DashboardView from './views/DashboardView.vue'
 import DiagnosticsView from './views/DiagnosticsView.vue'
+import EventsView from './views/EventsView.vue'
 import SitesConfigView from './views/SitesConfigView.vue'
 import PeerExportView from './views/PeerExportView.vue'
 import FailoverView from './views/FailoverView.vue'
@@ -14,6 +15,7 @@ const user = ref<any>(null)
 const checking = ref(true)
 const activeTab = ref('dashboard')
 const diagSite = ref('ob-venue-1')
+const eventSite = ref('')
 
 const username = ref('admin')
 const password = ref('')
@@ -24,6 +26,7 @@ const navItems = computed(() => [
   { id: 'dashboard', label: t('navDashboard') },
   { id: 'config', label: t('navConfig') },
   { id: 'diagnostics', label: t('navDiagnostics') },
+  { id: 'events', label: t('navEvents') },
   { id: 'export', label: t('navExport') },
   { id: 'failover', label: t('navFailover') },
   { id: 'alerts', label: t('navAlerts') },
@@ -65,7 +68,8 @@ async function logout() {
 }
 
 function navigate(tab: string, site?: string) {
-  if (site) diagSite.value = site
+  if (tab === 'diagnostics' && site) diagSite.value = site
+  if (tab === 'events') eventSite.value = site || ''
   activeTab.value = tab
 }
 
@@ -144,7 +148,8 @@ onMounted(checkAuth)
       <main class="content">
         <DashboardView v-if="activeTab === 'dashboard'" @navigate="navigate" />
         <SitesConfigView v-else-if="activeTab === 'config'" />
-        <DiagnosticsView v-else-if="activeTab === 'diagnostics'" :initial-site="diagSite" />
+        <DiagnosticsView v-else-if="activeTab === 'diagnostics'" :initial-site="diagSite" @navigate="navigate" />
+        <EventsView v-else-if="activeTab === 'events'" :initial-site="eventSite" @navigate="navigate" />
         <PeerExportView v-else-if="activeTab === 'export'" />
         <FailoverView v-else-if="activeTab === 'failover'" />
         <AlertsView v-else-if="activeTab === 'alerts'" />

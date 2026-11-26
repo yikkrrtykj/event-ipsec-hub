@@ -1,10 +1,11 @@
 <script setup lang="ts">
 import { onMounted, ref, watch } from 'vue'
-import { api, fmtDateTime, type SyncedTimelineResponse } from '../api'
+import { api, type SyncedTimelineResponse } from '../api'
 import { causeLabel, causeSummary, t } from '../i18n'
 import SyncedFourLayerCharts from '../components/SyncedFourLayerCharts.vue'
 
 const props = defineProps<{ initialSite?: string }>()
+const emit = defineEmits<{ (e: 'navigate', tab: string, site?: string): void }>()
 
 const site = ref(props.initialSite || 'ob-venue-1')
 const siteOptions = ref<string[]>([])
@@ -94,31 +95,14 @@ onMounted(async () => {
 
       <SyncedFourLayerCharts :samples="timeline.samples" :events="timeline.events" />
 
-      <div class="card">
-        <h3>{{ t('eventLog') }}</h3>
-        <table v-if="timeline.events.length" class="table">
-          <thead>
-            <tr>
-              <th>{{ t('colTime') }}</th>
-              <th>{{ t('colEvent') }}</th>
-              <th>{{ t('colLevel') }}</th>
-              <th>{{ t('colDetail') }}</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="ev in timeline.events" :key="ev.id || ev.ts_ms">
-              <td>{{ fmtDateTime(ev.ts_ms) }}</td>
-              <td><code>{{ ev.category }}</code></td>
-              <td>
-                <span class="pill" :class="ev.severity === 'critical' ? 'pill-critical' : ev.severity === 'warning' ? 'pill-warn' : 'pill-info'">
-                  {{ ev.severity === 'critical' ? t('sevCritical') : ev.severity === 'warning' ? t('sevWarning') : t('sevInfo') }}
-                </span>
-              </td>
-              <td>{{ ev.title }}</td>
-            </tr>
-          </tbody>
-        </table>
-        <div v-else class="muted">{{ t('noWindowEvents') }}</div>
+      <div class="card" style="padding: 12px 16px;">
+        <div class="row">
+          <span class="muted">{{ t('windowEventSummary', { n: timeline.events.length }) }}</span>
+          <div class="spacer"></div>
+          <button class="btn btn-secondary" @click="emit('navigate', 'events', site)">
+            {{ t('openEventsPage') }}
+          </button>
+        </div>
       </div>
     </template>
   </div>
