@@ -604,6 +604,8 @@ class WebClient:
                 return resp.status, raw
         except urllib.error.HTTPError as err:
             return err.code, err.read().decode("utf-8", errors="replace")
+        except (urllib.error.URLError, OSError) as err:
+            return 0, str(err)
 
 
 def extract_bootstrap_password():
@@ -710,7 +712,12 @@ def before_reboot():
     assert denied_sec.returncode != 0
 
     wc = WebClient()
-    wait_until(lambda: wc.request("GET", "/healthz")[0] == 200, timeout=30, interval=0.5)
+    wait_until(
+        lambda: wc.request("GET", "/healthz")[0] == 200,
+        timeout=30,
+        interval=0.5,
+        diag=lambda: cmd("journalctl", "-u", "ipsecvpn-web.service", "-u", "ipsecvpn-agent.service", "--no-pager", "-n", "40", allowed=(0, 1)).stdout[-1200:],
+    )
     admin_pass = extract_bootstrap_password()
     # Save password in root-only temp file for after-reboot verification
     Path("/var/lib/ipsecvpn-v4-webpass").write_text(admin_pass, encoding="ascii")
@@ -810,7 +817,12 @@ def after_reboot():
     denied = exchange("ob-alpha", "ob-beta", "10.101.10.0/24", "10.102.10.0/24", "udp", PORT + 41, expect_fail=True)
 
     wc = WebClient()
-    wait_until(lambda: wc.request("GET", "/healthz")[0] == 200, timeout=30, interval=0.5)
+    wait_until(
+        lambda: wc.request("GET", "/healthz")[0] == 200,
+        timeout=30,
+        interval=0.5,
+        diag=lambda: cmd("journalctl", "-u", "ipsecvpn-web.service", "-u", "ipsecvpn-agent.service", "--no-pager", "-n", "40", allowed=(0, 1)).stdout[-1200:],
+    )
     admin_pass = Path("/var/lib/ipsecvpn-v4-webpass").read_text(encoding="ascii").strip()
     assert wc.request("POST", "/api/v1/auth/login", {"username": "admin", "password": admin_pass})[0] == 200
     ov = wait_until(
