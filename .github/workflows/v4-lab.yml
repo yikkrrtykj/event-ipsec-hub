@@ -2,7 +2,7 @@ name: V4 Go Single-Binary Ubuntu 24.04 QEMU Kernel Lab
 
 on:
   push:
-    branches: [v4-go]
+    branches: [main, v4-go]
     paths:
       - 'cmd/**'
       - 'internal/**'

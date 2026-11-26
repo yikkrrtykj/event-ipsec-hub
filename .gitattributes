@@ -1,1 +1,4 @@
 * text=auto eol=lf
+scripts/v4-lab/** linguist-detectable=false
+scripts/pr2-vm/** linguist-detectable=false
+scripts/pr3-lab/** linguist-detectable=false

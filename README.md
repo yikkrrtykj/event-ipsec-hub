@@ -1,78 +1,114 @@
-# event-ipsec-hub 通用赛事网关工具
+# event-ipsec-hub
 
-ipsecVPN 面向电竞赛事、场馆和制作团队的三层站点互通。每场赛事通过独立 profile 定义一台 Linux Hub、两个外部站点及获准互通的 IPv4 网段。站点名称和角色、国家和地区、地址、VPS 供应商、运营商及防火墙型号随 profile 变化。外部备网关可以留空，也可登记为人工交接对象。
+把一台普通的 **Ubuntu 24.04 云服务器**，一键变成带网页管理后台的 **IPsec VPN 中心网关**。
 
-[V2.0](docs/SPEC.md) 已交付离线工具、隔离 Linux Hub 部署与回滚、双站 IKEv2/CHILD 与数据路径、可选监控告警，以及厂商中立交接和备用选路模拟。CLI 名称为 `ipsecvpn`。现场厂商设备、真实赛事链路、真实飞书和外部备用切换继续为 SKIP。后续需求在 [V3.0 Epic #6](https://github.com/yikkrrtykj/event-ipsec-hub/issues/6) 跟踪。
+适合电竞赛事、多场馆转播（OB）、多机房或分部互联：各站点防火墙（山石网科、华为、飞塔、strongSwan 等）统一连到这台中心服务器，由中心网关负责加密转发、站点隔离、主备容灾和飞书告警。
 
-## 本地试用
+---
 
-使用 Python 3.11 或更新版本。以下命令使用仓库中的 RFC 5737 文档公网地址和虚构 LAN。
+## 主要功能
+
+- **单文件极简部署**：后端（Go）与网页控制台（Vue 3）打包成一个独立的 Linux 可执行文件，**不依赖 Python、不依赖 Docker**，传到服务器直接跑。
+- **网页化配置隧道**：不用手写复杂的配置文件，在网页里填对端公网 IP、内网网段、协商模式（路由型 / 策略型 / 多子网拆分）和互通规则，支持预检（Dry-Run）确认后再下发。
+- **一键导出对端参数**：自动生成标准 JSON（IKEv2）、山石网科命令行草稿、strongSwan 配置草稿和通用对接参数单，直接发给现场网络工程师照着配。
+- **四层链路监控与事件日志**：实时查看公网通断与延迟、IPsec 隧道状态、加解密流量速率、防火墙拦截和内网连通性，自动判断是运营商抖动还是隧道异常；支持按时间和关键字检索历史事件并跳转对应时刻波形。
+- **主备切换与飞书告警**：内置主备网关切换控制（切备后锁定门禁防抖动抢占，回切需人工确认）和飞书机器人告警，支持直接在后台配置 Webhook 和签名密钥。
+- **默认安全加固**：管理网页（非 root）与网络执行代理（root）权限彻底分离；强制 HTTPS（TLS 1.3）、初始随机密码、登录防爆破、两步验证（2FA）、来源 IP 白名单，以及所有高危操作审计日志。
+
+---
+
+## 环境要求
+
+- 一台 **Ubuntu 24.04** 服务器（`amd64` 或 `arm64`，建议全新纯净系统，拥有 `root` 权限）。
+- 云服务器安全组放行：
+  - `UDP 500`、`UDP 4500`（IPsec 协商与封装流量）
+  - `TCP 18443`（Web 控制台管理端口，建议仅对管理员公网 IP 放行）
+
+---
+
+## 快速上手（3 步上线）
+
+### 第 1 步：下载程序并做主机初始化
+
+在 Ubuntu 24.04 服务器上以 `root` 执行（ARM 服务器请把 `amd64` 换成 `arm64`）：
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-python -m pip install .
+# 1. 从 GitHub Release 下载最新程序和安装脚本
+curl -LO https://github.com/yikkrrtykj/event-ipsec-hub/releases/latest/download/ipsecvpn-linux-amd64
+curl -LO https://github.com/yikkrrtykj/event-ipsec-hub/releases/latest/download/install-v4.sh
+chmod +x ipsecvpn-linux-amd64 install-v4.sh
 
-ipsecvpn profiles list --directory tests/fixtures
-ipsecvpn validate -c config/event.example.yaml
-ipsecvpn check --json
-ipsecvpn plan -c config/event.example.yaml
-ipsecvpn export-peer -c config/event.example.yaml --site production-a --format md
-ipsecvpn export-peer -c config/event.example.yaml --site stage-b --format json
+# 2. 开启 Linux 内核转发与松散反向路径过滤
+cat <<'EOF' > /etc/sysctl.d/90-ipsecvpn.conf
+net.ipv4.ip_forward = 1
+net.ipv4.conf.all.rp_filter = 2
+net.ipv4.conf.default.rp_filter = 2
+EOF
+sysctl -p /etc/sysctl.d/90-ipsecvpn.conf
+
+# 3. 创建主机授权标记（防止误在非目标机器上修改网络）
+install -d -m 0700 /etc/ipsecvpn /etc/ipsecvpn/profiles /etc/ipsecvpn/secrets
+printf 'ipsecvpn-prod-v1\n' > /etc/ipsecvpn/host-authorized
+chmod 0600 /etc/ipsecvpn/host-authorized
 ```
 
-山石设备默认生成 Hillstone / StoneOS 参数单，其他厂商使用通用参数单。可用 `--template hillstone` 或 `--template generic` 明确选择模板。JSON 用于交接和后续系统处理，设备配置由双方管理员按各自版本完成。省略导出的 `-c` 时，须先显式设置 `IPSECVPN_CONFIG`。
-
-两种模板均标为 `NOT_APPLYABLE_CONFIG`，包含 profile 摘要、IKE 身份类型、WAN Peer /32、精确选择器、双向安全区域与 NAT 豁免、逐网段验收和签收栏。导出只写 stdout。含真实拓扑的报告请在受控目录保存和传递。
-
-| 命令 | 输出与判定 |
-| --- | --- |
-| `profiles list` | 读取指定目录，默认 `/etc/ipsecvpn/profiles`。显示已保存的赛事和校验结果，活动 profile 为 `SKIP`。 |
-| `validate -c` | 检查 YAML、V2 schema 和拓扑约束。 |
-| `check` | 读取本机发行版信息并查找依赖命令。VICI、SA、XFRM 和真实业务流量为 `SKIP`。 |
-| `status` / `doctor` | 在授权 VM 比对当前 VICI、内核 SA/策略、路由和项目 ACL。默认不发包，业务结果为 `SKIP`。 |
-| `plan -c` | 打印 JSON 拓扑计划，包括两条 XFRM、内外层路由意图及双向 ACL。 |
-| `export-peer` | 向 stdout 输出选定站点视角的 Markdown 或 JSON。现场验收为 `SKIP`。 |
-
-`profiles list`、`validate` 和 `check` 支持 `--json`。退出码 `0` 表示命令完成，结果可含 `PASS` 或 `SKIP`。退出码 `1` 表示发现错误或检查失败，`2` 表示命令行用法有误。请同时查看退出码和各检查项。
-
-启用外部备网关时，离线交接要求两站各有唯一备链路，并填写备 Peer 公网地址、隧道名、授权备路由、主备路由优先级和 Track 目标。资料缺失时，`validate` 可对配置格式和拓扑返回 `PASS`，同时报告备用交接 `SKIP/INCOMPLETE`。此时 `plan` 保留主链路计划，`export-peer` 仅输出缺项诊断，两者状态均为 `SKIP`。备用资料齐全时显示 `PASS/COMPLETE`，现场验收仍为 `SKIP`。
-
-旧 profile 可直接使用。可选的 `backup.transit_support` 接受 `unknown`（默认）、`supported` 或 `unsupported`。在 `plan` 和 `export-peer` 的 `backup.feasibility` 中查看中转核验、业务路径和切换准入。供应商能力声明为 `supported` 后，现场仍须独立验证两站之间的备线路业务。中转不可用、证据缺失或备路由覆盖不全时，切换准入为 `STOP`。
-
-## 配置与验证
-
-- [通用架构和配置约束](docs/architecture.md)
-- [赛事配置生命周期与安全](docs/event-lifecycle.md)
-- [V2.0 能力与验收索引](docs/roadmap.md)及[长期验收证据](docs/evidence/README.md)
-- [隔离 VM 安装](docs/install.md)、[网络所有权](docs/network-ownership.md)、[备份回滚](docs/rollback.md)与[密钥安全](docs/security.md)
-- [活动 SA 所有权](docs/pr3/SA_OWNERSHIP_DESIGN.md)与 [三节点验收矩阵](docs/pr3/PR3_ACCEPTANCE.md)
-- [可选监控与隔离运行手册](docs/pr4/OPERATIONS.md)
-- [主备切换与回切](docs/pr5/PR5_FAILOVER_RUNBOOK.md)、[设备兼容性核对](docs/pr5/PR5_VENDOR_MATRIX.md)及[现场验收记录](docs/pr5/PR5_SITE_ACCEPTANCE_TEMPLATE.md)
+### 第 2 步：安装 strongSwan 并启动网关控制台
 
 ```bash
-python -m pip install '.[dev]'
-python -m pytest -q
-ruff check .
-ruff format --check .
-shellcheck scripts/validate-examples.sh
-bash scripts/validate-examples.sh
+# 1. 安装并托管 Ubuntu 官方 strongSwan (charon-systemd) 及开机防泄漏守护
+./ipsecvpn-linux-amd64 install --confirm
+
+# 2. 注册并启动后台 Agent 与 HTTPS Web 控制台（将 <服务器公网IP> 替换为实际 IP）
+IPSECVPN_PUBLIC_IP=<服务器公网IP> bash ./install-v4.sh ./ipsecvpn-linux-amd64
 ```
 
-公开仓库只放虚构配置。真实 profile、计划和导出文件应通过受控渠道保存和传输。参数单中的 PSK 始终显示为 `<SEND_SEPARATELY>`。
-
-## V4.0 单文件 Go 网关与 Web 控制台（`v4-go` 分支）
-
-V4.0 采用 **Go 单二进制 + 内嵌 Vue 3 / ECharts Web 控制台 + strongSwan (`charon-systemd`) + Linux XFRM & nftables**，提供可视化通道配置、一键标准 JSON / 山石参数单导出、四层联动监控与独立事件检索、内置飞书告警以及 root Agent / 非 root Web 权限分离。
-
-- [V4 架构方案](docs/V4_ARCHITECTURE.md)
-- [V4 生产部署与运维手册](docs/V4_OPERATIONS.md)
+### 第 3 步：获取初始密码并登录网页后台
 
 ```bash
-# 本地构建前端与单文件二进制
+journalctl -u ipsecvpn-web.service -n 20 --no-pager | grep BOOTSTRAP_ADMIN
+```
+
+浏览器打开 **`https://<服务器公网IP>:18443`**（首次打开自签名证书点“继续访问”即可），使用账号 `admin` 和上面查到的初始密码登录：
+
+1. 进入 **安全与审计**：修改管理员密码、配置你的办公网 IP 白名单（可选开启两步验证）。
+2. 进入 **VPN 通道**：填写各站点公网 IP、内网网段、生成预共享密钥（PSK），点击 **预检** → **确认下发**。
+3. 进入 **对端导出**：给每个场馆/机房导出一份对接参数单发给对端管理员配置，隧道即可自动建立。
+4. 进入 **告警配置**：填入飞书自定义机器人 Webhook 并点 **发送测试告警** 验证通知。
+
+> 赛后或平时不需要网页管理时，可以随时关停 Web 服务，**不会影响已经建立的 VPN 隧道**：
+> `systemctl disable --now ipsecvpn-web.service`
+
+---
+
+## 常用运维命令
+
+| 用途 | 命令 |
+| :--- | :--- |
+| 查看全部隧道与内核状态 | `/usr/local/sbin/ipsecvpn status` |
+| 查看 Web / Agent 运行日志 | `journalctl -u ipsecvpn-web.service -u ipsecvpn-agent.service -n 50` |
+| 命令行测试飞书通知 | `/usr/local/sbin/ipsecvpn alert test-feishu --webhook <你的飞书Hook>` |
+| 手动重连某个站点 | `/usr/local/sbin/ipsecvpn reconnect --site <站点ID> --confirm` |
+| 停用 Web 控制台（保持隧道运行） | `systemctl disable --now ipsecvpn-web.service` |
+| 彻底干净卸载（恢复宿主机网络） | `systemctl disable --now ipsecvpn-web.service ipsecvpn-agent.service && /usr/local/sbin/ipsecvpn uninstall --confirm --maintenance` |
+
+---
+
+## 从源码自行编译
+
+需要 Go 1.24+ 和 Node.js 22+：
+
+```bash
+# 1. 编译前端页面（会自动打包进 Go 程序）
 (cd web && npm ci && npm run build)
-CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o bin/ipsecvpn ./cmd/ipsecvpn
 
-# 本地预览控制台（演示模式）
-./bin/ipsecvpn web serve --demo --insecure-http --listen 127.0.0.1:18080 --db ./demo-v4.db
+# 2. 编译 Linux 静态单文件
+CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o bin/ipsecvpn-linux-amd64 ./cmd/ipsecvpn
 ```
+
+---
+
+## 详细文档
+
+- [生产部署、安全加固与故障排查手册](docs/V4_OPERATIONS.md)
+- [山石网科防火墙对接实操指南](docs/PRODUCTION_VPS_HILLSTONE_RUNBOOK.md)
+- [系统架构设计说明](docs/V4_ARCHITECTURE.md)
