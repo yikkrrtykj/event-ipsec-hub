@@ -280,6 +280,7 @@ func runPlan(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	cfg := fs.String("c", "", "config path")
 	cfgLong := fs.String("config", "", "config path")
+	_ = fs.Bool("json", true, "JSON output")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
