@@ -577,19 +577,19 @@ func (s *Server) handleSeedDemo(w http.ResponseWriter, r *http.Request, sess ses
 	}
 	_ = s.store.InsertTimelineEvent(storage.TimelineEvent{
 		TsMs: baseMs + 22*30_000, Layer: "L1_OUTER", Category: "ISP_LOSS_SPIKE", Severity: "warning",
-		SiteID: "ob-venue-1", Source: "self_hosted_hub", Title: "外层公网丢包 35%（ISP 国际链路抖动）", RootCause: telemetry.CauseISPOuterDegraded,
+		SiteID: "ob-venue-1", Source: "self_hosted_hub", Title: "公网链路丢包率升高 (35%)", RootCause: telemetry.CauseISPOuterDegraded,
 	})
 	_ = s.store.InsertTimelineEvent(storage.TimelineEvent{
 		TsMs: baseMs + 50*30_000, Layer: "L2_IPSEC", Category: "CHILD_DOWN", Severity: "critical",
-		SiteID: "ob-venue-1", Source: "self_hosted_hub", Title: "CHILD SA 断开（对端山石 DPD 超时触发重建）", RootCause: telemetry.CauseIPsecSAEvent,
+		SiteID: "ob-venue-1", Source: "self_hosted_hub", Title: "IPsec 隧道断开 (DPD 超时)", RootCause: telemetry.CauseIPsecSAEvent,
 	})
 	_ = s.store.InsertTimelineEvent(storage.TimelineEvent{
 		TsMs: baseMs + 54*30_000, Layer: "L2_IPSEC", Category: "CHILD_UP", Severity: "info",
-		SiteID: "ob-venue-1", Source: "self_hosted_hub", Title: "CHILD SA 自动重连恢复",
+		SiteID: "ob-venue-1", Source: "self_hosted_hub", Title: "IPsec 隧道已恢复",
 	})
 	_ = s.store.InsertTimelineEvent(storage.TimelineEvent{
 		TsMs: baseMs + 74*30_000, Layer: "L4_UDP", Category: "UDP_BLACKHOLE", Severity: "critical",
-		SiteID: "ob-venue-1", Source: "self_hosted_hub", Title: "隧道在线但跨站 UDP 100% 丢包（疑似回程路由不对称）", RootCause: telemetry.CauseTunnelBlackholeAsymmetric,
+		SiteID: "ob-venue-1", Source: "self_hosted_hub", Title: "隧道在线但内网探针 100% 丢包", RootCause: telemetry.CauseTunnelBlackholeAsymmetric,
 	})
 	_ = s.store.RecordAudit(sess.Username, extractClientIP(r.RemoteAddr), "seed_demo_telemetry", "ob-venue-1", "PASS", nil)
 	writeJSONResp(w, http.StatusOK, map[string]any{"ok": true, "samples_seeded": 270})
@@ -656,11 +656,12 @@ func (s *Server) handleValidateYAML(w http.ResponseWriter, r *http.Request, _ se
 		return
 	}
 	writeJSONResp(w, http.StatusOK, map[string]any{
-		"status": "PASS",
-		"detail": "Profile schema and topology validated.",
-		"event":  p.Event,
-		"sites":  p.Sites,
-		"backup": profile.EvaluateBackupReadiness(p),
+		"status":  "PASS",
+		"detail":  "Profile schema and topology validated.",
+		"event":   p.Event,
+		"sites":   p.Sites,
+		"profile": p,
+		"backup":  profile.EvaluateBackupReadiness(p),
 	})
 }
 
@@ -1063,7 +1064,7 @@ func (s *Server) handleFeishuTest(w http.ResponseWriter, r *http.Request, sess s
 		writeJSONResp(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 		return
 	}
-	msg := fmt.Sprintf("[INFO] TEST event-ipsec-hub V4\n操作人: %s\n时间: %s UTC\n状态: 飞书告警通道连通性测试成功。", sess.Username, time.Now().UTC().Format(time.RFC3339))
+	msg := fmt.Sprintf("[测试] VPN 网关飞书告警通道正常\n操作人: %s\n时间: %s UTC", sess.Username, time.Now().UTC().Format(time.RFC3339))
 	if err := alert.DeliverFeishu(r.Context(), nil, req.WebhookURL, []byte(req.Secret), msg); err != nil {
 		writeJSONResp(w, http.StatusBadGateway, map[string]any{"error": err.Error()})
 		return
@@ -1118,34 +1119,34 @@ func (s *Server) handlePutSecurity(w http.ResponseWriter, r *http.Request, sess 
 
 func (s *Server) handleSignoffChecklist(w http.ResponseWriter, _ *http.Request, sess sessionEntry) {
 	foState, _ := failover.LoadState(s.cfg.FailoverStateFile)
-	md := fmt.Sprintf(`# event-ipsec-hub V4 赛前生产上线与现场签收单 (#12 / #14)
+	md := fmt.Sprintf(`# VPN 网关赛前上线核对单
 
 - 生成时间 (UTC): %s
-- 生成操作人: %s
-- 当前 Hub 角色: %s | 当前活动路径: %s | 门控模式: %s
+- 操作人: %s
+- 网关角色: %s | 当前路由路径: %s | 切换状态: %s
 
-## 1. 主机准入与安全基线 (#14)
-- [ ] 已在授权 Ubuntu 24.04 VPS 上设置 root-only 标记 /etc/ipsecvpn/host-authorized
-- [ ] 内核已开启 net.ipv4.ip_forward=1 且 rp_filter=2（双 ISP 对称回程）
-- [ ] 所有 PSK 已通过 root 0600 独立生成（64 位随机十六进制），未入库、未入 Git
-- [ ] Web 控制台已启用 IP 白名单与强口令/TOTP，已配置赛期自动关闭时间
+## 1. 主机环境与安全基线
+- [ ] 已在授权主机上配置 /etc/ipsecvpn/host-authorized
+- [ ] 内核已开启 net.ipv4.ip_forward=1 且 rp_filter=2
+- [ ] 各站点预共享密钥已按 0600 权限独立写入 /etc/ipsecvpn/secrets
+- [ ] 控制台已配置来源 IP 白名单、强密码或两步验证，以及停用时间
 
-## 2. 隧道与四层业务验收
-- [ ] 正向互通：OB 站点 <-> 游戏服务器 双向 UDP/TCP 延迟、P95、原始源 IP 实测 PASS
-- [ ] 隔离验收：多 OB 之间互访被 Hub nftables forward 链 drop（计数递增）
-- [ ] 四层时间轴核验：L1 外层、L2 VICI 事件、L3 XFRM 计数、L4 端到端 UDP 全部对齐
+## 2. 隧道连通与隔离验证
+- [ ] 已核验授权站点间双向 UDP / TCP 连通性、延迟及源 IP 保留
+- [ ] 已核验非授权站点间互访被本端防火墙拦截
+- [ ] 已核验监控页面公网探针、隧道状态、带宽及内网探针数据正常
 
-## 3. 主备角色互换与门控演练 (#12 / #13)
-- [ ] 已明确本场主备角色（自建主/云备 或 云主/自建备）并完成双端 Track 固定路径验证
-- [ ] 模拟主线中断：确认自动切备并锁定 BACKUP_LOCKED（XFRM 门控防抢占回切）+ 飞书收到带来源标识的告警
-- [ ] 主线恢复并满 180s 后未自动回切；经人工确认后完成受控回切与回滚演练
+## 3. 主备切换与回切演练
+- [ ] 已确认本端网关主备角色与对端路由优先级一致
+- [ ] 已完成主路故障切备演练，确认备路锁定且飞书告警送达
+- [ ] 已完成主路恢复后的观察期校验与人工确认回切演练
 
-## 签收栏
-- Hub 管理员 / UTC: _______________
-- 场馆/OB 网络负责人 / UTC: _______________
-- 备网关/云侧负责人 / UTC: _______________
+## 签收确认
+- 网关运维 / 日期: _______________
+- 场馆网络 / 日期: _______________
+- 备线负责 / 日期: _______________
 `, time.Now().UTC().Format(time.RFC3339), sess.Username, foState.HubRole, foState.ActivePath, foState.Mode)
-	writeJSONResp(w, http.StatusOK, map[string]any{"filename": "production-signoff-checklist.md", "content": md})
+	writeJSONResp(w, http.StatusOK, map[string]any{"filename": "vpn-gateway-signoff-checklist.md", "content": md})
 }
 
 func (s *Server) handlePrometheusMetrics(w http.ResponseWriter, r *http.Request) {

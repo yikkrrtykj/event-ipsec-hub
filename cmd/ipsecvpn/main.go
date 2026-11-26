@@ -717,6 +717,7 @@ func runAgent(args []string, stdout, stderr io.Writer) int {
 	interval := fs.Duration("interval", 15*time.Second, "telemetry sample interval")
 	retention := fs.Int("retention-days", 14, "metric retention days")
 	allowUIDsStr := fs.String("allow-uid", "", "comma-separated UIDs allowed to call RPC besides root")
+	socketGID := fs.Int("socket-gid", 0, "optional GID (>0) granted access to the agent Unix socket")
 	if err := fs.Parse(args[1:]); err != nil {
 		return 2
 	}
@@ -742,6 +743,7 @@ func runAgent(args []string, stdout, stderr io.Writer) int {
 
 	d := agent.New(agent.Config{
 		SocketPath:    *sock,
+		SocketGID:     *socketGID,
 		DBPath:        *dbPath,
 		Interval:      *interval,
 		RetentionDays: *retention,

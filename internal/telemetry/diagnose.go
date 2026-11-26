@@ -53,7 +53,7 @@ func Diagnose(sample storage.MetricSample, recentEvents []storage.TimelineEvent)
 		return DiagnosisResult{
 			Code:       CauseObservationUnverified,
 			Severity:   "unknown",
-			SummaryZH:  "观测数据不完整（UNKNOWN），拒绝冒充正常或恢复，请检查 Agent 采集状态与 VICI。",
+			SummaryZH:  "暂无完整观测数据，当前状态为未检测，请检查本地采集服务与 strongSwan 状态。",
 			SummaryEN:  "Observation is incomplete (UNKNOWN); refusing to report healthy or recovered.",
 			Evidence:   []string{"l2_ike_or_child_state=UNKNOWN"},
 			LayerFault: "UNKNOWN",
@@ -95,7 +95,7 @@ func Diagnose(sample storage.MetricSample, recentEvents []storage.TimelineEvent)
 		return DiagnosisResult{
 			Code:       CauseISPOuterDegraded,
 			Severity:   sev,
-			SummaryZH:  "公网/运营商外层链路抖动或中断（非隧道配置故障），优先排查本地或对端 ISP 国际出口。",
+			SummaryZH:  "公网外层线路丢包或中断，建议优先排查本端或对端运营商线路。",
 			SummaryEN:  "Outer WAN/ISP path is degraded or down; investigate ISP/public underlay first.",
 			Evidence:   evidence,
 			LayerFault: "L1_OUTER",
@@ -123,7 +123,7 @@ func Diagnose(sample storage.MetricSample, recentEvents []storage.TimelineEvent)
 		return DiagnosisResult{
 			Code:       CauseIPsecSAEvent,
 			Severity:   sev,
-			SummaryZH:  "外层公网正常，故障位于 IPsec 控制面（隧道断开、频繁重协商或对端防火墙踢线），请核对 VICI 事件与对端日志。",
+			SummaryZH:  "公网线路正常，IPsec 隧道断开或频繁重协商，请检查双端协商参数与对端网关日志。",
 			SummaryEN:  "Outer WAN is clean, but IPsec control plane shows SA down/rekey/negotiation fault.",
 			Evidence:   evidence,
 			LayerFault: "L2_IPSEC",
@@ -142,7 +142,7 @@ func Diagnose(sample storage.MetricSample, recentEvents []storage.TimelineEvent)
 		return DiagnosisResult{
 			Code:       CauseXFRMCryptoOrMTUDrop,
 			Severity:   "warning",
-			SummaryZH:  "隧道在线但内核 XFRM 错误计数增长（疑似加密状态失步、Replay 窗口或 MTU 分片丢包）。",
+			SummaryZH:  "隧道在线但内核 XFRM 错误计数上升，请排查 SA 同步状态、Replay 窗口及通道 MTU。",
 			SummaryEN:  "Tunnel is UP, but kernel XFRM error counters increased (crypto/replay/MTU drop).",
 			Evidence:   evidence,
 			LayerFault: "L3_KERNEL",
@@ -158,7 +158,7 @@ func Diagnose(sample storage.MetricSample, recentEvents []storage.TimelineEvent)
 		return DiagnosisResult{
 			Code:       CauseACLPolicyDrop,
 			Severity:   "warning",
-			SummaryZH:  "隧道在线但流量被 Hub 安全策略拦截（可能为未授权网段、OB 间隔离或源地址被 NAT 改写）。",
+			SummaryZH:  "流量被转发安全策略拦截，请核对允许互通网段、站点隔离策略及源地址透传。",
 			SummaryEN:  "Traffic dropped by Hub nftables authorization policy (unauthorized CIDR, OB isolation, or altered source IP).",
 			Evidence:   evidence,
 			LayerFault: "L3_KERNEL",
@@ -181,7 +181,7 @@ func Diagnose(sample storage.MetricSample, recentEvents []storage.TimelineEvent)
 		return DiagnosisResult{
 			Code:       CauseTunnelBlackholeAsymmetric,
 			Severity:   sev,
-			SummaryZH:  "公网与隧道控制面均正常，但跨隧道业务探针异常（疑似隧道黑洞、回程路由不对称或对端防火墙策略/NAT 豁免缺失）。",
+			SummaryZH:  "公网与隧道状态正常，但内网业务探测不通，请检查对端静态路由、回程路由及 NAT 豁免。",
 			SummaryEN:  "Outer WAN and IPsec SAs are UP, but end-to-end UDP failed (blackhole, asymmetric return route, or peer policy/NAT).",
 			Evidence:   evidence,
 			LayerFault: "L4_UDP",
@@ -194,7 +194,7 @@ func Diagnose(sample storage.MetricSample, recentEvents []storage.TimelineEvent)
 		return DiagnosisResult{
 			Code:       CauseObservationUnverified,
 			Severity:   "unknown",
-			SummaryZH:  "隧道控制面与外层正常，但缺少新鲜的端到端 UDP 业务探针回执，业务可达性为 UNKNOWN。",
+			SummaryZH:  "隧道在线，但未获取到最新内网 UDP 探测数据，业务连通性为未检测。",
 			SummaryEN:  "Control plane is UP, but fresh end-to-end UDP probe evidence is unavailable (UNKNOWN).",
 			Evidence:   evidence,
 			LayerFault: "UNKNOWN",
@@ -213,7 +213,7 @@ func Diagnose(sample storage.MetricSample, recentEvents []storage.TimelineEvent)
 	return DiagnosisResult{
 		Code:       CauseVPNHealthyAppSuspect,
 		Severity:   "ok",
-		SummaryZH:  "四层观测全部健康（外层公网、IPsec 隧道、内核转发、跨站 UDP 均正常）；若业务仍卡顿，请排查游戏服/OB 端应用或本地局域网。",
+		SummaryZH:  "VPN 通道各项指标正常；如业务仍有卡顿，请排查源端/目的端主机及本地局域网。",
 		SummaryEN:  "All 4 VPN layers are healthy; if application lag persists, inspect game server, OB client, or local LAN.",
 		Evidence:   evidence,
 		LayerFault: "NONE",

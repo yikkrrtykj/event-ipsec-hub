@@ -21,12 +21,22 @@ if ! id -u ipsecvpn-web >/dev/null 2>&1; then
     useradd --system --no-create-home --shell /usr/sbin/nologin ipsecvpn-web
 fi
 
-install -d -m 0755 /usr/local/sbin /run/ipsecvpn
-install -d -m 0750 -o root -g ipsecvpn-web /var/lib/ipsecvpn
-install -d -m 0700 -o root -g root /etc/ipsecvpn /etc/ipsecvpn/profiles /etc/ipsecvpn/secrets /etc/ipsecvpn/tls
+WEB_UID="$(id -u ipsecvpn-web)"
+WEB_GID="$(id -g ipsecvpn-web)"
+
+install -d -m 0755 /usr/local/sbin
+install -d -m 0750 -o root -g ipsecvpn-web /run/ipsecvpn
+# Keep /var/lib/ipsecvpn strictly root-only (0700) for secureio transaction records;
+# isolate shared SQLite WAL & Web TLS data under /var/lib/ipsecvpn-web.
+install -d -m 0700 -o root -g root /var/lib/ipsecvpn /etc/ipsecvpn /etc/ipsecvpn/profiles /etc/ipsecvpn/secrets /etc/ipsecvpn/tls
+install -d -m 2770 -o root -g ipsecvpn-web /var/lib/ipsecvpn-web
+install -d -m 0700 -o ipsecvpn-web -g ipsecvpn-web /var/lib/ipsecvpn-web/tls
 install -m 0755 -o root -g root "$BIN_SRC" /usr/local/sbin/ipsecvpn
 
-WEB_UID="$(id -u ipsecvpn-web)"
+cat > /etc/tmpfiles.d/ipsecvpn.conf <<EOF
+d /run/ipsecvpn 0750 root ipsecvpn-web -
+EOF
+systemd-tmpfiles --create /etc/tmpfiles.d/ipsecvpn.conf
 
 cat > /etc/systemd/system/ipsecvpn-agent.service <<EOF
 [Unit]
@@ -36,10 +46,10 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/sbin/ipsecvpn agent serve --allow-uid ${WEB_UID}
+ExecStart=/usr/local/sbin/ipsecvpn agent serve --db /var/lib/ipsecvpn-web/gateway.db --allow-uid ${WEB_UID} --socket-gid ${WEB_GID}
 Restart=on-failure
 RestartSec=3s
-UMask=0077
+UMask=0007
 
 [Install]
 WantedBy=multi-user.target
@@ -60,7 +70,7 @@ Wants=ipsecvpn-agent.service
 Type=simple
 User=ipsecvpn-web
 Group=ipsecvpn-web
-ExecStart=/usr/local/sbin/ipsecvpn web serve --listen :${WEB_PORT} --cert /var/lib/ipsecvpn/tls-cert.pem --key /var/lib/ipsecvpn/tls-key.pem ${EXTRA_IP_FLAG}
+ExecStart=/usr/local/sbin/ipsecvpn web serve --listen :${WEB_PORT} --db /var/lib/ipsecvpn-web/gateway.db --failover-state /var/lib/ipsecvpn-web/failover-state.json --cert /var/lib/ipsecvpn-web/tls/cert.pem --key /var/lib/ipsecvpn-web/tls/key.pem ${EXTRA_IP_FLAG}
 Restart=on-failure
 RestartSec=3s
 NoNewPrivileges=yes
@@ -71,8 +81,8 @@ PrivateDevices=yes
 ProtectKernelTunables=yes
 ProtectControlGroups=yes
 CapabilityBoundingSet=
-ReadWritePaths=/var/lib/ipsecvpn
-UMask=0027
+ReadWritePaths=/var/lib/ipsecvpn-web /run/ipsecvpn
+UMask=0007
 
 [Install]
 WantedBy=multi-user.target

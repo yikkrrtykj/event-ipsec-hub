@@ -166,11 +166,11 @@ func TestWebAPIEndToEndLoginProfileExportAndTimeline(t *testing.T) {
 		t.Fatalf("expected >=50 synced timeline samples, got %d %+v", resp.StatusCode, tl)
 	}
 
-	// Signoff checklist (#14)
+	// Signoff checklist
 	resp, _ = client.Get(ts.URL + "/api/v1/system/signoff")
 	var so map[string]any
 	_ = json.NewDecoder(resp.Body).Decode(&so)
-	if resp.StatusCode != http.StatusOK || !strings.Contains(so["content"].(string), "#12 / #14") {
+	if resp.StatusCode != http.StatusOK || !strings.Contains(so["content"].(string), "VPN 网关赛前上线核对单") {
 		t.Fatalf("unexpected signoff checklist: %+v", so)
 	}
 }

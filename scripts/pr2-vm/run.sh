@@ -9,6 +9,7 @@ case "$suite" in
     pr4) extra_packages=(tcpdump prometheus prometheus-alertmanager) ;;
     pr5) extra_packages=() ;;
     v3) extra_packages=(tcpdump prometheus) ;;
+    v4) extra_packages=(tcpdump) ;;
     *) printf '%s\n' 'Unknown isolated VM suite.' >&2; exit 2 ;;
 esac
 source_sha="$(git -C "$root" rev-parse --verify HEAD)"
@@ -40,10 +41,12 @@ cleanup() {
         evidence=/var/tmp/ipsecvpn-pr5-simulation.jsonl
     elif [[ "$suite" == v3 ]]; then
         evidence=/var/tmp/ipsecvpn-v3-acceptance.jsonl
+    elif [[ "$suite" == v4 ]]; then
+        evidence=/var/tmp/ipsecvpn-v4-acceptance.jsonl
     fi
     if [[ -s "$pidfile" ]] && guest "sudo cat $evidence" > "$work/acceptance.jsonl" 2>/dev/null; then
         expected_payload=
-        if [[ "$suite" == pr2 ]]; then expected_payload="$payload_sha"; fi
+        if [[ "$suite" == pr2 || "$suite" == v4 ]]; then expected_payload="$payload_sha"; fi
         if python "$source/scripts/pr2-vm/verify_evidence.py" \
             "$work/acceptance.jsonl" "$source_sha" "$expected_payload"; then
             cat "$work/acceptance.jsonl"
@@ -72,7 +75,9 @@ sudo apt-get "${apt_network[@]}" -qq update
 sudo apt-get "${apt_network[@]}" -qq install -y --no-install-recommends \
     qemu-system-x86 qemu-utils cloud-image-utils dpkg-dev
 mkdir -p "$work/payload/apt" "$work/payload/wheels" "$work/apt-archives"
-python -m pip wheel --wheel-dir "$work/payload/wheels" "$source"
+if [[ "$suite" != v4 ]]; then
+    python -m pip wheel --wheel-dir "$work/payload/wheels" "$source"
+fi
 cp "$source"/scripts/pr2-vm/guest.sh "$work/payload/"
 printf '%s\n' "$source_sha" > "$work/payload/head-sha"
 if [[ "$suite" == pr3 || "$suite" == pr4 ]]; then
@@ -81,6 +86,16 @@ elif [[ "$suite" == pr5 ]]; then
     cp "$source"/scripts/pr5-lab/verify_failover.py "$source"/scripts/pr3-lab/traffic.py "$work/payload/"
 elif [[ "$suite" == v3 ]]; then
     cp "$source"/scripts/v3-lab/verify_v3.py "$source"/scripts/pr3-lab/traffic.py "$work/payload/"
+elif [[ "$suite" == v4 ]]; then
+    v4_bin="${IPSECVPN_V4_BIN:-$root/bin/ipsecvpn-linux-amd64}"
+    if [[ ! -x "$v4_bin" ]]; then
+        printf '%s\n' "STOP: compiled Go Linux binary not found at $v4_bin" >&2
+        exit 1
+    fi
+    cp "$v4_bin" "$work/payload/ipsecvpn"
+    chmod 0755 "$work/payload/ipsecvpn"
+    cp "$source"/scripts/v4-lab/verify_v4.py "$source"/scripts/pr3-lab/traffic.py "$source"/scripts/install-v4.sh "$work/payload/"
+    cp "$source/config/esports-multi-ob-hillstone.example.yaml" "$work/payload/multi-ob.example.yaml"
 else
     cp "$source"/scripts/pr2-vm/verify.py "$work/payload/"
 fi
@@ -170,7 +185,11 @@ if [[ -z "$after" || "$before" == "$after" ]]; then
     printf '%s\n' 'FAIL V17: an actual guest reboot was not observed.' >&2
     exit 1
 fi
-driver=verify.py
-if [[ "$suite" == pr4 ]]; then driver=verify_monitor.py; fi
-if [[ "$suite" == v3 ]]; then driver=verify_v3.py; fi
-guest "sudo /opt/ipsecvpn-lab/venv/bin/python /opt/ipsecvpn-lab/$driver after-reboot"
+if [[ "$suite" == v4 ]]; then
+    guest 'sudo /usr/bin/python3 /opt/ipsecvpn-lab/verify_v4.py after-reboot'
+else
+    driver=verify.py
+    if [[ "$suite" == pr4 ]]; then driver=verify_monitor.py; fi
+    if [[ "$suite" == v3 ]]; then driver=verify_v3.py; fi
+    guest "sudo /opt/ipsecvpn-lab/venv/bin/python /opt/ipsecvpn-lab/$driver after-reboot"
+fi

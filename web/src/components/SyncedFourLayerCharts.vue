@@ -16,11 +16,23 @@ const hovered = ref<MetricSample | null>(null)
 
 let charts: echarts.ECharts[] = []
 
+function causeLabel(code: string): string {
+  const map: Record<string, string> = {
+    VPN_HEALTHY_APP_SUSPECT: '链路正常',
+    ISP_OUTER_DEGRADED: '公网线路异常',
+    IPSEC_SA_EVENT: '隧道协商异常',
+    TUNNEL_BLACKHOLE_OR_ASYMMETRIC: '隧道不通 / 路由异常',
+    XFRM_CRYPTO_OR_MTU_DROP: '加解密 / MTU 异常',
+    ACL_POLICY_DROP: '策略拦截',
+    OBSERVATION_UNVERIFIED: '未检测'
+  }
+  return map[code] || code
+}
+
 function buildMarkLines(times: string[], samples: MetricSample[], events: TimelineEvent[]) {
   if (!samples.length || !events.length) return []
   const lines: any[] = []
   for (const ev of events) {
-    // Snap event to nearest sample index on the shared X axis
     let bestIdx = 0
     let bestDiff = Infinity
     for (let i = 0; i < samples.length; i++) {
@@ -35,12 +47,7 @@ function buildMarkLines(times: string[], samples: MetricSample[], events: Timeli
     lines.push({
       xAxis: times[bestIdx],
       lineStyle: { color, type: 'dashed', width: 1.5 },
-      label: {
-        formatter: ev.category,
-        color,
-        fontSize: 10,
-        rotate: 0
-      }
+      label: { formatter: ev.category, color, fontSize: 10 }
     })
   }
   return lines
@@ -57,20 +64,19 @@ function renderCharts() {
   const axisLabel = { color: '#94a3b8', fontSize: 11 }
   const splitLine = { lineStyle: { color: '#1e293b' } }
 
-  // Layer 1: Outer WAN / ISP Quality
   charts[0].setOption({
     backgroundColor: 'transparent',
-    title: { text: 'L1 · 公网外层 / ISP 质量 (RTT ms & 丢包 %)', left: 10, top: 4, textStyle: { color: '#e2e8f0', fontSize: 12.5 } },
+    title: { text: '外层公网延迟与丢包', left: 10, top: 4, textStyle: { color: '#e2e8f0', fontSize: 12.5 } },
     tooltip: { trigger: 'axis', backgroundColor: '#0f172a', borderColor: '#334155', textStyle: { color: '#e2e8f0' } },
     grid: baseGrid,
     xAxis: { type: 'category', data: times, axisLabel, axisPointer: { show: true } },
     yAxis: [
-      { type: 'value', name: 'RTT(ms)', nameTextStyle: axisLabel, axisLabel, splitLine },
-      { type: 'value', name: '丢包%', min: 0, max: 100, nameTextStyle: axisLabel, axisLabel, splitLine: { show: false } }
+      { type: 'value', name: 'RTT (ms)', nameTextStyle: axisLabel, axisLabel, splitLine },
+      { type: 'value', name: '丢包 (%)', min: 0, max: 100, nameTextStyle: axisLabel, axisLabel, splitLine: { show: false } }
     ],
     series: [
       {
-        name: '外层 RTT(ms)',
+        name: '外层延迟 (ms)',
         type: 'line',
         smooth: true,
         showSymbol: false,
@@ -79,7 +85,7 @@ function renderCharts() {
         markLine: { silent: true, symbol: 'none', data: markLines }
       },
       {
-        name: '外层丢包%',
+        name: '外层丢包 (%)',
         type: 'bar',
         yAxisIndex: 1,
         itemStyle: { color: 'rgba(239, 68, 68, 0.55)' },
@@ -88,14 +94,24 @@ function renderCharts() {
     ]
   }, true)
 
-  // Layer 2: IPsec Control Plane (IKE / CHILD SA)
   charts[1].setOption({
     backgroundColor: 'transparent',
-    title: { text: 'L2 · IPsec 控制面状态 (1=UP, 0=DOWN, -1=UNKNOWN) + 实时事件竖线', left: 10, top: 4, textStyle: { color: '#e2e8f0', fontSize: 12.5 } },
+    title: { text: 'IKE / IPsec 隧道状态', left: 10, top: 4, textStyle: { color: '#e2e8f0', fontSize: 12.5 } },
     tooltip: { trigger: 'axis', backgroundColor: '#0f172a', borderColor: '#334155', textStyle: { color: '#e2e8f0' } },
     grid: baseGrid,
     xAxis: { type: 'category', data: times, axisLabel, axisPointer: { show: true } },
-    yAxis: { type: 'value', min: -1, max: 1, interval: 1, axisLabel, splitLine },
+    yAxis: {
+      type: 'value',
+      min: -1,
+      max: 1,
+      interval: 1,
+      axisLabel: {
+        color: '#94a3b8',
+        fontSize: 11,
+        formatter: (v: number) => (v === 1 ? '在线' : v === 0 ? '断开' : '未知')
+      },
+      splitLine
+    },
     series: [
       {
         name: 'IKE SA',
@@ -108,7 +124,7 @@ function renderCharts() {
         markLine: { silent: true, symbol: 'none', data: markLines }
       },
       {
-        name: 'CHILD SA',
+        name: 'IPsec SA',
         type: 'line',
         step: 'end',
         showSymbol: false,
@@ -119,20 +135,19 @@ function renderCharts() {
     ]
   }, true)
 
-  // Layer 3: Kernel XFRM Throughput & Error/Drop spikes
   charts[2].setOption({
     backgroundColor: 'transparent',
-    title: { text: 'L3 · 内核 XFRM 吞吐 (Mbps) & XFRM/ACL 丢包增量', left: 10, top: 4, textStyle: { color: '#e2e8f0', fontSize: 12.5 } },
+    title: { text: '通道带宽与异常计数', left: 10, top: 4, textStyle: { color: '#e2e8f0', fontSize: 12.5 } },
     tooltip: { trigger: 'axis', backgroundColor: '#0f172a', borderColor: '#334155', textStyle: { color: '#e2e8f0' } },
     grid: baseGrid,
     xAxis: { type: 'category', data: times, axisLabel, axisPointer: { show: true } },
     yAxis: [
-      { type: 'value', name: 'Mbps', nameTextStyle: axisLabel, axisLabel, splitLine },
-      { type: 'value', name: '错误/拦截', minInterval: 1, nameTextStyle: axisLabel, axisLabel, splitLine: { show: false } }
+      { type: 'value', name: '带宽 (Mbps)', nameTextStyle: axisLabel, axisLabel, splitLine },
+      { type: 'value', name: '异常数', minInterval: 1, nameTextStyle: axisLabel, axisLabel, splitLine: { show: false } }
     ],
     series: [
       {
-        name: 'RX (Mbps)',
+        name: '入带宽 (Mbps)',
         type: 'line',
         smooth: true,
         showSymbol: false,
@@ -142,7 +157,7 @@ function renderCharts() {
         markLine: { silent: true, symbol: 'none', data: markLines }
       },
       {
-        name: 'TX (Mbps)',
+        name: '出带宽 (Mbps)',
         type: 'line',
         smooth: true,
         showSymbol: false,
@@ -151,7 +166,7 @@ function renderCharts() {
         data: samples.map((s) => Number((s.l3_tx_bps / 1_000_000).toFixed(2)))
       },
       {
-        name: 'XFRM Error + NFT Drop',
+        name: 'XFRM 错误 / 策略拦截',
         type: 'bar',
         yAxisIndex: 1,
         itemStyle: { color: '#f59e0b' },
@@ -160,20 +175,19 @@ function renderCharts() {
     ]
   }, true)
 
-  // Layer 4: Cross-Tunnel End-to-End UDP Echo Probe
   charts[3].setOption({
     backgroundColor: 'transparent',
-    title: { text: 'L4 · 跨隧道端到端业务 UDP 探测 (RTT/P95 ms & 丢包 %)', left: 10, top: 4, textStyle: { color: '#e2e8f0', fontSize: 12.5 } },
+    title: { text: '内网端到端探针', left: 10, top: 4, textStyle: { color: '#e2e8f0', fontSize: 12.5 } },
     tooltip: { trigger: 'axis', backgroundColor: '#0f172a', borderColor: '#334155', textStyle: { color: '#e2e8f0' } },
     grid: baseGrid,
     xAxis: { type: 'category', data: times, axisLabel, axisPointer: { show: true } },
     yAxis: [
-      { type: 'value', name: 'RTT(ms)', nameTextStyle: axisLabel, axisLabel, splitLine },
-      { type: 'value', name: '丢包%', min: 0, max: 100, nameTextStyle: axisLabel, axisLabel, splitLine: { show: false } }
+      { type: 'value', name: 'RTT (ms)', nameTextStyle: axisLabel, axisLabel, splitLine },
+      { type: 'value', name: '丢包 (%)', min: 0, max: 100, nameTextStyle: axisLabel, axisLabel, splitLine: { show: false } }
     ],
     series: [
       {
-        name: 'UDP RTT(ms)',
+        name: 'UDP 延迟 (ms)',
         type: 'line',
         smooth: true,
         showSymbol: false,
@@ -182,7 +196,7 @@ function renderCharts() {
         markLine: { silent: true, symbol: 'none', data: markLines }
       },
       {
-        name: 'UDP P95(ms)',
+        name: 'UDP P95 (ms)',
         type: 'line',
         smooth: true,
         showSymbol: false,
@@ -191,7 +205,7 @@ function renderCharts() {
         data: samples.map((s) => Number(s.l4_udp_p95_ms.toFixed(1)))
       },
       {
-        name: 'UDP 丢包%',
+        name: 'UDP 丢包 (%)',
         type: 'bar',
         yAxisIndex: 1,
         itemStyle: { color: 'rgba(239, 68, 68, 0.65)' },
@@ -231,10 +245,10 @@ onBeforeUnmount(() => {
 
 watch(() => [props.samples, props.events], renderCharts, { deep: true })
 
-function stateBadge(v: number) {
-  if (v === 1) return 'UP'
-  if (v === 0) return 'DOWN'
-  return 'UNKNOWN'
+function stText(v: number) {
+  if (v === 1) return '在线'
+  if (v === 0) return '断开'
+  return '未检测'
 }
 </script>
 
@@ -242,17 +256,17 @@ function stateBadge(v: number) {
   <div>
     <div v-if="hovered" class="card" style="padding: 12px 16px; border-color: #3b82f6;">
       <div class="row">
-        <strong>时间切面 {{ fmtTime(hovered.ts_ms) }}</strong>
+        <strong>{{ fmtTime(hovered.ts_ms) }}</strong>
         <span class="pill" :class="hovered.root_cause === 'VPN_HEALTHY_APP_SUSPECT' ? 'pill-ok' : hovered.root_cause === 'OBSERVATION_UNVERIFIED' ? 'pill-unknown' : 'pill-critical'">
-          {{ hovered.root_cause }}
+          {{ causeLabel(hovered.root_cause) }}
         </span>
-        <span class="muted">L1外层: {{ stateBadge(hovered.l1_outer_state) }} ({{ hovered.l1_outer_rtt_ms.toFixed(1) }}ms / 丢包{{ (hovered.l1_outer_loss*100).toFixed(0) }}%)</span>
-        <span class="muted">L2隧道: IKE={{ stateBadge(hovered.l2_ike_state) }} CHILD={{ stateBadge(hovered.l2_child_state) }}</span>
-        <span class="muted">L3速率: RX {{ (hovered.l3_rx_bps/1e6).toFixed(2) }} / TX {{ (hovered.l3_tx_bps/1e6).toFixed(2) }} Mbps</span>
-        <span class="muted">L4 UDP: {{ stateBadge(hovered.l4_udp_state) }} ({{ hovered.l4_udp_rtt_ms.toFixed(1) }}ms / 丢包{{ (hovered.l4_udp_loss*100).toFixed(0) }}%)</span>
+        <span class="muted">外层 {{ hovered.l1_outer_rtt_ms.toFixed(1) }}ms / 丢包{{ (hovered.l1_outer_loss*100).toFixed(0) }}%</span>
+        <span class="muted">IKE {{ stText(hovered.l2_ike_state) }} · IPsec {{ stText(hovered.l2_child_state) }}</span>
+        <span class="muted">带宽 入 {{ (hovered.l3_rx_bps/1e6).toFixed(2) }} / 出 {{ (hovered.l3_tx_bps/1e6).toFixed(2) }} Mbps</span>
+        <span class="muted">探针 {{ hovered.l4_udp_rtt_ms.toFixed(1) }}ms / 丢包{{ (hovered.l4_udp_loss*100).toFixed(0) }}%</span>
       </div>
       <div style="margin-top: 6px; font-size: 13px; color: #f8fafc;">
-        结论：{{ hovered.root_detail }}
+        {{ hovered.root_detail }}
       </div>
     </div>
 

@@ -1,0 +1,71 @@
+name: V4 Go Single-Binary Ubuntu 24.04 QEMU Kernel Lab
+
+on:
+  push:
+    branches: [v4-go]
+    paths:
+      - 'cmd/**'
+      - 'internal/**'
+      - 'web/src/**'
+      - 'web/embed.go'
+      - 'config/**'
+      - 'scripts/install-v4.sh'
+      - 'scripts/v4-lab/**'
+      - 'scripts/pr2-vm/**'
+      - 'scripts/pr3-lab/traffic.py'
+      - '.github/workflows/v4-lab.yml'
+      - 'go.mod'
+      - 'go.sum'
+  pull_request:
+    branches: [main, v4-go]
+    paths:
+      - 'cmd/**'
+      - 'internal/**'
+      - 'scripts/install-v4.sh'
+      - 'scripts/v4-lab/**'
+      - 'scripts/pr2-vm/**'
+      - '.github/workflows/v4-lab.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  v4-qemu-lab:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-node@39370e3970a6d050c480ffad7ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version: '22'
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa3688eabac # v5.4.0
+        with:
+          go-version-file: go.mod
+      - name: ShellCheck V4 installer & VM scripts
+        run: shellcheck scripts/install-v4.sh scripts/pr2-vm/*.sh
+      - name: Build Vue 3 + TypeScript + ECharts SPA
+        working-directory: web
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+      - name: Build static Linux amd64 Go single binary
+        run: |
+          mkdir -p bin
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o bin/ipsecvpn-linux-amd64 ./cmd/ipsecvpn
+          ls -lh bin/ipsecvpn-linux-amd64
+      - name: Run V4 black-box Go acceptance in disposable Ubuntu 24.04 QEMU VM
+        env:
+          IPSECVPN_EXPECTED_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          IPSECVPN_V4_BIN: ${{ github.workspace }}/bin/ipsecvpn-linux-amd64
+          IPSECVPN_EVIDENCE_FILE: ${{ runner.temp }}/ipsecvpn-v4-acceptance.jsonl
+        run: bash scripts/pr2-vm/run.sh v4
+      - name: Upload sanitized V4 QEMU kernel acceptance evidence
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ipsecvpn-v4-lab-evidence
+          path: ${{ runner.temp }}/ipsecvpn-v4-acceptance.jsonl

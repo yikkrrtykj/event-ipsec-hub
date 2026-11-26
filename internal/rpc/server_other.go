@@ -10,6 +10,7 @@ import (
 
 type Server struct {
 	SocketPath  string
+	SocketGID   int
 	AllowedUIDs map[uint32]bool
 	Handler     Handler
 }

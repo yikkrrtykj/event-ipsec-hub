@@ -16,6 +16,7 @@ import (
 // Server listens on a root-owned Unix socket and verifies peer UID via SO_PEERCRED.
 type Server struct {
 	SocketPath  string
+	SocketGID   int             // optional group ID (>0) granted connect access (mode 0660, dir 0750)
 	AllowedUIDs map[uint32]bool // empty = allow root (0) only
 	Handler     Handler
 }
@@ -25,8 +26,13 @@ func (s *Server) Serve(ctx context.Context) error {
 	if sockPath == "" {
 		sockPath = DefaultSocketPath
 	}
-	if err := os.MkdirAll(filepath.Dir(sockPath), 0o755); err != nil {
+	dir := filepath.Dir(sockPath)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
+	}
+	if s.SocketGID > 0 {
+		_ = os.Chown(dir, 0, s.SocketGID)
+		_ = os.Chmod(dir, 0o750)
 	}
 	_ = os.Remove(sockPath)
 	ln, err := net.Listen("unix", sockPath)
@@ -35,6 +41,9 @@ func (s *Server) Serve(ctx context.Context) error {
 	}
 	defer ln.Close()
 	defer os.Remove(sockPath)
+	if s.SocketGID > 0 {
+		_ = os.Chown(sockPath, 0, s.SocketGID)
+	}
 	_ = os.Chmod(sockPath, 0o660)
 
 	go func() {

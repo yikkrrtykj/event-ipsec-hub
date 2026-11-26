@@ -24,6 +24,7 @@ import (
 // Config controls the privileged root Hub Agent daemon.
 type Config struct {
 	SocketPath    string
+	SocketGID     int
 	DBPath        string
 	Interval      time.Duration
 	RetentionDays int
@@ -357,6 +358,7 @@ func extractHubID(active *live.ActiveRecord) string {
 func (d *Daemon) Serve(ctx context.Context) error {
 	srv := &rpc.Server{
 		SocketPath:  d.cfg.SocketPath,
+		SocketGID:   d.cfg.SocketGID,
 		AllowedUIDs: d.cfg.AllowedUIDs,
 		Handler:     d.HandleRPC,
 	}

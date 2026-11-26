@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onMounted, ref, watch } from 'vue'
 import { api, downloadTextFile } from '../api'
 
 const profiles = ref<any[]>([])
 const profileId = ref('')
+const availableSites = ref<string[]>([])
 const siteId = ref('ob-venue-1')
 const format = ref('tencent-json')
 const includePSK = ref(false)
@@ -20,6 +21,25 @@ async function load() {
     profileId.value = profiles.value[0].id
   }
 }
+
+async function refreshSites() {
+  const rec = profiles.value.find((p) => p.id === profileId.value)
+  if (!rec) return
+  try {
+    const res = await api('/api/v1/profiles/validate', {
+      method: 'POST',
+      body: JSON.stringify({ yaml_content: rec.yaml_content })
+    })
+    availableSites.value = (res.sites || []).map((s: any) => s.id)
+    if (availableSites.value.length && !availableSites.value.includes(siteId.value)) {
+      siteId.value = availableSites.value[0]
+    }
+  } catch {
+    availableSites.value = []
+  }
+}
+
+watch(profileId, refreshSites)
 
 async function generate() {
   errMsg.value = ''
@@ -54,29 +74,32 @@ onMounted(load)
 
 <template>
   <div>
-    <h2 style="margin: 0 0 14px;">对端防火墙配置一键导出（发给对端网工直接照填）</h2>
+    <h2 style="margin: 0 0 14px; font-size: 18px;">配置导出</h2>
     <div v-if="errMsg" class="alert-banner alert-critical">{{ errMsg }}</div>
 
     <div class="card">
       <div class="grid-3">
         <div class="field">
-          <label>选择赛事 Profile</label>
+          <label>配置集</label>
           <select v-model="profileId" class="select">
             <option v-for="p in profiles" :key="p.id" :value="p.id">{{ p.id }} ({{ p.name }})</option>
           </select>
         </div>
         <div class="field">
-          <label>接收方站点 ID</label>
-          <input v-model="siteId" class="input" placeholder="如 ob-venue-1 / server-core" />
+          <label>对端站点</label>
+          <select v-if="availableSites.length" v-model="siteId" class="select">
+            <option v-for="id in availableSites" :key="id" :value="id">{{ id }}</option>
+          </select>
+          <input v-else v-model="siteId" class="input" placeholder="如 ob-venue-1" />
         </div>
         <div class="field">
-          <label>导出交付格式</label>
+          <label>导出格式</label>
           <select v-model="format" class="select">
-            <option value="tencent-json">腾讯云 VPN 网关同款精简 JSON（强加密 IKEv2）</option>
-            <option value="hillstone-md">山石 Hillstone / StoneOS 参数单 (Markdown)</option>
-            <option value="generic-md">厂商中立通用参数单 (Markdown)</option>
-            <option value="hillstone-draft">山石 StoneOS 参考 CLI 草稿</option>
-            <option value="strongswan-draft">strongSwan swanctl.conf 参考草稿</option>
+            <option value="tencent-json">腾讯云格式 JSON (IKEv2)</option>
+            <option value="hillstone-md">山石防火墙参数单 (Markdown)</option>
+            <option value="generic-md">通用参数单 (Markdown)</option>
+            <option value="hillstone-draft">山石 CLI 参考配置</option>
+            <option value="strongswan-draft">strongSwan 参考配置</option>
           </select>
         </div>
       </div>
@@ -84,18 +107,19 @@ onMounted(load)
       <div class="row" style="margin-top: 8px; padding-top: 10px; border-top: 1px solid var(--border);">
         <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
           <input type="checkbox" v-model="includePSK" />
-          <span>包含明文 PSK 一次性交付（默认脱敏 <code>&lt;SEND_SEPARATELY&gt;</code>，开启将二次验密并记审计）</span>
+          <span>包含预共享密钥明文</span>
+          <span class="muted">（默认隐藏为 <code>&lt;SEND_SEPARATELY&gt;</code>，导出明文将记入操作日志）</span>
         </label>
         <input
           v-if="includePSK"
           v-model="confirmPassword"
           type="password"
           class="input"
-          style="width: 220px;"
-          placeholder="请输入管理员密码确认"
+          style="width: 200px;"
+          placeholder="输入管理员密码确认"
         />
         <div class="spacer"></div>
-        <button class="btn" @click="generate">一键生成对端配置</button>
+        <button class="btn" @click="generate">生成配置</button>
       </div>
     </div>
 
@@ -103,8 +127,8 @@ onMounted(load)
       <div class="row" style="margin-bottom: 10px;">
         <strong>{{ filename }}</strong>
         <div class="spacer"></div>
-        <button class="btn btn-secondary" @click="copyText">{{ copied ? '已复制 ✓' : '复制全文' }}</button>
-        <button class="btn btn-ok" @click="downloadTextFile(filename, content)">下载文件发送给对端</button>
+        <button class="btn btn-secondary" @click="copyText">{{ copied ? '已复制' : '复制内容' }}</button>
+        <button class="btn btn-ok" @click="downloadTextFile(filename, content)">下载文件</button>
       </div>
       <div class="code-block">{{ content }}</div>
     </div>

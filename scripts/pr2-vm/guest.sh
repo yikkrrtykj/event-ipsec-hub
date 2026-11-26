@@ -13,6 +13,7 @@ case "$suite" in
     pr4) extra_packages=(tcpdump prometheus prometheus-alertmanager) ;;
     pr5) extra_packages=() ;;
     v3) extra_packages=(tcpdump prometheus) ;;
+    v4) extra_packages=(tcpdump) ;;
     *) exit 2 ;;
 esac
 guest_suite="$suite"
@@ -50,9 +51,14 @@ if [[ "$suite" == pr4 || "$suite" == v3 ]]; then
     trap - EXIT
     systemctl disable prometheus.service prometheus-alertmanager.service 2>/dev/null || true
 fi
-python3 -m venv /opt/ipsecvpn-lab/venv
-/opt/ipsecvpn-lab/venv/bin/python -m pip install --no-index \
-    --find-links=/opt/ipsecvpn-lab/wheels ipsecvpn
+if [[ "$suite" == v4 ]]; then
+    install -d -m 0755 /usr/local/sbin
+    install -m 0755 -o root -g root /opt/ipsecvpn-lab/ipsecvpn /usr/local/sbin/ipsecvpn
+else
+    python3 -m venv /opt/ipsecvpn-lab/venv
+    /opt/ipsecvpn-lab/venv/bin/python -m pip install --no-index \
+        --find-links=/opt/ipsecvpn-lab/wheels ipsecvpn
+fi
 install -d -m 0700 /etc/ipsecvpn /etc/ipsecvpn/profiles /etc/ipsecvpn/secrets
 printf 'ipsecvpn-lab-v1\n' > /etc/ipsecvpn/lab-authorized
 chmod 0600 /etc/ipsecvpn/lab-authorized
@@ -72,8 +78,12 @@ table inet lab_existing {
 }
 EOF
 systemctl enable --now nftables.service
-driver=verify.py
-if [[ "$suite" == pr4 ]]; then driver=verify_monitor.py; fi
-if [[ "$suite" == pr5 ]]; then driver=verify_failover.py; fi
-if [[ "$suite" == v3 ]]; then driver=verify_v3.py; fi
-/opt/ipsecvpn-lab/venv/bin/python "/opt/ipsecvpn-lab/$driver" before-reboot
+if [[ "$suite" == v4 ]]; then
+    /usr/bin/python3 /opt/ipsecvpn-lab/verify_v4.py before-reboot
+else
+    driver=verify.py
+    if [[ "$suite" == pr4 ]]; then driver=verify_monitor.py; fi
+    if [[ "$suite" == pr5 ]]; then driver=verify_failover.py; fi
+    if [[ "$suite" == v3 ]]; then driver=verify_v3.py; fi
+    /opt/ipsecvpn-lab/venv/bin/python "/opt/ipsecvpn-lab/$driver" before-reboot
+fi
