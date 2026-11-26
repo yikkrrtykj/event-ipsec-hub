@@ -760,7 +760,7 @@ def before_reboot():
     so_code, so_raw = wc.request("GET", "/api/v1/system/signoff")
     assert so_code == 200 and "VPN 网关赛前上线核对单" in json.loads(so_raw)["content"]
     mt_code, mt_raw = wc.request("GET", "/metrics")
-    assert mt_code == 200 and "ipsecvpn_collector_up" in mt_raw
+    assert mt_code == 200 and "event_ipsec_collector_healthy" in mt_raw, (mt_code, mt_raw[:300])
     au_code, au_raw = wc.request("GET", "/api/v1/audit")
     audit_actions = [row["action"] for row in json.loads(au_raw).get("logs", [])]
     assert au_code == 200 and "export_psk_plaintext" in audit_actions, audit_actions
@@ -810,7 +810,12 @@ def after_reboot():
         "ipsecvpn-agent.service",
         "ipsecvpn-web.service",
     ):
-        wait_until(lambda u=unit: cmd("systemctl", "is-active", u, allowed=(0, 3)).stdout.strip() == "active", timeout=45, interval=1.0)
+        wait_until(
+            lambda u=unit: cmd("systemctl", "is-active", u, allowed=(0, 3)).stdout.strip() == "active",
+            timeout=45,
+            interval=1.0,
+            diag=lambda u=unit: f"unit={u} status={cmd('systemctl', 'status', u, '--no-pager', allowed=(0, 1, 3, 4)).stdout[-1000:]}",
+        )
 
     status = wait_status_pass(timeout=60)
     flow = exchange("ob-alpha", "server-core", "10.101.10.0/24", "10.100.10.0/24", "udp", PORT + 40)
