@@ -43,9 +43,8 @@ jobs:
           LDFLAGS="-s -w -X main.Version=${VER}"
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="$LDFLAGS" -o release/ipsecvpn-linux-amd64 ./cmd/ipsecvpn
           CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="$LDFLAGS" -o release/ipsecvpn-linux-arm64 ./cmd/ipsecvpn
-          CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -trimpath -ldflags="$LDFLAGS" -o release/ipsecvpn-windows-amd64.exe ./cmd/ipsecvpn
           cp scripts/install-v4.sh release/install-v4.sh
-          (cd release && sha256sum ipsecvpn-linux-amd64 ipsecvpn-linux-arm64 ipsecvpn-windows-amd64.exe install-v4.sh > SHA256SUMS)
+          (cd release && sha256sum ipsecvpn-linux-amd64 ipsecvpn-linux-arm64 install-v4.sh > SHA256SUMS)
           ls -lh release/
           cat release/SHA256SUMS
 
