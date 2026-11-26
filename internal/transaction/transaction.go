@@ -1,6 +1,7 @@
 package transaction
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -73,7 +74,9 @@ func decodeRecord[T any](path string) (*T, error) {
 		return nil, secureio.Stop("A persisted state record is unreadable.")
 	}
 	var out T
-	if err := json.Unmarshal(b, &out); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.UseNumber()
+	if err := dec.Decode(&out); err != nil {
 		return nil, secureio.Stop("A persisted state record is unreadable.")
 	}
 	return &out, nil
@@ -306,7 +309,9 @@ func decodeAs[T any](v any) (*T, error) {
 		return nil, err
 	}
 	var out T
-	if err := json.Unmarshal(b, &out); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.UseNumber()
+	if err := dec.Decode(&out); err != nil {
 		return nil, err
 	}
 	return &out, nil
