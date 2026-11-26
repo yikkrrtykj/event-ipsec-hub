@@ -124,6 +124,20 @@ html, body, #app {
   margin-bottom: 16px;
 }
 
+.sub-card {
+  background: rgba(15, 23, 42, 0.58);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px;
+  margin-bottom: 12px;
+}
+
+.grid-2-tight {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
 .card h2, .card h3 {
   margin: 0 0 12px;
   font-size: 15px;

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref, watch } from 'vue'
 import { api, downloadTextFile } from '../api'
+import { t } from '../i18n'
 
 const profiles = ref<any[]>([])
 const profileId = ref('')
@@ -74,32 +75,32 @@ onMounted(load)
 
 <template>
   <div>
-    <h2 style="margin: 0 0 14px; font-size: 18px;">配置导出</h2>
+    <h2 style="margin: 0 0 14px; font-size: 18px;">{{ t('navExport') }}</h2>
     <div v-if="errMsg" class="alert-banner alert-critical">{{ errMsg }}</div>
 
     <div class="card">
       <div class="grid-3">
         <div class="field">
-          <label>配置集</label>
+          <label>{{ t('profileSet') }}</label>
           <select v-model="profileId" class="select">
             <option v-for="p in profiles" :key="p.id" :value="p.id">{{ p.id }} ({{ p.name }})</option>
           </select>
         </div>
         <div class="field">
-          <label>对端站点</label>
+          <label>{{ t('colPeerSite') }}</label>
           <select v-if="availableSites.length" v-model="siteId" class="select">
             <option v-for="id in availableSites" :key="id" :value="id">{{ id }}</option>
           </select>
-          <input v-else v-model="siteId" class="input" placeholder="如 ob-venue-1" />
+          <input v-else v-model="siteId" class="input" placeholder="ob-venue-1" />
         </div>
         <div class="field">
-          <label>导出格式</label>
+          <label>{{ t('exportFormat') }}</label>
           <select v-model="format" class="select">
-            <option value="tencent-json">腾讯云格式 JSON (IKEv2)</option>
-            <option value="hillstone-md">山石防火墙参数单 (Markdown)</option>
-            <option value="generic-md">通用参数单 (Markdown)</option>
-            <option value="hillstone-draft">山石 CLI 参考配置</option>
-            <option value="strongswan-draft">strongSwan 参考配置</option>
+            <option value="tencent-json">{{ t('fmtStandardJson') }}</option>
+            <option value="hillstone-md">{{ t('fmtHillstoneMd') }}</option>
+            <option value="generic-md">{{ t('fmtGenericMd') }}</option>
+            <option value="hillstone-draft">{{ t('fmtHillstoneCli') }}</option>
+            <option value="strongswan-draft">{{ t('fmtStrongswan') }}</option>
           </select>
         </div>
       </div>
@@ -107,8 +108,8 @@ onMounted(load)
       <div class="row" style="margin-top: 8px; padding-top: 10px; border-top: 1px solid var(--border);">
         <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
           <input type="checkbox" v-model="includePSK" />
-          <span>包含预共享密钥明文</span>
-          <span class="muted">（默认隐藏为 <code>&lt;SEND_SEPARATELY&gt;</code>，导出明文将记入操作日志）</span>
+          <span>{{ t('includePskPlain') }}</span>
+          <span class="muted">({{ t('includePskHint') }})</span>
         </label>
         <input
           v-if="includePSK"
@@ -116,10 +117,10 @@ onMounted(load)
           type="password"
           class="input"
           style="width: 200px;"
-          placeholder="输入管理员密码确认"
+          :placeholder="t('confirmAdminPassPh')"
         />
         <div class="spacer"></div>
-        <button class="btn" @click="generate">生成配置</button>
+        <button class="btn" @click="generate">{{ t('btnGenerateCfg') }}</button>
       </div>
     </div>
 
@@ -127,8 +128,8 @@ onMounted(load)
       <div class="row" style="margin-bottom: 10px;">
         <strong>{{ filename }}</strong>
         <div class="spacer"></div>
-        <button class="btn btn-secondary" @click="copyText">{{ copied ? '已复制' : '复制内容' }}</button>
-        <button class="btn btn-ok" @click="downloadTextFile(filename, content)">下载文件</button>
+        <button class="btn btn-secondary" @click="copyText">{{ copied ? t('btnCopied') : t('btnCopy') }}</button>
+        <button class="btn btn-ok" @click="downloadTextFile(filename, content)">{{ t('btnDownload') }}</button>
       </div>
       <div class="code-block">{{ content }}</div>
     </div>

@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { api, fmtDateTime } from '../api'
+import { failoverModeLabel, t } from '../i18n'
 
 const state = ref<any>(null)
 const reason = ref('manual_switch')
@@ -8,13 +9,6 @@ const applyGate = ref(true)
 const force = ref(false)
 const msg = ref('')
 const errMsg = ref('')
-
-function modeLabel(mode: string): string {
-  if (mode === 'PRIMARY_ACTIVE') return '主路运行'
-  if (mode === 'BACKUP_LOCKED') return '备路锁定'
-  if (mode === 'FAILBACK_READY') return '待人工回切'
-  return mode || '-'
-}
 
 async function load() {
   errMsg.value = ''
@@ -35,7 +29,7 @@ async function switchBackup() {
       body: JSON.stringify({ reason: reason.value, apply_gate: applyGate.value })
     })
     state.value = res.state
-    msg.value = '已切换至备路并锁定。'
+    msg.value = t('msgSwitchedBackup')
   } catch (e: any) {
     errMsg.value = e.message
   }
@@ -50,7 +44,7 @@ async function failback() {
       body: JSON.stringify({ force: force.value, apply_gate: applyGate.value })
     })
     state.value = res.state
-    msg.value = '已回切至主路。'
+    msg.value = t('msgFailbackDone')
   } catch (e: any) {
     errMsg.value = e.message
   }
@@ -65,7 +59,7 @@ async function setRole(role: string) {
       body: JSON.stringify({ role })
     })
     state.value = res.state
-    msg.value = role === 'backup' ? '本端角色已设为备网关。' : '本端角色已设为主网关。'
+    msg.value = role === 'backup' ? t('msgRoleBackup') : t('msgRolePrimary')
   } catch (e: any) {
     errMsg.value = e.message
   }
@@ -76,60 +70,64 @@ onMounted(load)
 
 <template>
   <div>
-    <h2 style="margin: 0 0 14px; font-size: 18px;">主备切换</h2>
+    <h2 style="margin: 0 0 14px; font-size: 18px;">{{ t('navFailover') }}</h2>
     <div v-if="errMsg" class="alert-banner alert-critical">{{ errMsg }}</div>
     <div v-if="msg" class="alert-banner alert-ok">{{ msg }}</div>
 
     <div v-if="state" class="grid-3">
       <div class="card">
-        <div class="muted">切换状态</div>
-        <div style="font-size: 20px; font-weight: 600; margin: 8px 0;">{{ modeLabel(state.mode) }}</div>
-        <div class="muted">锁定备路后不会自动回切，需主路稳定 180 秒并人工确认。</div>
+        <div class="muted">{{ t('switchState') }}</div>
+        <div style="font-size: 20px; font-weight: 600; margin: 8px 0;">{{ failoverModeLabel(state.mode) }}</div>
+        <div class="muted">{{ t('backupLockHint') }}</div>
       </div>
       <div class="card">
-        <div class="muted">当前路由路径</div>
+        <div class="muted">{{ t('currentRoutePath') }}</div>
         <div style="font-size: 20px; font-weight: 600; margin: 8px 0;">
-          {{ state.active_path === 'backup' ? '备路' : '主路' }}
+          {{ state.active_path === 'backup' ? t('pathBackup') : t('pathPrimary') }}
         </div>
-        <div class="muted">连续探测失败：{{ state.consecutive_primary_failures }} 次</div>
+        <div class="muted">{{ t('consecFail', { n: state.consecutive_primary_failures }) }}</div>
       </div>
       <div class="card">
-        <div class="muted">本端网关角色</div>
+        <div class="muted">{{ t('localGatewayRole') }}</div>
         <div style="font-size: 20px; font-weight: 600; margin: 8px 0;">
-          {{ state.hub_role === 'backup' ? '备网关' : '主网关' }}
+          {{ state.hub_role === 'backup' ? t('gatewayBackup') : t('gatewayPrimary') }}
         </div>
         <div class="row">
-          <button class="btn btn-secondary" @click="setRole('primary')">设为主网关</button>
-          <button class="btn btn-secondary" @click="setRole('backup')">设为备网关</button>
+          <button class="btn btn-secondary" @click="setRole('primary')">{{ t('setPrimaryBtn') }}</button>
+          <button class="btn btn-secondary" @click="setRole('backup')">{{ t('setBackupBtn') }}</button>
         </div>
       </div>
     </div>
 
     <div class="card">
-      <h3>切换操作</h3>
+      <h3>{{ t('switchOps') }}</h3>
       <div class="row" style="margin-bottom: 12px;">
-        <input v-model="reason" class="input" style="width: 240px;" placeholder="切换备注" />
+        <input v-model="reason" class="input" style="width: 240px;" :placeholder="t('switchNotePh')" />
         <label style="display: flex; align-items: center; gap: 6px;">
           <input type="checkbox" v-model="applyGate" />
-          同步关闭本端 XFRM 通道（防止对端路由自动回切）
+          {{ t('gateCheckbox') }}
         </label>
       </div>
       <div class="row">
-        <button class="btn btn-danger" @click="switchBackup">切换至备路</button>
+        <button class="btn btn-danger" @click="switchBackup">{{ t('btnSwitchBackup') }}</button>
         <div class="spacer"></div>
         <label style="display: flex; align-items: center; gap: 6px;">
           <input type="checkbox" v-model="force" />
-          强制回切（跳过 180 秒观察期）
+          {{ t('forceFailbackCb') }}
         </label>
-        <button class="btn btn-ok" @click="failback">确认回切主路</button>
+        <button class="btn btn-ok" @click="failback">{{ t('btnFailback') }}</button>
       </div>
     </div>
 
     <div v-if="state?.history?.length" class="card">
-      <h3>切换记录</h3>
+      <h3>{{ t('switchHistory') }}</h3>
       <table class="table">
         <thead>
-          <tr><th>时间</th><th>事件</th><th>详情</th></tr>
+          <tr>
+            <th>{{ t('colTime') }}</th>
+            <th>{{ t('colEvent') }}</th>
+            <th>{{ t('colDetails') }}</th>
+          </tr>
         </thead>
         <tbody>
           <tr v-for="(h, i) in state.history.slice().reverse()" :key="i">

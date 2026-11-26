@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
 import { api, fmtDateTime } from '../api'
+import { lang, t } from '../i18n'
 
 interface SiteForm {
   id: string
@@ -14,7 +15,6 @@ interface SiteForm {
   vendor: string
   model: string
   os_version: string
-  // Primary tunnel link fields
   if_id: number
   secret_ref: string
   selector_mode: string
@@ -47,11 +47,10 @@ const errMsg = ref('')
 const infoMsg = ref('')
 const revisions = ref<any[]>([])
 
-// Structured visual form state
 const form = ref({
   event_id: 'esports-event-2026',
-  event_name: '赛事多场馆互联',
-  event_purpose: '多演播室通过自建 VPN 网关安全接入比赛服务器',
+  event_name: 'Multi-Venue Event Hub',
+  event_purpose: '',
   hub_id: 'hub-vps-primary',
   hub_public_ip: '198.51.100.10',
   hub_ike_id: '@hub-vps-primary.example',
@@ -69,7 +68,6 @@ const form = ref({
 const sites = ref<SiteForm[]>([])
 const pairs = ref<PairForm[]>([])
 
-// Write-only PSK rotation form
 const secretSite = ref('')
 const secretRef = ref('file:/etc/ipsecvpn/secrets/ob-venue-1.psk')
 const secretPSK = ref('')
@@ -266,10 +264,13 @@ function hydrateFormFromProfile(p: any) {
 function loadExampleTemplate() {
   selectedId.value = ''
   revisions.value = []
+  const isEn = lang.value === 'en'
   form.value = {
     event_id: 'esports-multi-ob-hillstone',
-    event_name: '多场馆赛事互联（山石路由型）',
-    event_purpose: '多演播室经自建 VPN 网关接入比赛服务器，演播室之间默认隔离',
+    event_name: isEn ? 'Multi-OB Event Hub (Route-Based)' : '多场馆赛事互联（路由型）',
+    event_purpose: isEn
+      ? 'Connect isolated OB studios to central match servers via self-hosted VPN gateway'
+      : '多演播室经自建 VPN 网关接入比赛服务器，演播室之间默认隔离',
     hub_id: 'hub-vps-primary',
     hub_public_ip: '198.51.100.10',
     hub_ike_id: '@hub-vps-primary.example',
@@ -286,7 +287,7 @@ function loadExampleTemplate() {
   sites.value = [
     {
       id: 'server-core',
-      display_name: '比赛服务器机房',
+      display_name: isEn ? 'Match Server Room' : '比赛服务器机房',
       role: 'server',
       country: 'CN',
       location_label: 'Shanghai-IDC',
@@ -310,7 +311,7 @@ function loadExampleTemplate() {
     },
     {
       id: 'ob-venue-1',
-      display_name: '演播室 OB-1',
+      display_name: isEn ? 'OB Studio 1' : '演播室 OB-1',
       role: 'ob',
       country: 'CN',
       location_label: 'Beijing-Studio',
@@ -334,7 +335,7 @@ function loadExampleTemplate() {
     },
     {
       id: 'ob-venue-2',
-      display_name: '演播室 OB-2',
+      display_name: isEn ? 'OB Studio 2' : '演播室 OB-2',
       role: 'ob',
       country: 'JP',
       location_label: 'Tokyo-Studio',
@@ -364,7 +365,7 @@ function loadExampleTemplate() {
   yamlText.value = buildYAMLFromForm()
   secretSite.value = 'ob-venue-1'
   secretRef.value = 'file:/etc/ipsecvpn/secrets/ob-venue-1.psk'
-  infoMsg.value = '已载入多场馆示例配置，修改参数后可点击保存。'
+  infoMsg.value = t('msgLoadedExample')
 }
 
 function addSite() {
@@ -373,7 +374,7 @@ function addSite() {
   const id = `ob-venue-${nextIdx}`
   sites.value.push({
     id,
-    display_name: `对端站点 ${nextIdx}`,
+    display_name: lang.value === 'en' ? `Peer Site ${nextIdx}` : `对端站点 ${nextIdx}`,
     role: 'ob',
     country: 'CN',
     location_label: '',
@@ -442,7 +443,7 @@ async function syncYAMLToForm() {
     if (res.profile) {
       hydrateFormFromProfile(res.profile)
       activeTab.value = 'visual'
-      infoMsg.value = '已从 YAML 同步到可视化表单。'
+      infoMsg.value = t('msgSyncedForm')
     }
   } catch (e: any) {
     errMsg.value = e.message
@@ -494,7 +495,7 @@ async function validateYAML() {
       body: JSON.stringify({ yaml_content: currentYAML() })
     })
     output.value = JSON.stringify({ status: res.status, event: res.event, backup: res.backup }, null, 2)
-    infoMsg.value = '配置校验通过。'
+    infoMsg.value = t('msgValidated')
   } catch (e: any) {
     errMsg.value = e.message
   }
@@ -510,13 +511,13 @@ async function saveProfile(activate = true) {
       body: JSON.stringify({
         yaml_content: bodyYAML,
         hub_role: hubRole.value,
-        note: note.value || '控制台更新',
+        note: note.value || 'Console update',
         activate
       })
     })
     selectedId.value = res.id
     output.value = JSON.stringify(res, null, 2)
-    infoMsg.value = `配置 ${res.id} 已保存。`
+    infoMsg.value = t('msgSaved', { id: res.id })
     note.value = ''
     await loadProfiles()
   } catch (e: any) {
@@ -526,7 +527,7 @@ async function saveProfile(activate = true) {
 
 async function renderPreview() {
   if (!selectedId.value) {
-    errMsg.value = '请先保存配置后再预览生成结果。'
+    errMsg.value = t('msgNeedSavePreview')
     return
   }
   errMsg.value = ''
@@ -540,7 +541,7 @@ async function renderPreview() {
 
 async function applyProfile(confirmed: boolean) {
   if (!selectedId.value) {
-    errMsg.value = '请先保存配置后再执行预检或生效。'
+    errMsg.value = t('msgNeedSaveApply')
     return
   }
   errMsg.value = ''
@@ -551,7 +552,7 @@ async function applyProfile(confirmed: boolean) {
       body: JSON.stringify({ confirmed, maintenance: false })
     })
     output.value = JSON.stringify(res, null, 2)
-    infoMsg.value = confirmed ? '配置已下发生效。' : '变更预检完成，未修改运行状态。'
+    infoMsg.value = confirmed ? t('msgApplied') : t('msgDryRunDone')
   } catch (e: any) {
     errMsg.value = e.message
   }
@@ -565,7 +566,7 @@ function randomHex64() {
 
 async function saveSecret() {
   if (!selectedId.value) {
-    errMsg.value = '请先保存配置后再写入密钥。'
+    errMsg.value = t('msgNeedSavePsk')
     return
   }
   errMsg.value = ''
@@ -581,7 +582,7 @@ async function saveSecret() {
     })
     secretPSK.value = ''
     output.value = JSON.stringify(res, null, 2)
-    infoMsg.value = `站点 ${secretSite.value} 的预共享密钥已写入主机。`
+    infoMsg.value = t('msgPskWritten', { site: secretSite.value })
     await loadProfiles()
   } catch (e: any) {
     errMsg.value = e.message
@@ -594,12 +595,12 @@ onMounted(loadProfiles)
 <template>
   <div>
     <div class="row" style="margin-bottom: 14px;">
-      <h2 style="margin: 0; font-size: 18px;">VPN 通道</h2>
+      <h2 style="margin: 0; font-size: 18px;">{{ t('navConfig') }}</h2>
       <div class="spacer"></div>
       <div class="row">
-        <button class="btn" :class="activeTab === 'visual' ? '' : 'btn-secondary'" @click="switchTab('visual')">可视化配置</button>
-        <button class="btn" :class="activeTab === 'yaml' ? '' : 'btn-secondary'" @click="switchTab('yaml')">YAML 源码</button>
-        <button class="btn btn-secondary" @click="loadExampleTemplate">载入示例配置</button>
+        <button class="btn" :class="activeTab === 'visual' ? '' : 'btn-secondary'" @click="switchTab('visual')">{{ t('tabVisual') }}</button>
+        <button class="btn" :class="activeTab === 'yaml' ? '' : 'btn-secondary'" @click="switchTab('yaml')">{{ t('tabYaml') }}</button>
+        <button class="btn btn-secondary" @click="loadExampleTemplate">{{ t('loadExample') }}</button>
       </div>
     </div>
 
@@ -609,7 +610,7 @@ onMounted(loadProfiles)
     <!-- Saved profile bar -->
     <div class="card" style="padding: 12px 16px;">
       <div class="row">
-        <span class="muted" style="font-size: 13px;">已保存配置：</span>
+        <span class="muted" style="font-size: 13px;">{{ t('savedConfigs') }}</span>
         <button
           v-for="p in profiles"
           :key="p.id"
@@ -617,13 +618,13 @@ onMounted(loadProfiles)
           :class="selectedId === p.id ? '' : 'btn-secondary'"
           @click="selectProfile(p)"
         >
-          {{ p.id }} <span v-if="p.active">· 当前</span>
+          {{ p.id }} <span v-if="p.active">· {{ t('currentTag') }}</span>
         </button>
-        <span v-if="!profiles.length" class="muted">暂无已保存配置</span>
+        <span v-if="!profiles.length" class="muted">{{ t('noSavedConfigs') }}</span>
         <div class="spacer"></div>
-        <select v-model="hubRole" class="select" style="width: 140px;">
-          <option value="primary">角色：主网关</option>
-          <option value="backup">角色：备网关</option>
+        <select v-model="hubRole" class="select" style="width: 155px;">
+          <option value="primary">{{ t('rolePrefixPrimary') }}</option>
+          <option value="backup">{{ t('rolePrefixBackup') }}</option>
         </select>
       </div>
     </div>
@@ -631,151 +632,147 @@ onMounted(loadProfiles)
     <!-- TAB 1: Visual Tunnel Configuration Wizard -->
     <div v-if="activeTab === 'visual'">
       <div class="card">
-        <h3>网关基本信息</h3>
+        <h3>{{ t('gatewayBasic') }}</h3>
         <div class="grid-3">
           <div class="field">
-            <label>配置 ID</label>
-            <input v-model="form.event_id" class="input" placeholder="如 esports-2026" />
+            <label>{{ t('cfgId') }}</label>
+            <input v-model="form.event_id" class="input" placeholder="esports-2026" />
           </div>
           <div class="field">
-            <label>配置名称</label>
-            <input v-model="form.event_name" class="input" placeholder="如 赛事主会场互联" />
+            <label>{{ t('cfgName') }}</label>
+            <input v-model="form.event_name" class="input" />
           </div>
           <div class="field">
-            <label>用途说明</label>
-            <input v-model="form.event_purpose" class="input" placeholder="选填" />
+            <label>{{ t('cfgPurpose') }}</label>
+            <input v-model="form.event_purpose" class="input" :placeholder="t('cfgPurposePh')" />
           </div>
           <div class="field">
-            <label>本端网关标识</label>
+            <label>{{ t('hubId') }}</label>
             <input v-model="form.hub_id" class="input" />
           </div>
           <div class="field">
-            <label>本端公网 IP</label>
+            <label>{{ t('hubPublicIp') }}</label>
             <input v-model="form.hub_public_ip" class="input" placeholder="198.51.100.10" />
           </div>
           <div class="field">
-            <label>本端 IKE 标识</label>
-            <input v-model="form.hub_ike_id" class="input" placeholder="留空则使用本端公网 IP" />
+            <label>{{ t('hubIkeId') }}</label>
+            <input v-model="form.hub_ike_id" class="input" :placeholder="t('hubIkeIdPh')" />
           </div>
           <div class="field">
-            <label>线路提供商</label>
-            <input v-model="form.hub_provider" class="input" placeholder="如 VPS-Primary" />
+            <label>{{ t('hubProvider') }}</label>
+            <input v-model="form.hub_provider" class="input" placeholder="VPS-Primary" />
           </div>
           <div class="field">
-            <label>所在地域</label>
-            <input v-model="form.hub_location" class="input" placeholder="如 Hong-Kong" />
+            <label>{{ t('hubLocation') }}</label>
+            <input v-model="form.hub_location" class="input" placeholder="Hong-Kong" />
           </div>
           <div class="field">
-            <label>国家/地区码</label>
-            <input v-model="form.hub_country" class="input" placeholder="如 CN-HK" />
+            <label>{{ t('hubCountry') }}</label>
+            <input v-model="form.hub_country" class="input" placeholder="CN-HK" />
           </div>
         </div>
       </div>
 
       <div class="card">
         <div class="row" style="margin-bottom: 12px;">
-          <h3 style="margin: 0;">对端站点与隧道列表</h3>
+          <h3 style="margin: 0;">{{ t('peerSitesTitle') }}</h3>
           <div class="spacer"></div>
-          <button class="btn btn-secondary" @click="addSite">+ 添加站点</button>
+          <button class="btn btn-secondary" @click="addSite">{{ t('addSite') }}</button>
         </div>
 
-        <div
-          v-for="(s, idx) in sites"
-          :key="idx"
-          style="border: 1px solid var(--border); border-radius: 8px; padding: 14px; margin-bottom: 12px; background: #fbfcfe;"
-        >
+        <div v-for="(s, idx) in sites" :key="idx" class="sub-card">
           <div class="row" style="margin-bottom: 10px;">
-            <strong>通道 #{{ idx + 1 }} · {{ s.id || '未命名' }}</strong>
+            <strong style="color: #f8fafc;">{{ t('tunnelIndex') }} #{{ idx + 1 }} · {{ s.id || t('unnamed') }}</strong>
             <span class="pill pill-info">XFRM if_id={{ s.if_id }}</span>
             <div class="spacer"></div>
             <button class="btn btn-secondary" @click="s.show_advanced = !s.show_advanced">
-              {{ s.show_advanced ? '收起双线路由' : '双线策略路由' }}
+              {{ s.show_advanced ? t('dualIspHide') : t('dualIspShow') }}
             </button>
-            <button class="btn btn-danger" @click="removeSite(idx)">删除</button>
+            <button class="btn btn-danger" @click="removeSite(idx)">{{ t('deleteBtn') }}</button>
           </div>
 
           <div class="grid-3">
             <div class="field">
-              <label>站点 ID</label>
+              <label>{{ t('siteId') }}</label>
               <input v-model="s.id" class="input" placeholder="ob-venue-1" />
             </div>
             <div class="field">
-              <label>站点名称</label>
-              <input v-model="s.display_name" class="input" placeholder="演播室 OB-1" />
+              <label>{{ t('siteName') }}</label>
+              <input v-model="s.display_name" class="input" />
             </div>
             <div class="field">
-              <label>站点角色</label>
+              <label>{{ t('siteRole') }}</label>
               <select v-model="s.role" class="select">
-                <option value="server">业务服务器 (server)</option>
-                <option value="ob">演播室 / OB (ob)</option>
-                <option value="venue">赛场 (venue)</option>
-                <option value="other">其他 (other)</option>
+                <option value="server">{{ t('roleServer') }}</option>
+                <option value="ob">{{ t('roleOb') }}</option>
+                <option value="venue">{{ t('roleVenue') }}</option>
+                <option value="other">{{ t('roleOther') }}</option>
               </select>
             </div>
             <div class="field">
-              <label>对端公网 IP</label>
+              <label>{{ t('peerPublicIp') }}</label>
               <input v-model="s.public_endpoint" class="input" placeholder="203.0.113.21" />
             </div>
             <div class="field">
-              <label>对端 IKE 标识</label>
-              <input v-model="s.ike_identity" class="input" placeholder="@ob-venue-1.example 或公网 IP" />
+              <label>{{ t('peerIkeId') }}</label>
+              <input v-model="s.ike_identity" class="input" :placeholder="t('peerIkeIdPh')" />
             </div>
             <div class="field">
-              <label>对端内网网段（逗号分隔）</label>
+              <label>{{ t('peerLanCidrs') }}</label>
               <input v-model="s.lan_cidrs_text" class="input" placeholder="10.101.10.0/24" />
             </div>
             <div class="field">
-              <label>对端设备厂商</label>
+              <label>{{ t('peerVendor') }}</label>
               <select v-model="s.vendor" class="select">
-                <option value="Hillstone">山石网科 (Hillstone)</option>
-                <option value="Huawei">华为 (Huawei)</option>
-                <option value="Fortinet">飞塔 (Fortinet)</option>
-                <option value="Cisco">思科 (Cisco)</option>
-                <option value="TencentCloud">腾讯云 VPN 网关</option>
-                <option value="Generic">通用设备 (Generic)</option>
+                <option value="Hillstone">{{ t('vendorHillstone') }}</option>
+                <option value="Huawei">{{ t('vendorHuawei') }}</option>
+                <option value="Fortinet">{{ t('vendorFortinet') }}</option>
+                <option value="Cisco">{{ t('vendorCisco') }}</option>
+                <option value="CloudVPN">{{ t('vendorCloud') }}</option>
+                <option value="Generic">{{ t('vendorGeneric') }}</option>
               </select>
             </div>
             <div class="field">
-              <label>协商模式</label>
+              <label>{{ t('selectorMode') }}</label>
               <select v-model="s.selector_mode" class="select">
-                <option value="route_based">路由型 (0.0.0.0/0)</option>
-                <option value="exact">策略型 (精确网段)</option>
-                <option value="per_pair">多子网拆分 (per_pair)</option>
+                <option value="route_based">{{ t('modeRouteBased') }}</option>
+                <option value="exact">{{ t('modeExact') }}</option>
+                <option value="per_pair">{{ t('modePerPair') }}</option>
               </select>
             </div>
             <div class="field">
-              <label>XFRM 通道号 (if_id) / 路由优先级</label>
-              <div class="row">
-                <input v-model.number="s.if_id" type="number" class="input" style="width: 50%;" />
-                <input v-model.number="s.route_priority" type="number" class="input" style="width: 50%;" />
+              <label>{{ t('ifIdAndPrio') }}</label>
+              <div class="grid-2-tight">
+                <input v-model.number="s.if_id" type="number" class="input" />
+                <input v-model.number="s.route_priority" type="number" class="input" />
               </div>
             </div>
             <div class="field">
-              <label>本端出口网卡</label>
+              <label>{{ t('localWanIf') }}</label>
               <input v-model="s.outer_interface" class="input" placeholder="eth0" />
             </div>
             <div class="field">
-              <label>运营商标识</label>
+              <label>{{ t('ispLabel') }}</label>
               <input v-model="s.isp_label" class="input" placeholder="BGP-ISP-A" />
             </div>
             <div class="field">
-              <label>密钥文件路径</label>
+              <label>{{ t('secretPath') }}</label>
               <input v-model="s.secret_ref" class="input" />
             </div>
           </div>
 
           <div v-if="s.show_advanced" class="grid-3" style="margin-top: 8px; padding-top: 10px; border-top: 1px dashed var(--border);">
             <div class="field">
-              <label>本端源 IP（双线可选）</label>
-              <input v-model="s.source_ip" class="input" placeholder="如 198.51.100.10" />
+              <label>{{ t('localSourceIp') }}</label>
+              <input v-model="s.source_ip" class="input" placeholder="198.51.100.10" />
             </div>
             <div class="field">
-              <label>出口下一跳网关</label>
-              <input v-model="s.gateway" class="input" placeholder="如 198.51.100.1" />
+              <label>{{ t('egressGateway') }}</label>
+              <input v-model="s.gateway" class="input" placeholder="198.51.100.1" />
             </div>
             <div class="field">
-              <label>策略路由表号 / 优先级</label>
-              <div class="row">
+              <label>{{ t('routeTablePrio') }}</label>
+              <div class="grid-2-tight">
                 <input v-model="s.route_table" class="input" placeholder="101" />
                 <input v-model="s.policy_priority" class="input" placeholder="1001" />
               </div>
@@ -787,67 +784,67 @@ onMounted(loadProfiles)
       <div class="grid-2">
         <div class="card">
           <div class="row" style="margin-bottom: 10px;">
-            <h3 style="margin: 0;">站点互通策略</h3>
+            <h3 style="margin: 0;">{{ t('trafficPolicyTitle') }}</h3>
             <div class="spacer"></div>
-            <button class="btn btn-secondary" @click="addPair">+ 添加互通规则</button>
+            <button class="btn btn-secondary" @click="addPair">{{ t('addRule') }}</button>
           </div>
-          <div class="muted" style="margin-bottom: 10px;">仅放行下列站点间流量，未配置站点默认隔离。</div>
-          <div v-for="(pr, idx) in pairs" :key="idx" style="border: 1px solid var(--border); border-radius: 6px; padding: 10px; margin-bottom: 8px;">
+          <div class="muted" style="margin-bottom: 10px;">{{ t('trafficPolicyHint') }}</div>
+          <div v-for="(pr, idx) in pairs" :key="idx" class="sub-card" style="padding: 10px; margin-bottom: 8px;">
             <div class="row" style="margin-bottom: 8px;">
               <select v-model="pr.a" class="select" style="flex: 1;">
-                <option value="">选择源站点</option>
+                <option value="">{{ t('selectSrcSite') }}</option>
                 <option v-for="id in siteIDs" :key="id" :value="id">{{ id }}</option>
               </select>
               <span class="muted">↔</span>
               <select v-model="pr.b" class="select" style="flex: 1;">
-                <option value="">选择目标站点</option>
+                <option value="">{{ t('selectDstSite') }}</option>
                 <option v-for="id in siteIDs" :key="id" :value="id">{{ id }}</option>
               </select>
-              <button class="btn btn-danger" @click="removePair(idx)">删除</button>
+              <button class="btn btn-danger" @click="removePair(idx)">{{ t('deleteBtn') }}</button>
             </div>
-            <div class="grid-2">
-              <input v-model="pr.a_cidrs_text" class="input" placeholder="源端网段（留空放行全部）" />
-              <input v-model="pr.b_cidrs_text" class="input" placeholder="目标网段（留空放行全部）" />
+            <div class="grid-2-tight">
+              <input v-model="pr.a_cidrs_text" class="input" :placeholder="t('srcCidrsPh')" />
+              <input v-model="pr.b_cidrs_text" class="input" :placeholder="t('dstCidrsPh')" />
             </div>
           </div>
         </div>
 
         <div class="card">
-          <h3>IKE / IPsec 安全参数</h3>
-          <div class="muted" style="margin-bottom: 10px;">默认采用 IKEv2 + AES-256-GCM / SHA256 / DH14 强加密套件。</div>
+          <h3>{{ t('secParamsTitle') }}</h3>
+          <div class="muted" style="margin-bottom: 10px;">{{ t('secParamsHint') }}</div>
           <div class="grid-2">
             <div class="field">
-              <label>IKE SA 生存时间 (秒)</label>
+              <label>{{ t('ikeLifetime') }}</label>
               <input v-model.number="form.ike_lifetime" type="number" class="input" />
             </div>
             <div class="field">
-              <label>IPsec SA 生存时间 (秒)</label>
+              <label>{{ t('ipsecLifetime') }}</label>
               <input v-model.number="form.child_lifetime" type="number" class="input" />
             </div>
             <div class="field">
-              <label>DPD 探测间隔 (秒)</label>
+              <label>{{ t('dpdInterval') }}</label>
               <input v-model.number="form.dpd_delay" type="number" class="input" />
             </div>
             <div class="field">
-              <label>启动策略</label>
+              <label>{{ t('startAction') }}</label>
               <select v-model="form.start_action" class="select">
-                <option value="start">主动建立 (start)</option>
-                <option value="trap">按需触发 (trap)</option>
-                <option value="none">被动等待 (none)</option>
+                <option value="start">{{ t('startActive') }}</option>
+                <option value="trap">{{ t('startTrap') }}</option>
+                <option value="none">{{ t('startNone') }}</option>
               </select>
             </div>
             <div class="field">
-              <label>DPD 超时动作</label>
+              <label>{{ t('dpdAction') }}</label>
               <select v-model="form.dpd_action" class="select">
-                <option value="restart">自动重连 (restart)</option>
-                <option value="clear">清除会话 (clear)</option>
+                <option value="restart">{{ t('dpdRestart') }}</option>
+                <option value="clear">{{ t('dpdClear') }}</option>
               </select>
             </div>
             <div class="field">
-              <label>对端断线动作</label>
+              <label>{{ t('closeAction') }}</label>
               <select v-model="form.close_action" class="select">
-                <option value="start">自动重连 (start)</option>
-                <option value="none">保持断开 (none)</option>
+                <option value="start">{{ t('closeStart') }}</option>
+                <option value="none">{{ t('closeNone') }}</option>
               </select>
             </div>
           </div>
@@ -856,12 +853,12 @@ onMounted(loadProfiles)
 
       <div class="card">
         <div class="row">
-          <input v-model="note" class="input" style="flex: 1;" placeholder="变更备注（选填）" />
-          <button class="btn btn-secondary" @click="validateYAML">校验配置</button>
-          <button class="btn" @click="saveProfile(true)">保存配置</button>
-          <button class="btn btn-secondary" @click="renderPreview">预览生成文件</button>
-          <button class="btn btn-secondary" @click="applyProfile(false)">变更预检</button>
-          <button class="btn btn-ok" @click="applyProfile(true)">应用生效</button>
+          <input v-model="note" class="input" style="flex: 1;" :placeholder="t('changeNotePh')" />
+          <button class="btn btn-secondary" @click="validateYAML">{{ t('btnValidate') }}</button>
+          <button class="btn" @click="saveProfile(true)">{{ t('btnSave') }}</button>
+          <button class="btn btn-secondary" @click="renderPreview">{{ t('btnRender') }}</button>
+          <button class="btn btn-secondary" @click="applyProfile(false)">{{ t('btnDryRun') }}</button>
+          <button class="btn btn-ok" @click="applyProfile(true)">{{ t('btnApply') }}</button>
         </div>
       </div>
     </div>
@@ -869,67 +866,72 @@ onMounted(loadProfiles)
     <!-- TAB 2: Raw YAML Editor -->
     <div v-if="activeTab === 'yaml'" class="card">
       <div class="row" style="margin-bottom: 10px;">
-        <h3 style="margin: 0;">YAML 配置源码</h3>
+        <h3 style="margin: 0;">{{ t('yamlSourceTitle') }}</h3>
         <div class="spacer"></div>
-        <button class="btn btn-secondary" @click="syncYAMLToForm">同步到可视化表单</button>
+        <button class="btn btn-secondary" @click="syncYAMLToForm">{{ t('syncToForm') }}</button>
       </div>
       <div class="field">
-        <textarea v-model="yamlText" class="textarea" rows="18" placeholder="在此粘贴或编辑 YAML 配置..."></textarea>
+        <textarea v-model="yamlText" class="textarea" rows="18" :placeholder="t('yamlPh')"></textarea>
       </div>
       <div class="row" style="margin-bottom: 10px;">
-        <input v-model="note" class="input" style="flex: 1;" placeholder="变更备注（选填）" />
+        <input v-model="note" class="input" style="flex: 1;" :placeholder="t('changeNotePh')" />
       </div>
       <div class="row">
-        <button class="btn btn-secondary" @click="validateYAML">校验配置</button>
-        <button class="btn" @click="saveProfile(true)">保存配置</button>
-        <button class="btn btn-secondary" @click="renderPreview">预览生成文件</button>
-        <button class="btn btn-secondary" @click="applyProfile(false)">变更预检</button>
-        <button class="btn btn-ok" @click="applyProfile(true)">应用生效</button>
+        <button class="btn btn-secondary" @click="validateYAML">{{ t('btnValidate') }}</button>
+        <button class="btn" @click="saveProfile(true)">{{ t('btnSave') }}</button>
+        <button class="btn btn-secondary" @click="renderPreview">{{ t('btnRender') }}</button>
+        <button class="btn btn-secondary" @click="applyProfile(false)">{{ t('btnDryRun') }}</button>
+        <button class="btn btn-ok" @click="applyProfile(true)">{{ t('btnApply') }}</button>
       </div>
     </div>
 
     <!-- Lower Panels: PSK Management, Output Preview, Revision History -->
     <div class="grid-2">
       <div class="card">
-        <h3>预共享密钥 (PSK)</h3>
-        <div class="muted" style="margin-bottom: 10px;">密钥直接写入主机受保护目录，不存入数据库且不支持明文回显。</div>
+        <h3>{{ t('pskTitle') }}</h3>
+        <div class="muted" style="margin-bottom: 10px;">{{ t('pskHint') }}</div>
         <div class="grid-2">
           <div class="field">
-            <label>站点</label>
+            <label>{{ t('colSite') }}</label>
             <select v-if="siteIDs.length" v-model="secretSite" class="select" @change="onSecretSiteChange">
               <option v-for="id in siteIDs" :key="id" :value="id">{{ id }}</option>
             </select>
             <input v-else v-model="secretSite" class="input" placeholder="ob-venue-1" />
           </div>
           <div class="field">
-            <label>密钥路径</label>
+            <label>{{ t('secretPath') }}</label>
             <input v-model="secretRef" class="input" />
           </div>
         </div>
         <div class="field">
-          <label>64 位十六进制密钥</label>
+          <label>{{ t('pskHexLabel') }}</label>
           <div class="row">
-            <input v-model="secretPSK" class="input" style="flex: 1;" type="password" placeholder="点击右侧随机生成" />
-            <button class="btn btn-secondary" @click="randomHex64">随机生成</button>
-            <button class="btn" @click="saveSecret">写入密钥</button>
+            <input v-model="secretPSK" class="input" style="flex: 1;" type="password" :placeholder="t('pskHexPh')" />
+            <button class="btn btn-secondary" @click="randomHex64">{{ t('btnRandomGen') }}</button>
+            <button class="btn" @click="saveSecret">{{ t('btnWritePsk') }}</button>
           </div>
         </div>
         <div v-if="secretsMeta.length" class="muted" style="margin-top: 8px;">
-          已配置摘要：{{ secretsMeta.map((s) => `${s.site_id} (${s.sha256.slice(0, 8)})`).join('，') }}
+          {{ t('configuredDigests') }}{{ secretsMeta.map((s) => `${s.site_id} (${s.sha256.slice(0, 8)})`).join(', ') }}
         </div>
       </div>
 
       <div class="card">
-        <h3>执行结果</h3>
-        <div class="code-block" style="max-height: 260px;">{{ output || '暂无输出。' }}</div>
+        <h3>{{ t('execOutput') }}</h3>
+        <div class="code-block" style="max-height: 260px;">{{ output || t('noOutput') }}</div>
       </div>
     </div>
 
     <div class="card">
-      <h3>历史版本</h3>
+      <h3>{{ t('revHistory') }}</h3>
       <table v-if="revisions.length" class="table">
         <thead>
-          <tr><th>时间</th><th>操作人</th><th>摘要</th><th>备注</th></tr>
+          <tr>
+            <th>{{ t('colTime') }}</th>
+            <th>{{ t('colOperator') }}</th>
+            <th>{{ t('colDigest') }}</th>
+            <th>{{ t('colNote') }}</th>
+          </tr>
         </thead>
         <tbody>
           <tr v-for="r in revisions" :key="r.id">
@@ -940,7 +942,7 @@ onMounted(loadProfiles)
           </tr>
         </tbody>
       </table>
-      <div v-else class="muted">暂无历史记录。</div>
+      <div v-else class="muted">{{ t('noHistory') }}</div>
     </div>
   </div>
 </template>

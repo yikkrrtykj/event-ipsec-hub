@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { api } from './api'
+import { lang, t, toggleLang } from './i18n'
 import DashboardView from './views/DashboardView.vue'
 import DiagnosticsView from './views/DiagnosticsView.vue'
 import SitesConfigView from './views/SitesConfigView.vue'
@@ -19,15 +20,15 @@ const password = ref('')
 const totpCode = ref('')
 const loginErr = ref('')
 
-const navItems = [
-  { id: 'dashboard', label: '概览' },
-  { id: 'config', label: 'VPN 通道' },
-  { id: 'diagnostics', label: '链路监控' },
-  { id: 'export', label: '配置导出' },
-  { id: 'failover', label: '主备切换' },
-  { id: 'alerts', label: '告警管理' },
-  { id: 'security', label: '系统设置' }
-]
+const navItems = computed(() => [
+  { id: 'dashboard', label: t('navDashboard') },
+  { id: 'config', label: t('navConfig') },
+  { id: 'diagnostics', label: t('navDiagnostics') },
+  { id: 'export', label: t('navExport') },
+  { id: 'failover', label: t('navFailover') },
+  { id: 'alerts', label: t('navAlerts') },
+  { id: 'security', label: t('navSecurity') }
+])
 
 async function checkAuth() {
   checking.value = true
@@ -73,34 +74,40 @@ onMounted(checkAuth)
 
 <template>
   <div v-if="checking" class="login-wrap">
-    <div class="muted">加载中...</div>
+    <div class="muted">{{ t('loading') }}</div>
   </div>
 
   <div v-else-if="!user" class="login-wrap">
     <div class="login-card">
-      <h2 style="margin: 0 0 6px;">VPN 网关控制台</h2>
+      <div class="row" style="margin-bottom: 6px;">
+        <h2 style="margin: 0;">{{ t('consoleTitle') }}</h2>
+        <div class="spacer"></div>
+        <button class="btn btn-secondary" style="padding: 4px 10px; font-size: 12px;" @click="toggleLang">
+          {{ lang === 'zh' ? 'EN' : '中文' }}
+        </button>
+      </div>
       <div class="muted" style="margin-bottom: 18px;">event-ipsec-hub</div>
       <div v-if="loginErr" class="alert-banner alert-critical">{{ loginErr }}</div>
       <div class="field">
-        <label>账号</label>
+        <label>{{ t('username') }}</label>
         <input v-model="username" class="input" @keyup.enter="login" />
       </div>
       <div class="field">
-        <label>密码</label>
+        <label>{{ t('password') }}</label>
         <input v-model="password" type="password" class="input" @keyup.enter="login" />
       </div>
       <div class="field">
-        <label>动态验证码（未开启可留空）</label>
-        <input v-model="totpCode" class="input" placeholder="6 位数字" @keyup.enter="login" />
+        <label>{{ t('totpLabel') }}</label>
+        <input v-model="totpCode" class="input" :placeholder="t('totpPlaceholder')" @keyup.enter="login" />
       </div>
-      <button class="btn" style="width: 100%; margin-top: 6px;" @click="login">登录</button>
+      <button class="btn" style="width: 100%; margin-top: 6px;" @click="login">{{ t('loginBtn') }}</button>
     </div>
   </div>
 
   <div v-else class="layout">
     <aside class="sidebar">
       <div class="brand">
-        <h1>VPN 网关</h1>
+        <h1>{{ t('brandTitle') }}</h1>
         <span>event-ipsec-hub</span>
       </div>
       <button
@@ -114,9 +121,9 @@ onMounted(checkAuth)
       </button>
       <div class="spacer"></div>
       <div class="muted" style="padding: 10px 8px; border-top: 1px solid var(--border);">
-        {{ user.username }} · {{ user.role === 'admin' ? '管理员' : '只读' }}
+        {{ user.username }} · {{ user.role === 'admin' ? t('roleAdmin') : t('roleReadonly') }}
         <div v-if="user.must_change_password" style="color: #fbbf24; margin-top: 4px;">
-          请前往「系统设置」修改初始密码
+          {{ t('mustChangePass') }}
         </div>
       </div>
     </aside>
@@ -125,11 +132,12 @@ onMounted(checkAuth)
       <header class="topbar">
         <div class="row">
           <strong style="font-size: 14px;">{{ navItems.find((n) => n.id === activeTab)?.label }}</strong>
-          <span v-if="user.demo_mode" class="pill pill-warn">演示环境</span>
+          <span v-if="user.demo_mode" class="pill pill-warn">{{ t('demoEnv') }}</span>
         </div>
         <div class="row">
-          <a href="/metrics" target="_blank" class="muted" style="text-decoration: none;">Prometheus 指标</a>
-          <button class="btn btn-secondary" @click="logout">退出</button>
+          <a href="/metrics" target="_blank" class="muted" style="text-decoration: none;">{{ t('metricsLink') }}</a>
+          <button class="btn btn-secondary" @click="toggleLang">{{ lang === 'zh' ? 'English' : '中文' }}</button>
+          <button class="btn btn-secondary" @click="logout">{{ t('logout') }}</button>
         </div>
       </header>
 

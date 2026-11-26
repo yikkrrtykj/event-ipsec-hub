@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref, watch } from 'vue'
 import { api, fmtDateTime, type SyncedTimelineResponse } from '../api'
+import { causeLabel, causeSummary, t } from '../i18n'
 import SyncedFourLayerCharts from '../components/SyncedFourLayerCharts.vue'
 
 const props = defineProps<{ initialSite?: string }>()
@@ -34,19 +35,6 @@ async function load() {
   }
 }
 
-function causeLabel(code: string) {
-  const m: Record<string, string> = {
-    VPN_HEALTHY_APP_SUSPECT: '链路正常',
-    ISP_OUTER_DEGRADED: '公网线路异常',
-    IPSEC_SA_EVENT: '隧道协商异常',
-    TUNNEL_BLACKHOLE_OR_ASYMMETRIC: '隧道不通 / 路由异常',
-    XFRM_CRYPTO_OR_MTU_DROP: '加解密 / MTU 异常',
-    ACL_POLICY_DROP: '策略拦截',
-    OBSERVATION_UNVERIFIED: '未检测'
-  }
-  return m[code] || code
-}
-
 watch(() => props.initialSite, (v) => {
   if (v) {
     site.value = v
@@ -66,18 +54,18 @@ onMounted(async () => {
       <select v-if="siteOptions.length" v-model="site" class="select" style="width: 190px;" @change="load">
         <option v-for="s in siteOptions" :key="s" :value="s">{{ s }}</option>
       </select>
-      <input v-else v-model="site" class="input" style="width: 190px;" placeholder="对端站点 ID" />
+      <input v-else v-model="site" class="input" style="width: 190px;" :placeholder="t('sitePlaceholder')" />
 
-      <select v-model.number="minutes" class="select" style="width: 130px;" @change="load">
-        <option :value="15">近 15 分钟</option>
-        <option :value="60">近 1 小时</option>
-        <option :value="360">近 6 小时</option>
-        <option :value="1440">近 24 小时</option>
-        <option :value="10080">近 7 天</option>
+      <select v-model.number="minutes" class="select" style="width: 135px;" @change="load">
+        <option :value="15">{{ t('range15m') }}</option>
+        <option :value="60">{{ t('range1h') }}</option>
+        <option :value="360">{{ t('range6h') }}</option>
+        <option :value="1440">{{ t('range24h') }}</option>
+        <option :value="10080">{{ t('range7d') }}</option>
       </select>
-      <button class="btn" @click="load">刷新</button>
+      <button class="btn" @click="load">{{ t('refresh') }}</button>
       <div class="spacer"></div>
-      <span class="muted">四张监控图按时间轴同步联动</span>
+      <span class="muted">{{ t('chartsSyncHint') }}</span>
     </div>
 
     <div v-if="errMsg" class="alert-banner alert-critical">{{ errMsg }}</div>
@@ -97,7 +85,7 @@ onMounted(async () => {
       >
         <div class="row">
           <span class="pill pill-info">{{ causeLabel(timeline.diagnosis.code) }}</span>
-          <strong>{{ timeline.diagnosis.summary_zh }}</strong>
+          <strong>{{ causeSummary(timeline.diagnosis) }}</strong>
         </div>
         <div v-if="timeline.diagnosis.evidence?.length" class="row" style="margin-top: 8px;">
           <span v-for="e in timeline.diagnosis.evidence" :key="e" class="pill pill-unknown">{{ e }}</span>
@@ -107,14 +95,14 @@ onMounted(async () => {
       <SyncedFourLayerCharts :samples="timeline.samples" :events="timeline.events" />
 
       <div class="card">
-        <h3>事件记录</h3>
+        <h3>{{ t('eventLog') }}</h3>
         <table v-if="timeline.events.length" class="table">
           <thead>
             <tr>
-              <th>时间</th>
-              <th>事件</th>
-              <th>级别</th>
-              <th>说明</th>
+              <th>{{ t('colTime') }}</th>
+              <th>{{ t('colEvent') }}</th>
+              <th>{{ t('colLevel') }}</th>
+              <th>{{ t('colDetail') }}</th>
             </tr>
           </thead>
           <tbody>
@@ -123,14 +111,14 @@ onMounted(async () => {
               <td><code>{{ ev.category }}</code></td>
               <td>
                 <span class="pill" :class="ev.severity === 'critical' ? 'pill-critical' : ev.severity === 'warning' ? 'pill-warn' : 'pill-info'">
-                  {{ ev.severity === 'critical' ? '严重' : ev.severity === 'warning' ? '告警' : '通知' }}
+                  {{ ev.severity === 'critical' ? t('sevCritical') : ev.severity === 'warning' ? t('sevWarning') : t('sevInfo') }}
                 </span>
               </td>
               <td>{{ ev.title }}</td>
             </tr>
           </tbody>
         </table>
-        <div v-else class="muted">当前时间段内无异常事件。</div>
+        <div v-else class="muted">{{ t('noWindowEvents') }}</div>
       </div>
     </template>
   </div>

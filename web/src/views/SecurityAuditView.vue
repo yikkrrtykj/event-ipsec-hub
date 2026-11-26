@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { api, downloadTextFile, fmtDateTime } from '../api'
+import { t } from '../i18n'
 
 const allowlistText = ref('')
 const expiresDate = ref('')
@@ -36,7 +37,7 @@ async function saveSecurity() {
       method: 'PUT',
       body: JSON.stringify({ allowlist: cidrs, expires_at_ms: expMs, retention_days: retentionDays.value })
     })
-    msg.value = '访问控制配置已保存。'
+    msg.value = t('msgSecuritySaved')
     await load()
   } catch (e: any) {
     errMsg.value = e.message
@@ -53,7 +54,7 @@ async function changePassword() {
     })
     curPass.value = ''
     newPass.value = ''
-    msg.value = '密码已修改。'
+    msg.value = t('msgPassUpdated')
   } catch (e: any) {
     errMsg.value = e.message
   }
@@ -69,7 +70,7 @@ async function enableTOTP() {
   errMsg.value = ''
   try {
     await api('/api/v1/auth/totp/enable', { method: 'POST', body: JSON.stringify({ code: totpCode.value }) })
-    msg.value = '两步验证已开启。'
+    msg.value = t('msgTotpEnabled')
     totpCode.value = ''
   } catch (e: any) {
     errMsg.value = e.message
@@ -87,9 +88,9 @@ onMounted(load)
 <template>
   <div>
     <div class="row" style="margin-bottom: 14px;">
-      <h2 style="margin: 0; font-size: 18px;">系统设置</h2>
+      <h2 style="margin: 0; font-size: 18px;">{{ t('navSecurity') }}</h2>
       <div class="spacer"></div>
-      <button class="btn btn-secondary" @click="downloadSignoff">导出上线核对单</button>
+      <button class="btn btn-secondary" @click="downloadSignoff">{{ t('exportSignoff') }}</button>
     </div>
 
     <div v-if="errMsg" class="alert-banner alert-critical">{{ errMsg }}</div>
@@ -97,56 +98,64 @@ onMounted(load)
 
     <div class="grid-2">
       <div class="card">
-        <h3>访问控制</h3>
+        <h3>{{ t('accessControl') }}</h3>
         <div class="field">
-          <label>管理来源 IP / 网段白名单（每行一条，留空不限制）</label>
+          <label>{{ t('allowlistLabel') }}</label>
           <textarea v-model="allowlistText" class="textarea" rows="4" placeholder="203.0.113.5&#10;198.51.100.0/24"></textarea>
         </div>
         <div class="grid-2">
           <div class="field">
-            <label>控制台自动停用时间</label>
+            <label>{{ t('expireTimeLabel') }}</label>
             <input v-model="expiresDate" type="datetime-local" class="input" />
           </div>
           <div class="field">
-            <label>监控数据保留天数 (1-90)</label>
+            <label>{{ t('retentionLabel') }}</label>
             <input v-model.number="retentionDays" type="number" min="1" max="90" class="input" />
           </div>
         </div>
-        <button class="btn" @click="saveSecurity">保存设置</button>
+        <button class="btn" @click="saveSecurity">{{ t('btnSaveSettings') }}</button>
       </div>
 
       <div class="card">
-        <h3>账号安全</h3>
+        <h3>{{ t('accountSecurity') }}</h3>
         <div class="grid-2">
           <div class="field">
-            <label>当前密码</label>
+            <label>{{ t('currentPass') }}</label>
             <input v-model="curPass" type="password" class="input" />
           </div>
           <div class="field">
-            <label>新密码（不少于 8 位）</label>
+            <label>{{ t('newPass') }}</label>
             <input v-model="newPass" type="password" class="input" />
           </div>
         </div>
         <div class="row" style="margin-bottom: 14px;">
-          <button class="btn btn-secondary" @click="changePassword">修改密码</button>
-          <button class="btn btn-secondary" @click="setupTOTP">配置两步验证</button>
+          <button class="btn btn-secondary" @click="changePassword">{{ t('btnChangePass') }}</button>
+          <button class="btn btn-secondary" @click="setupTOTP">{{ t('btnSetupTotp') }}</button>
         </div>
         <div v-if="totpSecret" class="alert-banner alert-unknown">
-          <div>绑定密钥（填入身份验证器 App）：<code>{{ totpSecret }}</code></div>
+          <div>{{ t('totpSecretHint') }} <code>{{ totpSecret }}</code></div>
           <div class="muted" style="word-break: break-all; margin: 4px 0;">{{ totpURI }}</div>
           <div class="row" style="margin-top: 8px;">
-            <input v-model="totpCode" class="input" style="width: 140px;" placeholder="6 位动态码" />
-            <button class="btn btn-ok" @click="enableTOTP">验证并开启</button>
+            <input v-model="totpCode" class="input" style="width: 140px;" :placeholder="t('totpCodePh')" />
+            <button class="btn btn-ok" @click="enableTOTP">{{ t('btnEnableTotp') }}</button>
           </div>
         </div>
       </div>
     </div>
 
     <div class="card">
-      <h3>操作日志</h3>
+      <h3>{{ t('auditLogTitle') }}</h3>
       <table class="table">
         <thead>
-          <tr><th>时间</th><th>操作人</th><th>来源 IP</th><th>操作</th><th>对象</th><th>结果</th><th>详情</th></tr>
+          <tr>
+            <th>{{ t('colTime') }}</th>
+            <th>{{ t('colOperator') }}</th>
+            <th>{{ t('colSourceIp') }}</th>
+            <th>{{ t('colAction') }}</th>
+            <th>{{ t('colTarget') }}</th>
+            <th>{{ t('colResult') }}</th>
+            <th>{{ t('colDetails') }}</th>
+          </tr>
         </thead>
         <tbody>
           <tr v-for="l in auditLogs" :key="l.id">
@@ -155,7 +164,7 @@ onMounted(load)
             <td><code>{{ l.remote_ip }}</code></td>
             <td><code>{{ l.action }}</code></td>
             <td>{{ l.target }}</td>
-            <td><span class="pill" :class="l.status === 'PASS' ? 'pill-ok' : 'pill-critical'">{{ l.status === 'PASS' ? '成功' : '失败' }}</span></td>
+            <td><span class="pill" :class="l.status === 'PASS' ? 'pill-ok' : 'pill-critical'">{{ l.status === 'PASS' ? t('resPass') : t('resFail') }}</span></td>
             <td><code style="font-size: 11.5px;">{{ l.detail_json }}</code></td>
           </tr>
         </tbody>
