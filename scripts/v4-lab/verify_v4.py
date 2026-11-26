@@ -214,7 +214,8 @@ def cli(*args, expect=0, parse_json=True):
     proc = cmd(*full, allowed=(0, 1))
     if expect is not None and proc.returncode != expect:
         raise RuntimeError(
-            f"ipsecvpn {args} exited {proc.returncode}: stdout={proc.stdout[:500]} stderr={proc.stderr[:500]}"
+            f"ipsecvpn {args} exited {proc.returncode}: "
+            f"stdout={proc.stdout[:500]} stderr={proc.stderr[:500]}"
         )
     if not parse_json:
         return proc.stdout
@@ -315,9 +316,9 @@ def render_peer_swanctl(site_id, meta, psk_bytes):
         children.append((f"{name}-child", ["0.0.0.0/0"], ["0.0.0.0/0"]))
     elif mode == "per_pair":
         idx = 0
-        for r in meta["hub_local_ts"]:
-            for l in meta["hub_remote_ts"]:
-                children.append((f"{name}-child-{idx}", [l], [r]))
+        for r_net in meta["hub_local_ts"]:
+            for l_net in meta["hub_remote_ts"]:
+                children.append((f"{name}-child-{idx}", [l_net], [r_net]))
                 idx += 1
     else:
         children.append((f"{name}-child", peer_local, peer_remote))
@@ -470,7 +471,19 @@ def bootstrap_topology():
                 "net.ipv4.conf.default.rp_filter=0",
             )
         )
-        ip("link", "add", f"p1_{idx}", "type", "veth", "peer", "name", "wan", "netns", rtr, ns="wan-isp1")
+        ip(
+            "link",
+            "add",
+            f"p1_{idx}",
+            "type",
+            "veth",
+            "peer",
+            "name",
+            "wan",
+            "netns",
+            rtr,
+            ns="wan-isp1",
+        )
         ip("link", "set", f"p1_{idx}", "master", "br0", ns="wan-isp1")
         ip("link", "set", f"p1_{idx}", "up", ns="wan-isp1")
         ip("addr", "add", f"{meta['wan_ip']}/24", "dev", "wan", ns=rtr)
@@ -525,7 +538,9 @@ WantedBy=multi-user.target
     cmd("systemctl", "is-active", TOPOLOGY_UNIT)
 
 
-def exchange(src_site, dst_site, src_cidr, dst_cidr, proto="udp", sport=PORT + 1, expect_fail=False):
+def exchange(
+    src_site, dst_site, src_cidr, dst_cidr, proto="udp", sport=PORT + 1, expect_fail=False
+):
     traffic_py = str(HERE / "traffic.py")
     src_host = SITES[src_site]["host"]
     dst_host = SITES[dst_site]["host"]
@@ -574,7 +589,13 @@ def exchange(src_site, dst_site, src_cidr, dst_cidr, proto="udp", sport=PORT + 1
         srv_out, _ = server.communicate(timeout=6)
         srv_rows = json.loads(srv_out)
         assert all(row["source"][0] == src_ip for row in srv_rows), srv_rows
-        return {"passed": True, "src": src_ip, "dst": dst_ip, "protocol": proto, "packets": len(srv_rows)}
+        return {
+            "passed": True,
+            "src": src_ip,
+            "dst": dst_ip,
+            "protocol": proto,
+            "packets": len(srv_rows),
+        }
     finally:
         if server.poll() is None:
             server.kill()
@@ -632,7 +653,9 @@ def wait_status_pass(timeout=60):
         return None
 
     def _diag():
-        sas = cmd("swanctl", "--list-sas", "--uri", "unix:///run/charon.vici", allowed=(0, 1)).stdout[:800]
+        sas = cmd(
+            "swanctl", "--list-sas", "--uri", "unix:///run/charon.vici", allowed=(0, 1)
+        ).stdout[:800]
         xfrm = cmd("ip", "-o", "xfrm", "state", "list", "nokeys", allowed=(0, 1)).stdout[:600]
         return f"last_status={last} swanctl_sas={sas!r} xfrm_states={xfrm!r}"
 
@@ -649,10 +672,30 @@ def before_reboot():
     assert plan["status"] == "PASS"
     rend = cli("render", "-c", example, parse_json=True)
     assert rend["status"] == "PASS"
-    tc = json.loads(cmd(str(BIN), "export-peer", "-c", example, "--site", "ob-venue-1", "--format", "tencent-json").stdout)
+    tc = json.loads(
+        cmd(
+            str(BIN),
+            "export-peer",
+            "-c",
+            example,
+            "--site",
+            "ob-venue-1",
+            "--format",
+            "tencent-json",
+        ).stdout
+    )
     assert tc["IKEOptionsSpecification"]["IKEVersion"] == "IKEV2"
     assert tc["PreShareKey"] == "<SEND_SEPARATELY>"
-    draft = cmd(str(BIN), "export-peer", "-c", example, "--site", "ob-venue-1", "--format", "hillstone-draft").stdout
+    draft = cmd(
+        str(BIN),
+        "export-peer",
+        "-c",
+        example,
+        "--site",
+        "ob-venue-1",
+        "--format",
+        "hillstone-draft",
+    ).stdout
     assert "tunnel" in draft.lower()
     emit(
         "V4_CLI_01",
@@ -691,8 +734,24 @@ def before_reboot():
         exchange("server-core", "ob-beta", "10.100.10.0/24", "10.102.11.0/24", "tcp", PORT + 13),
     ]
     denied = [
-        exchange("ob-alpha", "ob-beta", "10.101.10.0/24", "10.102.10.0/24", "udp", PORT + 20, expect_fail=True),
-        exchange("ob-beta", "server-core", "10.102.10.0/24", "10.100.99.0/24", "udp", PORT + 21, expect_fail=True),
+        exchange(
+            "ob-alpha",
+            "ob-beta",
+            "10.101.10.0/24",
+            "10.102.10.0/24",
+            "udp",
+            PORT + 20,
+            expect_fail=True,
+        ),
+        exchange(
+            "ob-beta",
+            "server-core",
+            "10.102.10.0/24",
+            "10.100.99.0/24",
+            "udp",
+            PORT + 21,
+            expect_fail=True,
+        ),
     ]
     emit(
         "V4_DATA_01",
@@ -704,11 +763,21 @@ def before_reboot():
     cmd("bash", str(HERE / "install-v4.sh"), str(BIN))
     assert cmd("systemctl", "is-active", "ipsecvpn-agent.service").stdout.strip() == "active"
     assert cmd("systemctl", "is-active", "ipsecvpn-web.service").stdout.strip() == "active"
-    agent_uid = cmd("systemctl", "show", "-p", "MainPID", "--value", "ipsecvpn-agent.service").stdout.strip()
-    web_uid = cmd("ps", "-o", "user=", "-p", cmd("systemctl", "show", "-p", "MainPID", "--value", "ipsecvpn-web.service").stdout.strip()).stdout.strip()
+    agent_uid = cmd(
+        "systemctl", "show", "-p", "MainPID", "--value", "ipsecvpn-agent.service"
+    ).stdout.strip()
+    web_uid = cmd(
+        "ps",
+        "-o",
+        "user=",
+        "-p",
+        cmd("systemctl", "show", "-p", "MainPID", "--value", "ipsecvpn-web.service").stdout.strip(),
+    ).stdout.strip()
     assert web_uid == "ipsecvpn-web", f"Expected non-root ipsecvpn-web, got {web_uid}"
     # Verify non-root web user cannot read /etc/ipsecvpn/secrets directly
-    denied_sec = cmd("su", "-s", "/bin/sh", "ipsecvpn-web", "-c", "ls /etc/ipsecvpn/secrets", allowed=(1, 2))
+    denied_sec = cmd(
+        "su", "-s", "/bin/sh", "ipsecvpn-web", "-c", "ls /etc/ipsecvpn/secrets", allowed=(1, 2)
+    )
     assert denied_sec.returncode != 0
 
     wc = WebClient()
@@ -716,14 +785,26 @@ def before_reboot():
         lambda: wc.request("GET", "/healthz")[0] == 200,
         timeout=30,
         interval=0.5,
-        diag=lambda: cmd("journalctl", "-u", "ipsecvpn-web.service", "-u", "ipsecvpn-agent.service", "--no-pager", "-n", "40", allowed=(0, 1)).stdout[-1200:],
+        diag=lambda: cmd(
+            "journalctl",
+            "-u",
+            "ipsecvpn-web.service",
+            "-u",
+            "ipsecvpn-agent.service",
+            "--no-pager",
+            "-n",
+            "40",
+            allowed=(0, 1),
+        ).stdout[-1200:],
     )
     admin_pass = extract_bootstrap_password()
     # Save password in root-only temp file for after-reboot verification
     Path("/var/lib/ipsecvpn-v4-webpass").write_text(admin_pass, encoding="ascii")
     Path("/var/lib/ipsecvpn-v4-webpass").chmod(0o600)
 
-    code, _ = wc.request("POST", "/api/v1/auth/login", {"username": "admin", "password": admin_pass})
+    code, _ = wc.request(
+        "POST", "/api/v1/auth/login", {"username": "admin", "password": admin_pass}
+    )
     assert code == 200, f"Web login failed: {code}"
 
     # Verify Unix socket SO_PEERCRED RPC connectivity between non-root web and root agent
@@ -739,16 +820,34 @@ def before_reboot():
     assert ov.get("agent_online") is True, ov
 
     # Save active profile via Web API & test redacted + audited plaintext PSK Tencent JSON export
-    sp_code, _ = wc.request("POST", "/api/v1/profiles", {"yaml_content": LAB_PROFILE_YAML, "hub_role": "primary", "activate": True, "note": "v4 qemu lab"})
+    sp_code, _ = wc.request(
+        "POST",
+        "/api/v1/profiles",
+        {
+            "yaml_content": LAB_PROFILE_YAML,
+            "hub_role": "primary",
+            "activate": True,
+            "note": "v4 qemu lab",
+        },
+    )
     assert sp_code == 200
-    e1_code, e1_raw = wc.request("POST", "/api/v1/profiles/v4-go-esports-lab/export-peer", {"site_id": "ob-alpha", "format": "tencent-json"})
+    e1_code, e1_raw = wc.request(
+        "POST",
+        "/api/v1/profiles/v4-go-esports-lab/export-peer",
+        {"site_id": "ob-alpha", "format": "tencent-json"},
+    )
     e1 = json.loads(e1_raw)
     assert e1_code == 200 and "<SEND_SEPARATELY>" in e1["content"]
 
     e2_code, e2_raw = wc.request(
         "POST",
         "/api/v1/profiles/v4-go-esports-lab/export-peer",
-        {"site_id": "ob-alpha", "format": "tencent-json", "include_psk": True, "confirm_password": admin_pass},
+        {
+            "site_id": "ob-alpha",
+            "format": "tencent-json",
+            "include_psk": True,
+            "confirm_password": admin_pass,
+        },
     )
     e2 = json.loads(e2_raw)
     expected_psk = (SECRETS / "ob-alpha.psk").read_text(encoding="ascii").strip()
@@ -767,12 +866,20 @@ def before_reboot():
 
     emit(
         "V4_WEB_01",
-        "Privilege-separated agent/web services serve TLS 1.3 console with SO_PEERCRED RPC and audited PSK export.",
-        {"agent_pid": agent_uid, "web_user": web_uid, "agent_online": True, "audit_count": len(audit_actions)},
+        "Privilege-separated agent/web services serve TLS 1.3 console "
+        "with SO_PEERCRED RPC and audited PSK export.",
+        {
+            "agent_pid": agent_uid,
+            "web_user": web_uid,
+            "agent_online": True,
+            "audit_count": len(audit_actions),
+        },
     )
 
     # 5. Failover backup-lock + Hub XFRM gate + role swap via Web API
-    sw_code, sw_raw = wc.request("POST", "/api/v1/failover/switch-backup", {"reason": "v4_lab_drill", "apply_gate": True})
+    sw_code, sw_raw = wc.request(
+        "POST", "/api/v1/failover/switch-backup", {"reason": "v4_lab_drill", "apply_gate": True}
+    )
     sw = json.loads(sw_raw)
     assert sw_code == 200 and sw["state"]["mode"] == "BACKUP_LOCKED", sw
     # Verify XFRM interfaces placed down while locked
@@ -780,14 +887,20 @@ def before_reboot():
     assert "UP" not in link_state.get("flags", []), link_state
 
     # Failback without force must be blocked (409)
-    fb_block, _ = wc.request("POST", "/api/v1/failover/failback", {"force": False, "apply_gate": True})
+    fb_block, _ = wc.request(
+        "POST", "/api/v1/failover/failback", {"force": False, "apply_gate": True}
+    )
     assert fb_block == 409, f"Expected 409 hold guard, got {fb_block}"
 
     # Force failback unlocks gate and restores encrypted traffic
-    fb_ok, fb_raw = wc.request("POST", "/api/v1/failover/failback", {"force": True, "apply_gate": True})
+    fb_ok, fb_raw = wc.request(
+        "POST", "/api/v1/failover/failback", {"force": True, "apply_gate": True}
+    )
     assert fb_ok == 200 and json.loads(fb_raw)["state"]["mode"] == "PRIMARY_ACTIVE"
     wait_status_pass(timeout=60)
-    post_fb = exchange("ob-alpha", "server-core", "10.101.10.0/24", "10.100.10.0/24", "udp", PORT + 30)
+    post_fb = exchange(
+        "ob-alpha", "server-core", "10.101.10.0/24", "10.100.10.0/24", "udp", PORT + 30
+    )
     assert post_fb["passed"]
 
     r1, _ = wc.request("POST", "/api/v1/failover/set-role", {"role": "backup"})
@@ -795,7 +908,8 @@ def before_reboot():
     assert r1 == 200 and r2 == 200
     emit(
         "V4_FO_01",
-        "Failover backup lock drops XFRM gate, enforces manual failback guard, and supports role swap.",
+        "Failover backup lock drops XFRM gate, enforces manual failback guard, "
+        "and supports role swap.",
         {"locked_then_restored": True, "post_failback_udp": True},
     )
 
@@ -811,37 +925,79 @@ def after_reboot():
         "ipsecvpn-web.service",
     ):
         wait_until(
-            lambda u=unit: cmd("systemctl", "is-active", u, allowed=(0, 3)).stdout.strip() == "active",
+            lambda u=unit: (
+                cmd("systemctl", "is-active", u, allowed=(0, 3)).stdout.strip() == "active"
+            ),
             timeout=45,
             interval=1.0,
-            diag=lambda u=unit: f"unit={u} status={cmd('systemctl', 'status', u, '--no-pager', allowed=(0, 1, 3, 4)).stdout[-1000:]}",
+            diag=lambda u=unit: (
+                f"unit={u} status="
+                + cmd(
+                    "systemctl",
+                    "status",
+                    u,
+                    "--no-pager",
+                    allowed=(0, 1, 3, 4),
+                ).stdout[-1000:]
+            ),
         )
 
     status = wait_status_pass(timeout=60)
     flow = exchange("ob-alpha", "server-core", "10.101.10.0/24", "10.100.10.0/24", "udp", PORT + 40)
-    denied = exchange("ob-alpha", "ob-beta", "10.101.10.0/24", "10.102.10.0/24", "udp", PORT + 41, expect_fail=True)
+    denied = exchange(
+        "ob-alpha",
+        "ob-beta",
+        "10.101.10.0/24",
+        "10.102.10.0/24",
+        "udp",
+        PORT + 41,
+        expect_fail=True,
+    )
 
     wc = WebClient()
     wait_until(
         lambda: wc.request("GET", "/healthz")[0] == 200,
         timeout=30,
         interval=0.5,
-        diag=lambda: cmd("journalctl", "-u", "ipsecvpn-web.service", "-u", "ipsecvpn-agent.service", "--no-pager", "-n", "40", allowed=(0, 1)).stdout[-1200:],
+        diag=lambda: cmd(
+            "journalctl",
+            "-u",
+            "ipsecvpn-web.service",
+            "-u",
+            "ipsecvpn-agent.service",
+            "--no-pager",
+            "-n",
+            "40",
+            allowed=(0, 1),
+        ).stdout[-1200:],
     )
     admin_pass = Path("/var/lib/ipsecvpn-v4-webpass").read_text(encoding="ascii").strip()
-    assert wc.request("POST", "/api/v1/auth/login", {"username": "admin", "password": admin_pass})[0] == 200
+    assert (
+        wc.request("POST", "/api/v1/auth/login", {"username": "admin", "password": admin_pass})[0]
+        == 200
+    )
     ov = wait_until(
-        lambda: (lambda r: json.loads(r[1]) if r[0] == 200 and json.loads(r[1]).get("agent_online") is True else None)(
-            wc.request("GET", "/api/v1/overview")
-        ),
+        lambda: (
+            lambda r: (
+                json.loads(r[1])
+                if r[0] == 200 and json.loads(r[1]).get("agent_online") is True
+                else None
+            )
+        )(wc.request("GET", "/api/v1/overview")),
         timeout=20,
         interval=0.5,
     )
     assert ov.get("agent_online") is True, ov
     emit(
         "V4_REBOOT_01",
-        "After real VM reboot, Go boot restore + agent + web recover unattended with encrypted traffic and OB isolation.",
-        {"status": status["status"], "udp_after_reboot": flow["passed"], "ob_blocked": denied["blocked"], "agent_online": True},
+        "After real VM reboot, Go boot restore + agent + web recover unattended "
+        "with encrypted traffic and OB isolation.",
+        {
+            "status": status["status"],
+            "udp_after_reboot": flow["passed"],
+            "ob_blocked": denied["blocked"],
+            "agent_online": True,
+        },
     )
 
     # 7. Clean uninstall & host baseline preservation
@@ -858,8 +1014,13 @@ def after_reboot():
     assert not any(item.get("ifname", "").startswith("ivp") for item in xfrms), xfrms
     emit(
         "V4_CLEAN_01",
-        "Go uninstall cleanly removes owned strongSwan, XFRM, and nftables while preserving host baseline.",
-        {"lab_existing_preserved": True, "default_route_preserved": True, "owned_xfrm_removed": True},
+        "Go uninstall cleanly removes owned strongSwan, XFRM, and nftables "
+        "while preserving host baseline.",
+        {
+            "lab_existing_preserved": True,
+            "default_route_preserved": True,
+            "owned_xfrm_removed": True,
+        },
     )
 
 

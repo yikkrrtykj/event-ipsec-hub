@@ -2,7 +2,7 @@ name: V4 Go + Vue 3 CI
 
 on:
   push:
-    branches: [v4-go]
+    branches: [main, v4-go]
   pull_request:
     branches: [main, v4-go]
 
