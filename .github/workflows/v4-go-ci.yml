@@ -1,4 +1,4 @@
-name: V4 Go CI
+name: V4 Go + Vue 3 CI
 
 on:
   push:
@@ -10,23 +10,34 @@ permissions:
   contents: read
 
 jobs:
-  go-verify:
+  build-and-verify:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
+      - uses: actions/setup-node@39370e3970a6d050c480ffad7ff0ed4d3fdee5af # v4.1.0
+        with:
+          node-version: '22'
       - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa3688eabac # v5.4.0
         with:
           go-version-file: go.mod
+      - name: Build Vue 3 + TypeScript + ECharts frontend bundle
+        working-directory: web
+        run: |
+          npm ci --no-audit --no-fund
+          npm run build
+      - name: ShellCheck V4 installer
+        run: shellcheck scripts/install-v4.sh
       - name: Go vet & unit tests (race)
         run: |
           go vet ./...
           go test -race -v ./...
-      - name: Build static Linux amd64 binary and smoke-test CLI
+      - name: Build single static Linux amd64 binary (with embedded SPA) and smoke-test
         run: |
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath -ldflags='-s -w' -o bin/ipsecvpn ./cmd/ipsecvpn
+          ls -lh bin/ipsecvpn
           ./bin/ipsecvpn version
           ./bin/ipsecvpn profiles list --directory tests/fixtures --json
           ./bin/ipsecvpn validate -c config/event.example.yaml --json

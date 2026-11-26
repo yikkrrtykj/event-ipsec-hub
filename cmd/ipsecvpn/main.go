@@ -8,24 +8,31 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
+	"github.com/yikkrrtykj/event-ipsec-hub/internal/agent"
 	"github.com/yikkrrtykj/event-ipsec-hub/internal/diagnostics"
 	"github.com/yikkrrtykj/event-ipsec-hub/internal/failover"
 	"github.com/yikkrrtykj/event-ipsec-hub/internal/handoff"
 	"github.com/yikkrrtykj/event-ipsec-hub/internal/manifest"
 	"github.com/yikkrrtykj/event-ipsec-hub/internal/profile"
+	"github.com/yikkrrtykj/event-ipsec-hub/internal/rpc"
 	"github.com/yikkrrtykj/event-ipsec-hub/internal/secureio"
 	"github.com/yikkrrtykj/event-ipsec-hub/internal/storage"
 	"github.com/yikkrrtykj/event-ipsec-hub/internal/telemetry"
 	"github.com/yikkrrtykj/event-ipsec-hub/internal/transaction"
+	"github.com/yikkrrtykj/event-ipsec-hub/internal/web"
+	webassets "github.com/yikkrrtykj/event-ipsec-hub/web"
 )
 
 const (
-	Version         = "4.0.0-alpha.m2"
+	Version         = "4.0.0-rc.1"
 	DefaultProfiles = "/etc/ipsecvpn/profiles"
 )
 
@@ -80,6 +87,10 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return runProbe(rest, stdout, stderr)
 	case "monitor":
 		return runMonitor(rest, stdout, stderr)
+	case "agent":
+		return runAgent(rest, stdout, stderr)
+	case "web":
+		return runWeb(rest, stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "unknown command: %s\n", cmd)
 		printUsage(stderr)
@@ -88,11 +99,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 }
 
 func printUsage(w io.Writer) {
-	fmt.Fprintln(w, "ipsecvpn — event-ipsec-hub V4.0 Go gateway CLI")
+	fmt.Fprintln(w, "ipsecvpn — event-ipsec-hub V4.0 Go gateway CLI & Web appliance")
 	fmt.Fprintln(w, "Commands: profiles list | validate | check | status | doctor | plan | render | export-peer")
 	fmt.Fprintln(w, "          install | apply | backup | rollback | uninstall | initiate | rekey | reconnect")
 	fmt.Fprintln(w, "          failover status|evaluate|switch-backup|failback|set-role | probe respond|run")
-	fmt.Fprintln(w, "          monitor validate|timeline|metrics | boot guard|restore | version")
+	fmt.Fprintln(w, "          monitor validate|timeline|metrics | agent serve | web serve | boot guard|restore | version")
 }
 
 func writeJSON(w io.Writer, v any) {
@@ -692,4 +703,122 @@ func runMonitor(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "unknown monitor subcommand: %s\n", sub)
 		return 2
 	}
+}
+
+func runAgent(args []string, stdout, stderr io.Writer) int {
+	if len(args) == 0 || args[0] != "serve" {
+		fmt.Fprintln(stderr, "usage: ipsecvpn agent serve [--socket PATH] [--db PATH] [--interval 15s] [--allow-uid UID]")
+		return 2
+	}
+	fs := flag.NewFlagSet("agent serve", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	sock := fs.String("socket", rpc.DefaultSocketPath, "Unix socket path")
+	dbPath := fs.String("db", storage.DefaultDBPath, "SQLite database path")
+	interval := fs.Duration("interval", 15*time.Second, "telemetry sample interval")
+	retention := fs.Int("retention-days", 14, "metric retention days")
+	allowUIDsStr := fs.String("allow-uid", "", "comma-separated UIDs allowed to call RPC besides root")
+	if err := fs.Parse(args[1:]); err != nil {
+		return 2
+	}
+
+	allowedUIDs := map[uint32]bool{}
+	for _, part := range strings.Split(*allowUIDsStr, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		if v, err := strconv.ParseUint(part, 10, 32); err == nil {
+			allowedUIDs[uint32(v)] = true
+		}
+	}
+	st, err := storage.Open(*dbPath)
+	if err != nil {
+		return emitError(err, false, true, stdout, stderr)
+	}
+	defer st.Close()
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	d := agent.New(agent.Config{
+		SocketPath:    *sock,
+		DBPath:        *dbPath,
+		Interval:      *interval,
+		RetentionDays: *retention,
+		AllowedUIDs:   allowedUIDs,
+	}, st, nil)
+	fmt.Fprintf(stdout, "ipsecvpn agent listening on %s (interval=%s)\n", *sock, *interval)
+	if err := d.Serve(ctx); err != nil {
+		return emitError(err, false, true, stdout, stderr)
+	}
+	return 0
+}
+
+func runWeb(args []string, stdout, stderr io.Writer) int {
+	if len(args) == 0 || args[0] != "serve" {
+		fmt.Fprintln(stderr, "usage: ipsecvpn web serve [--listen :18443] [--db PATH] [--agent-socket PATH] [--cert PATH] [--key PATH] [--public-ip IP] [--demo]")
+		return 2
+	}
+	fs := flag.NewFlagSet("web serve", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	listen := fs.String("listen", ":18443", "HTTPS listen address")
+	dbPath := fs.String("db", storage.DefaultDBPath, "SQLite database path")
+	agentSock := fs.String("agent-socket", rpc.DefaultSocketPath, "Agent Unix socket path")
+	certPath := fs.String("cert", "", "TLS certificate path")
+	keyPath := fs.String("key", "", "TLS private key path")
+	publicIPs := fs.String("public-ip", "", "comma-separated public IP SANs for auto-generated TLS cert")
+	failoverPath := fs.String("failover-state", failover.DefaultStateFile, "failover state JSON path")
+	demo := fs.Bool("demo", false, "enable local UI demo/preview mode")
+	insecureHTTP := fs.Bool("insecure-http", false, "disable TLS (local dev only)")
+	if err := fs.Parse(args[1:]); err != nil {
+		return 2
+	}
+
+	st, err := storage.Open(*dbPath)
+	if err != nil {
+		return emitError(err, false, true, stdout, stderr)
+	}
+	defer st.Close()
+
+	var agentClient rpc.Client
+	if !*demo {
+		agentClient = rpc.NewUnixClient(*agentSock)
+	}
+	staticFS, _ := webassets.DistFS()
+	var ips []string
+	for _, s := range strings.Split(*publicIPs, ",") {
+		if s = strings.TrimSpace(s); s != "" {
+			ips = append(ips, s)
+		}
+	}
+
+	srv := web.NewServer(web.Config{
+		ListenAddr:        *listen,
+		PublicIPs:         ips,
+		CertPath:          *certPath,
+		KeyPath:           *keyPath,
+		FailoverStateFile: *failoverPath,
+		StaticFS:          staticFS,
+		DemoMode:          *demo,
+		InsecureHTTP:      *insecureHTTP,
+	}, st, agentClient)
+
+	if initPass, created, err := srv.BootstrapAdmin(); err != nil {
+		return emitError(err, false, true, stdout, stderr)
+	} else if created {
+		fmt.Fprintf(stdout, "BOOTSTRAP_ADMIN username=admin initial_password=%s (change immediately after first login)\n", initPass)
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	scheme := "https"
+	if *insecureHTTP {
+		scheme = "http"
+	}
+	fmt.Fprintf(stdout, "ipsecvpn web console listening on %s://%s (demo=%v)\n", scheme, *listen, *demo)
+	if err := srv.Serve(ctx); err != nil {
+		return emitError(err, false, true, stdout, stderr)
+	}
+	return 0
 }

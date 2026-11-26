@@ -21,3 +21,5 @@ __pycache__/
 /ipsecvpn.exe
 coverage.out
 /web/node_modules/
+/web/dist/*
+!/web/dist/.gitkeep
