@@ -60,3 +60,19 @@ bash scripts/validate-examples.sh
 ```
 
 公开仓库只放虚构配置。真实 profile、计划和导出文件应通过受控渠道保存和传输。参数单中的 PSK 始终显示为 `<SEND_SEPARATELY>`。
+
+## V4.0 单文件 Go 网关与 Web 控制台（`v4-go` 分支）
+
+V4.0 采用 **Go 单二进制 + 内嵌 Vue 3 / ECharts Web 控制台 + strongSwan (`charon-systemd`) + Linux XFRM & nftables**，提供可视化通道配置、一键标准 JSON / 山石参数单导出、四层联动监控与独立事件检索、内置飞书告警以及 root Agent / 非 root Web 权限分离。
+
+- [V4 架构方案](docs/V4_ARCHITECTURE.md)
+- [V4 生产部署与运维手册](docs/V4_OPERATIONS.md)
+
+```bash
+# 本地构建前端与单文件二进制
+(cd web && npm ci && npm run build)
+CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o bin/ipsecvpn ./cmd/ipsecvpn
+
+# 本地预览控制台（演示模式）
+./bin/ipsecvpn web serve --demo --insecure-http --listen 127.0.0.1:18080 --db ./demo-v4.db
+```
