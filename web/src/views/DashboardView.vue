@@ -1,12 +1,16 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { api, fmtDateTime, type DiagnosisResult, type MetricSample, type TimelineEvent } from '../api'
 import { causeLabel, causeSummary, failoverModeLabel, sourceLabel, t } from '../i18n'
 
-const emit = defineEmits<{ (e: 'navigate', tab: string, site?: string): void }>()
+const emit = defineEmits<{ (e: 'navigate', tab: string, site?: string, focusTsMs?: number): void }>()
 
 const overview = ref<any>(null)
 const errMsg = ref('')
+const okMsg = ref('')
+const busySite = ref('')
+const autoRefreshSec = ref(0)
+let timer: number | null = null
 
 async function load() {
   errMsg.value = ''
@@ -26,6 +30,51 @@ async function seedDemo() {
   }
 }
 
+async function reconnectTunnel(siteId: string) {
+  errMsg.value = ''
+  okMsg.value = ''
+  busySite.value = siteId
+  try {
+    await api(`/api/v1/tunnels/${encodeURIComponent(siteId)}/reconnect`, { method: 'POST' })
+    okMsg.value = t('msgReconnectDone', { site: siteId })
+    await load()
+  } catch (e: any) {
+    errMsg.value = e.message
+  } finally {
+    busySite.value = ''
+  }
+}
+
+async function rekeyTunnel(siteId: string) {
+  errMsg.value = ''
+  okMsg.value = ''
+  busySite.value = siteId
+  try {
+    await api(`/api/v1/tunnels/${encodeURIComponent(siteId)}/rekey`, {
+      method: 'POST',
+      body: JSON.stringify({ kind: 'child' })
+    })
+    okMsg.value = t('msgRekeyDone', { site: siteId })
+    await load()
+  } catch (e: any) {
+    errMsg.value = e.message
+  } finally {
+    busySite.value = ''
+  }
+}
+
+function resetTimer() {
+  if (timer !== null) {
+    window.clearInterval(timer)
+    timer = null
+  }
+  if (autoRefreshSec.value > 0) {
+    timer = window.setInterval(load, autoRefreshSec.value * 1000)
+  }
+}
+
+watch(autoRefreshSec, resetTimer)
+
 function pillClass(sev: string) {
   if (sev === 'ok') return 'pill-ok'
   if (sev === 'warning') return 'pill-warn'
@@ -33,18 +82,36 @@ function pillClass(sev: string) {
   return 'pill-unknown'
 }
 
-onMounted(load)
+onMounted(() => {
+  load()
+  resetTimer()
+})
+
+onBeforeUnmount(() => {
+  if (timer !== null) window.clearInterval(timer)
+})
 </script>
 
 <template>
   <div>
     <div class="row" style="margin-bottom: 14px;">
+      <div v-if="autoRefreshSec > 0" class="row" style="gap: 6px;">
+        <span class="live-dot"></span>
+        <span class="muted">{{ t('liveUpdating') }}</span>
+      </div>
       <div class="spacer"></div>
+      <select v-model.number="autoRefreshSec" class="select" style="width: 155px;">
+        <option :value="0">{{ t('autoRefreshOff') }}</option>
+        <option :value="15">{{ t('autoRefresh15s') }}</option>
+        <option :value="30">{{ t('autoRefresh30s') }}</option>
+        <option :value="60">{{ t('autoRefresh60s') }}</option>
+      </select>
       <button v-if="overview?.demo_mode" class="btn btn-secondary" @click="seedDemo">{{ t('seedDemo') }}</button>
       <button class="btn" @click="load">{{ t('refresh') }}</button>
     </div>
 
     <div v-if="errMsg" class="alert-banner alert-critical">{{ errMsg }}</div>
+    <div v-if="okMsg" class="alert-banner alert-ok">{{ okMsg }}</div>
 
     <template v-if="overview">
       <div
@@ -144,7 +211,11 @@ onMounted(load)
                 <span class="pill" :class="pillClass(row.diagnosis.severity)">{{ causeLabel(row.diagnosis.code) }}</span>
               </td>
               <td>
-                <button class="btn btn-secondary" @click="emit('navigate', 'diagnostics', row.sample.site_id)">{{ t('viewMonitor') }}</button>
+                <div class="row" style="gap: 6px;">
+                  <button class="btn btn-secondary btn-sm" @click="emit('navigate', 'diagnostics', row.sample.site_id)">{{ t('viewMonitor') }}</button>
+                  <button class="btn btn-secondary btn-sm" :disabled="busySite === row.sample.site_id" @click="reconnectTunnel(row.sample.site_id)">{{ t('btnReconnect') }}</button>
+                  <button class="btn btn-secondary btn-sm" :disabled="busySite === row.sample.site_id" @click="rekeyTunnel(row.sample.site_id)">{{ t('btnRekey') }}</button>
+                </div>
               </td>
             </tr>
           </tbody>
@@ -171,7 +242,17 @@ onMounted(load)
             <tr v-for="ev in (overview.recent_events as TimelineEvent[]).slice().reverse().slice(0, 5)" :key="ev.id || ev.ts_ms">
               <td>{{ fmtDateTime(ev.ts_ms) }}</td>
               <td><code>{{ ev.category }}</code></td>
-              <td>{{ ev.site_id || '-' }}</td>
+              <td>
+                <a
+                  v-if="ev.site_id"
+                  href="#"
+                  style="color: #60a5fa; text-decoration: none;"
+                  @click.prevent="emit('navigate', 'diagnostics', ev.site_id, ev.ts_ms)"
+                >
+                  {{ ev.site_id }}
+                </a>
+                <span v-else>-</span>
+              </td>
               <td>{{ sourceLabel(ev.source) }}</td>
               <td>{{ ev.title }}</td>
             </tr>

@@ -174,6 +174,16 @@ func TestWebAPIEndToEndLoginProfileExportAndTimeline(t *testing.T) {
 		t.Fatalf("expected 1 filtered DPD critical event, got %d %+v", resp.StatusCode, evRes)
 	}
 
+	// Single-tunnel reconnect & rekey endpoints
+	resp = postJSON("/api/v1/tunnels/ob-venue-1/reconnect", nil)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("tunnel reconnect failed: %d", resp.StatusCode)
+	}
+	resp = postJSON("/api/v1/tunnels/ob-venue-1/rekey", map[string]any{"kind": "child"})
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("tunnel rekey failed: %d", resp.StatusCode)
+	}
+
 	// Signoff checklist
 	resp, _ = client.Get(ts.URL + "/api/v1/system/signoff")
 	var so map[string]any

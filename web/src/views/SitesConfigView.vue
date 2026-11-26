@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { api, fmtDateTime } from '../api'
 import { lang, t } from '../i18n'
 
@@ -26,7 +26,6 @@ interface SiteForm {
   route_priority: number
   outer_interface: string
   isp_label: string
-  expanded: boolean
   show_advanced: boolean
   source_ip: string
   gateway: string
@@ -41,7 +40,7 @@ interface PairForm {
   b_cidrs_text: string
 }
 
-const activeTab = ref<'visual' | 'yaml'>('visual')
+const subTab = ref<'tunnels' | 'psk' | 'yaml'>('tunnels')
 const profiles = ref<any[]>([])
 const secretsMeta = ref<any[]>([])
 const selectedId = ref('')
@@ -52,6 +51,11 @@ const output = ref('')
 const errMsg = ref('')
 const infoMsg = ref('')
 const revisions = ref<any[]>([])
+
+// Drawer state: edit single tunnel or gateway basics
+const editingSiteIdx = ref<number | null>(null)
+const isNewSite = ref(false)
+const gatewayDrawerOpen = ref(false)
 
 const form = ref({
   event_id: 'esports-event-2026',
@@ -87,6 +91,12 @@ const secretPSK = ref('')
 
 const siteIDs = computed(() => sites.value.map((s) => s.id).filter(Boolean))
 const espIsGCM = computed(() => form.value.esp_enc.endsWith('gcm16'))
+const editingSite = computed(() => (editingSiteIdx.value !== null ? sites.value[editingSiteIdx.value] ?? null : null))
+const secretBySite = computed(() => {
+  const m = new Map<string, any>()
+  for (const s of secretsMeta.value) m.set(s.site_id, s)
+  return m
+})
 
 const ipv4RE = /^(\d{1,3}\.){3}\d{1,3}$/
 
@@ -107,9 +117,7 @@ function formatIdentityValue(type: IkeIdType, value: string, fallbackIP: string)
     if (!v) return fallbackIP
     return v.startsWith('@') ? v : `@${v}`
   }
-  if (type === 'user_fqdn') {
-    return v || fallbackIP
-  }
+  if (type === 'user_fqdn') return v || fallbackIP
   return v || fallbackIP
 }
 
@@ -170,9 +178,8 @@ function buildYAMLFromForm(): string {
     `  id: ${q(f.event_id)}`,
     `  name: ${q(f.event_name)}`
   ]
-  if (f.event_purpose.trim()) {
-    lines.push(`  purpose: ${q(f.event_purpose)}`)
-  }
+  if (f.event_purpose.trim()) lines.push(`  purpose: ${q(f.event_purpose)}`)
+
   const hubIke = formatIdentityValue(f.hub_ike_type, f.hub_ike_value, f.hub_public_ip)
   lines.push(
     '',
@@ -181,9 +188,7 @@ function buildYAMLFromForm(): string {
     '  platform: ubuntu-24.04',
     `  public_endpoint: ${q(f.hub_public_ip)}`
   )
-  if (hubIke && hubIke !== f.hub_public_ip.trim()) {
-    lines.push(`  ike_identity: ${q(hubIke)}`)
-  }
+  if (hubIke && hubIke !== f.hub_public_ip.trim()) lines.push(`  ike_identity: ${q(hubIke)}`)
   lines.push(
     `  provider_label: ${q(f.hub_provider || 'VPS')}`,
     `  location_label: ${q(f.hub_location || 'Primary')}`
@@ -241,12 +246,8 @@ function buildYAMLFromForm(): string {
     )
     if (s.source_ip.trim()) lines.push(`      source_ip: ${q(s.source_ip)}`)
     if (s.gateway.trim()) lines.push(`      gateway: ${q(s.gateway)}`)
-    if (s.route_table.trim() && Number(s.route_table) > 0) {
-      lines.push(`      route_table: ${Number(s.route_table)}`)
-    }
-    if (s.policy_priority.trim() && Number(s.policy_priority) > 0) {
-      lines.push(`      policy_priority: ${Number(s.policy_priority)}`)
-    }
+    if (s.route_table.trim() && Number(s.route_table) > 0) lines.push(`      route_table: ${Number(s.route_table)}`)
+    if (s.policy_priority.trim() && Number(s.policy_priority) > 0) lines.push(`      policy_priority: ${Number(s.policy_priority)}`)
   }
 
   lines.push('', 'traffic_policy:', '  allowed_site_pairs:')
@@ -300,9 +301,7 @@ function hydrateFormFromProfile(p: any) {
 
   const linkBySite = new Map<string, any>()
   for (const sl of p.site_links || []) {
-    if (!linkBySite.has(sl.site_id)) {
-      linkBySite.set(sl.site_id, sl)
-    }
+    if (!linkBySite.has(sl.site_id)) linkBySite.set(sl.site_id, sl)
   }
 
   sites.value = (p.sites || []).map((st: any, idx: number) => {
@@ -329,7 +328,6 @@ function hydrateFormFromProfile(p: any) {
       route_priority: sl.route_priority ?? 10,
       outer_interface: op.interface || 'eth0',
       isp_label: op.isp_label || 'ISP-A',
-      expanded: idx === 0,
       show_advanced: hasAdv,
       source_ip: op.source_ip || '',
       gateway: op.gateway || '',
@@ -354,6 +352,7 @@ function hydrateFormFromProfile(p: any) {
 function loadExampleTemplate() {
   selectedId.value = ''
   revisions.value = []
+  editingSiteIdx.value = null
   const isEn = lang.value === 'en'
   form.value = {
     event_id: 'esports-multi-ob-hillstone',
@@ -401,7 +400,6 @@ function loadExampleTemplate() {
       route_priority: 10,
       outer_interface: 'eth0',
       isp_label: 'BGP-ISP-A',
-      expanded: true,
       show_advanced: false,
       source_ip: '',
       gateway: '',
@@ -427,7 +425,6 @@ function loadExampleTemplate() {
       route_priority: 10,
       outer_interface: 'eth0',
       isp_label: 'BGP-ISP-A',
-      expanded: false,
       show_advanced: false,
       source_ip: '',
       gateway: '',
@@ -453,7 +450,6 @@ function loadExampleTemplate() {
       route_priority: 10,
       outer_interface: 'eth0',
       isp_label: 'BGP-ISP-A',
-      expanded: false,
       show_advanced: false,
       source_ip: '',
       gateway: '',
@@ -471,17 +467,13 @@ function loadExampleTemplate() {
   infoMsg.value = t('msgLoadedExample')
 }
 
-function setAllExpanded(val: boolean) {
-  for (const s of sites.value) s.expanded = val
-}
-
 function selectorModeLabel(mode: string): string {
   if (mode === 'route_based') return t('modeRouteBased')
   if (mode === 'per_pair') return t('modePerPair')
   return t('modeExact')
 }
 
-function addSite() {
+function openNewSiteDrawer() {
   const nextIdx = sites.value.length + 1
   const nextIfID = sites.value.reduce((mx, s) => Math.max(mx, Number(s.if_id) || 200), 200) + 1
   const id = `ob-venue-${nextIdx}`
@@ -504,31 +496,48 @@ function addSite() {
     route_priority: 10,
     outer_interface: 'eth0',
     isp_label: 'ISP-A',
-    expanded: true,
     show_advanced: false,
     source_ip: '',
     gateway: '',
     route_table: '',
     policy_priority: ''
   })
+  isNewSite.value = true
+  editingSiteIdx.value = sites.value.length - 1
+}
+
+function openEditSiteDrawer(idx: number) {
+  isNewSite.value = false
+  editingSiteIdx.value = idx
+}
+
+function closeDrawers() {
+  editingSiteIdx.value = null
+  gatewayDrawerOpen.value = false
+}
+
+function onKeyDown(ev: KeyboardEvent) {
+  if (ev.key === 'Escape') closeDrawers()
 }
 
 function removeSite(idx: number) {
+  if (editingSiteIdx.value === idx) editingSiteIdx.value = null
   sites.value.splice(idx, 1)
 }
 
 function addPair() {
   const ids = siteIDs.value
-  pairs.value.push({
-    a: ids[1] || ids[0] || '',
-    b: ids[0] || '',
-    a_cidrs_text: '',
-    b_cidrs_text: ''
-  })
+  pairs.value.push({ a: ids[1] || ids[0] || '', b: ids[0] || '', a_cidrs_text: '', b_cidrs_text: '' })
 }
 
 function removePair(idx: number) {
   pairs.value.splice(idx, 1)
+}
+
+function openPSKForSite(siteId: string) {
+  secretSite.value = siteId
+  onSecretSiteChange()
+  subTab.value = 'psk'
 }
 
 function onSecretSiteChange() {
@@ -540,11 +549,11 @@ function onSecretSiteChange() {
   }
 }
 
-function switchTab(tab: 'visual' | 'yaml') {
-  if (tab === 'yaml' && activeTab.value === 'visual' && sites.value.length > 0) {
+function switchSubTab(tab: 'tunnels' | 'psk' | 'yaml') {
+  if (tab === 'yaml' && subTab.value !== 'yaml' && sites.value.length > 0) {
     yamlText.value = buildYAMLFromForm()
   }
-  activeTab.value = tab
+  subTab.value = tab
 }
 
 async function syncYAMLToForm() {
@@ -557,7 +566,7 @@ async function syncYAMLToForm() {
     })
     if (res.profile) {
       hydrateFormFromProfile(res.profile)
-      activeTab.value = 'visual'
+      subTab.value = 'tunnels'
       infoMsg.value = t('msgSyncedForm')
     }
   } catch (e: any) {
@@ -589,15 +598,11 @@ async function selectProfile(p: any) {
     }).catch(() => null)
   ])
   revisions.value = revs.revisions || []
-  if (parsed?.profile) {
-    hydrateFormFromProfile(parsed.profile)
-  }
+  if (parsed?.profile) hydrateFormFromProfile(parsed.profile)
 }
 
 function currentYAML(): string {
-  if (activeTab.value === 'visual') {
-    yamlText.value = buildYAMLFromForm()
-  }
+  if (subTab.value !== 'yaml') yamlText.value = buildYAMLFromForm()
   return yamlText.value
 }
 
@@ -704,238 +709,140 @@ async function saveSecret() {
   }
 }
 
-onMounted(loadProfiles)
+onMounted(() => {
+  loadProfiles()
+  window.addEventListener('keydown', onKeyDown)
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('keydown', onKeyDown)
+})
 </script>
 
 <template>
   <div>
-    <div class="row" style="margin-bottom: 14px;">
+    <!-- Top Header & Sub-tabs -->
+    <div class="row" style="margin-bottom: 10px;">
       <h2 style="margin: 0; font-size: 18px;">{{ t('navConfig') }}</h2>
       <div class="spacer"></div>
-      <div class="row">
-        <button class="btn" :class="activeTab === 'visual' ? '' : 'btn-secondary'" @click="switchTab('visual')">{{ t('tabVisual') }}</button>
-        <button class="btn" :class="activeTab === 'yaml' ? '' : 'btn-secondary'" @click="switchTab('yaml')">{{ t('tabYaml') }}</button>
-        <button class="btn btn-secondary" @click="loadExampleTemplate">{{ t('loadExample') }}</button>
-      </div>
+      <select v-model="hubRole" class="select" style="width: 155px;">
+        <option value="primary">{{ t('rolePrefixPrimary') }}</option>
+        <option value="backup">{{ t('rolePrefixBackup') }}</option>
+      </select>
+      <button class="btn btn-secondary" @click="loadExampleTemplate">{{ t('loadExample') }}</button>
+    </div>
+
+    <div class="tabs-bar">
+      <button class="tab-btn" :class="{ active: subTab === 'tunnels' }" @click="switchSubTab('tunnels')">{{ t('tabTunnels') }}</button>
+      <button class="tab-btn" :class="{ active: subTab === 'psk' }" @click="switchSubTab('psk')">{{ t('tabPsk') }}</button>
+      <button class="tab-btn" :class="{ active: subTab === 'yaml' }" @click="switchSubTab('yaml')">{{ t('tabYamlRev') }}</button>
     </div>
 
     <div v-if="errMsg" class="alert-banner alert-critical">{{ errMsg }}</div>
     <div v-if="infoMsg" class="alert-banner alert-ok">{{ infoMsg }}</div>
 
-    <!-- Saved profile bar -->
+    <!-- Saved profile switcher bar -->
     <div class="card" style="padding: 12px 16px;">
       <div class="row">
         <span class="muted" style="font-size: 13px;">{{ t('savedConfigs') }}</span>
         <button
           v-for="p in profiles"
           :key="p.id"
-          class="btn"
+          class="btn btn-sm"
           :class="selectedId === p.id ? '' : 'btn-secondary'"
           @click="selectProfile(p)"
         >
           {{ p.id }} <span v-if="p.active">· {{ t('currentTag') }}</span>
         </button>
         <span v-if="!profiles.length" class="muted">{{ t('noSavedConfigs') }}</span>
-        <div class="spacer"></div>
-        <select v-model="hubRole" class="select" style="width: 155px;">
-          <option value="primary">{{ t('rolePrefixPrimary') }}</option>
-          <option value="backup">{{ t('rolePrefixBackup') }}</option>
-        </select>
       </div>
     </div>
 
-    <!-- TAB 1: Visual Tunnel Configuration Wizard -->
-    <div v-if="activeTab === 'visual'">
-      <div class="card">
-        <h3>{{ t('gatewayBasic') }}</h3>
-        <div class="grid-3">
-          <div class="field">
-            <label>{{ t('cfgId') }}</label>
-            <input v-model="form.event_id" class="input" placeholder="esports-2026" />
+    <!-- SUB-TAB 1: Tunnels Table + Policy + Crypto + Slide-over Drawer -->
+    <template v-if="subTab === 'tunnels'">
+      <!-- Compact Local Gateway Summary Bar -->
+      <div class="card" style="padding: 13px 16px;">
+        <div class="row">
+          <div>
+            <strong>{{ form.event_id || t('unnamed') }}</strong>
+            <span class="muted" style="margin-left: 8px;">{{ form.event_name }}</span>
           </div>
-          <div class="field">
-            <label>{{ t('cfgName') }}</label>
-            <input v-model="form.event_name" class="input" />
-          </div>
-          <div class="field">
-            <label>{{ t('cfgPurpose') }}</label>
-            <input v-model="form.event_purpose" class="input" :placeholder="t('cfgPurposePh')" />
-          </div>
-          <div class="field">
-            <label>{{ t('hubId') }}</label>
-            <input v-model="form.hub_id" class="input" />
-          </div>
-          <div class="field">
-            <label>{{ t('hubPublicIp') }}</label>
-            <input v-model="form.hub_public_ip" class="input" placeholder="198.51.100.10" />
-          </div>
-          <div class="field">
-            <label>{{ t('hubIkeId') }}</label>
-            <div class="input-combo">
-              <select v-model="form.hub_ike_type" class="select">
-                <option value="address">{{ t('ikeTypeAddress') }}</option>
-                <option value="fqdn">{{ t('ikeTypeFqdn') }}</option>
-                <option v-if="form.hub_ike_type === 'user_fqdn'" value="user_fqdn">{{ t('ikeTypeUserFqdn') }}</option>
-              </select>
-              <input
-                v-model="form.hub_ike_value"
-                class="input"
-                :placeholder="form.hub_ike_type === 'address' ? t('hubIkeIdPh') : t('ikeFqdnPh')"
-              />
-            </div>
-          </div>
-          <div class="field">
-            <label>{{ t('hubProvider') }}</label>
-            <input v-model="form.hub_provider" class="input" placeholder="VPS-Primary" />
-          </div>
-          <div class="field">
-            <label>{{ t('hubLocation') }}</label>
-            <input v-model="form.hub_location" class="input" placeholder="Hong-Kong" />
-          </div>
-          <div class="field">
-            <label>{{ t('hubCountry') }}</label>
-            <input v-model="form.hub_country" class="input" placeholder="CN-HK" />
-          </div>
+          <span class="pill pill-info">{{ form.hub_public_ip }}</span>
+          <span class="muted">
+            {{ form.hub_id }} · {{ form.hub_location }} ({{ form.hub_provider }})
+            <template v-if="form.hub_ike_value"> · IKE {{ form.hub_ike_type.toUpperCase() }}: {{ form.hub_ike_value }}</template>
+          </span>
+          <div class="spacer"></div>
+          <button class="btn btn-secondary btn-sm" @click="gatewayDrawerOpen = true">{{ t('editGatewayBtn') }}</button>
         </div>
       </div>
 
+      <!-- VPN Tunnels Table -->
       <div class="card">
         <div class="row" style="margin-bottom: 12px;">
           <h3 style="margin: 0;">{{ t('peerSitesTitle') }} ({{ sites.length }})</h3>
           <div class="spacer"></div>
-          <button v-if="sites.length > 1" class="btn btn-secondary" @click="setAllExpanded(true)">{{ t('expandAll') }}</button>
-          <button v-if="sites.length > 1" class="btn btn-secondary" @click="setAllExpanded(false)">{{ t('collapseAll') }}</button>
-          <button class="btn" @click="addSite">{{ t('addSite') }}</button>
+          <button class="btn" @click="openNewSiteDrawer">{{ t('newTunnelBtn') }}</button>
         </div>
 
-        <div v-for="(s, idx) in sites" :key="idx" class="sub-card">
-          <div class="row" :style="{ marginBottom: s.expanded ? '12px' : '0' }">
-            <strong style="color: #f8fafc;">{{ t('tunnelIndex') }} #{{ idx + 1 }} · {{ s.id || t('unnamed') }}</strong>
-            <span class="pill pill-info">if_id={{ s.if_id }}</span>
-            <span class="muted">{{ s.public_endpoint }} · {{ s.lan_cidrs_text }} · {{ s.vendor }} · {{ selectorModeLabel(s.selector_mode) }}</span>
-            <div class="spacer"></div>
-            <button v-if="selectedId" class="btn btn-secondary" @click="emit('navigate', 'export', s.id)">{{ t('exportPeerBtn') }}</button>
-            <button class="btn btn-secondary" @click="s.expanded = !s.expanded">
-              {{ s.expanded ? t('collapse') : t('expand') }}
-            </button>
-            <button class="btn btn-danger" @click="removeSite(idx)">{{ t('deleteBtn') }}</button>
-          </div>
-
-          <template v-if="s.expanded">
-            <div class="grid-3">
-              <div class="field">
-                <label>{{ t('siteId') }}</label>
-                <input v-model="s.id" class="input" placeholder="ob-venue-1" />
-              </div>
-              <div class="field">
-                <label>{{ t('siteName') }}</label>
-                <input v-model="s.display_name" class="input" />
-              </div>
-              <div class="field">
-                <label>{{ t('siteRole') }}</label>
-                <select v-model="s.role" class="select">
-                  <option value="server">{{ t('roleServer') }}</option>
-                  <option value="ob">{{ t('roleOb') }}</option>
-                  <option value="venue">{{ t('roleVenue') }}</option>
-                  <option value="other">{{ t('roleOther') }}</option>
-                </select>
-              </div>
-              <div class="field">
-                <label>{{ t('peerPublicIp') }}</label>
-                <input v-model="s.public_endpoint" class="input" placeholder="203.0.113.21" />
-              </div>
-              <div class="field">
-                <label>{{ t('peerIkeId') }}</label>
-                <div class="input-combo">
-                  <select v-model="s.ike_id_type" class="select">
-                    <option value="address">{{ t('ikeTypeAddress') }}</option>
-                    <option value="fqdn">{{ t('ikeTypeFqdn') }}</option>
-                    <option v-if="s.ike_id_type === 'user_fqdn'" value="user_fqdn">{{ t('ikeTypeUserFqdn') }}</option>
-                  </select>
-                  <input
-                    v-model="s.ike_id_value"
-                    class="input"
-                    :placeholder="s.ike_id_type === 'address' ? t('peerIkeIdPh') : t('peerIkeFqdnPh')"
-                  />
+        <table v-if="sites.length" class="table">
+          <thead>
+            <tr>
+              <th>{{ t('colPeerSite') }}</th>
+              <th>{{ t('peerPublicIp') }}</th>
+              <th>{{ t('colLanCidrs') }}</th>
+              <th>{{ t('peerVendor') }} / {{ t('colSelectorMode') }}</th>
+              <th>if_id</th>
+              <th>{{ t('colPskStatus') }}</th>
+              <th>{{ t('colAction') }}</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="(s, idx) in sites" :key="idx">
+              <td>
+                <strong>{{ s.id || t('unnamed') }}</strong>
+                <div class="muted">{{ s.display_name }} · {{ s.role }}</div>
+              </td>
+              <td>
+                <code>{{ s.public_endpoint }}</code>
+                <div v-if="s.ike_id_value" class="muted">{{ s.ike_id_type.toUpperCase() }}: {{ s.ike_id_value }}</div>
+              </td>
+              <td><code>{{ s.lan_cidrs_text }}</code></td>
+              <td>
+                <div>{{ s.vendor }}</div>
+                <div class="muted">{{ selectorModeLabel(s.selector_mode) }}</div>
+              </td>
+              <td><span class="pill pill-info">{{ s.if_id }}</span></td>
+              <td>
+                <button
+                  class="pill"
+                  :class="secretBySite.has(s.id) ? 'pill-ok' : 'pill-warn'"
+                  style="cursor: pointer;"
+                  @click="openPSKForSite(s.id)"
+                >
+                  {{ secretBySite.has(s.id) ? t('pskConfigured') : t('pskUnconfigured') }}
+                </button>
+              </td>
+              <td>
+                <div class="row" style="gap: 6px;">
+                  <button class="btn btn-secondary btn-sm" @click="openEditSiteDrawer(idx)">{{ t('editTunnelBtn') }}</button>
+                  <button v-if="selectedId" class="btn btn-secondary btn-sm" @click="emit('navigate', 'export', s.id)">{{ t('exportPeerBtn') }}</button>
+                  <button class="btn btn-danger btn-sm" @click="removeSite(idx)">{{ t('deleteBtn') }}</button>
                 </div>
-              </div>
-              <div class="field">
-                <label>{{ t('peerLanCidrs') }}</label>
-                <input v-model="s.lan_cidrs_text" class="input" placeholder="10.101.10.0/24" />
-              </div>
-              <div class="field">
-                <label>{{ t('peerVendor') }}</label>
-                <select v-model="s.vendor" class="select">
-                  <option value="Hillstone">{{ t('vendorHillstone') }}</option>
-                  <option value="Huawei">{{ t('vendorHuawei') }}</option>
-                  <option value="Fortinet">{{ t('vendorFortinet') }}</option>
-                  <option value="Cisco">{{ t('vendorCisco') }}</option>
-                  <option value="CloudVPN">{{ t('vendorCloud') }}</option>
-                  <option value="Generic">{{ t('vendorGeneric') }}</option>
-                </select>
-              </div>
-              <div class="field">
-                <label>{{ t('selectorMode') }}</label>
-                <select v-model="s.selector_mode" class="select">
-                  <option value="route_based">{{ t('modeRouteBased') }}</option>
-                  <option value="exact">{{ t('modeExact') }}</option>
-                  <option value="per_pair">{{ t('modePerPair') }}</option>
-                </select>
-              </div>
-              <div class="field">
-                <label>{{ t('ifIdAndPrio') }}</label>
-                <div class="grid-2-tight">
-                  <input v-model.number="s.if_id" type="number" class="input" />
-                  <input v-model.number="s.route_priority" type="number" class="input" />
-                </div>
-              </div>
-              <div class="field">
-                <label>{{ t('localWanIf') }}</label>
-                <input v-model="s.outer_interface" class="input" placeholder="eth0" />
-              </div>
-              <div class="field">
-                <label>{{ t('ispLabel') }}</label>
-                <input v-model="s.isp_label" class="input" placeholder="BGP-ISP-A" />
-              </div>
-              <div class="field">
-                <label>{{ t('secretPath') }}</label>
-                <input v-model="s.secret_ref" class="input" />
-              </div>
-            </div>
-
-            <div class="row" style="margin-top: 4px;">
-              <button class="btn btn-secondary" @click="s.show_advanced = !s.show_advanced">
-                {{ s.show_advanced ? t('dualIspHide') : t('dualIspShow') }}
-              </button>
-            </div>
-
-            <div v-if="s.show_advanced" class="grid-3" style="margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--border);">
-              <div class="field">
-                <label>{{ t('localSourceIp') }}</label>
-                <input v-model="s.source_ip" class="input" placeholder="198.51.100.10" />
-              </div>
-              <div class="field">
-                <label>{{ t('egressGateway') }}</label>
-                <input v-model="s.gateway" class="input" placeholder="198.51.100.1" />
-              </div>
-              <div class="field">
-                <label>{{ t('routeTablePrio') }}</label>
-                <div class="grid-2-tight">
-                  <input v-model="s.route_table" class="input" placeholder="101" />
-                  <input v-model="s.policy_priority" class="input" placeholder="1001" />
-                </div>
-              </div>
-            </div>
-          </template>
-        </div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+        <div v-else class="muted">{{ t('noTunnelsHint') }}</div>
       </div>
 
+      <!-- Traffic Policy + IKE/IPsec Crypto Params -->
       <div class="grid-2">
         <div class="card">
           <div class="row" style="margin-bottom: 10px;">
             <h3 style="margin: 0;">{{ t('trafficPolicyTitle') }}</h3>
             <div class="spacer"></div>
-            <button class="btn btn-secondary" @click="addPair">{{ t('addRule') }}</button>
+            <button class="btn btn-secondary btn-sm" @click="addPair">{{ t('addRule') }}</button>
           </div>
           <div class="muted" style="margin-bottom: 10px;">{{ t('trafficPolicyHint') }}</div>
           <div v-for="(pr, idx) in pairs" :key="idx" class="sub-card" style="padding: 10px; margin-bottom: 8px;">
@@ -949,7 +856,7 @@ onMounted(loadProfiles)
                 <option value="">{{ t('selectDstSite') }}</option>
                 <option v-for="id in siteIDs" :key="id" :value="id">{{ id }}</option>
               </select>
-              <button class="btn btn-danger" @click="removePair(idx)">{{ t('deleteBtn') }}</button>
+              <button class="btn btn-danger btn-sm" @click="removePair(idx)">{{ t('deleteBtn') }}</button>
             </div>
             <div class="grid-2-tight">
               <input v-model="pr.a_cidrs_text" class="input" :placeholder="t('srcCidrsPh')" />
@@ -1057,6 +964,7 @@ onMounted(loadProfiles)
         </div>
       </div>
 
+      <!-- Save & Apply Action Bar -->
       <div class="card">
         <div class="row">
           <input v-model="note" class="input" style="flex: 1;" :placeholder="t('changeNotePh')" />
@@ -1066,89 +974,315 @@ onMounted(loadProfiles)
           <button class="btn btn-secondary" @click="applyProfile(false)">{{ t('btnDryRun') }}</button>
           <button class="btn btn-ok" @click="applyProfile(true)">{{ t('btnApply') }}</button>
         </div>
+        <div v-if="output" class="code-block" style="margin-top: 12px; max-height: 240px;">{{ output }}</div>
       </div>
-    </div>
+    </template>
 
-    <!-- TAB 2: Raw YAML Editor -->
-    <div v-if="activeTab === 'yaml'" class="card">
-      <div class="row" style="margin-bottom: 10px;">
-        <h3 style="margin: 0;">{{ t('yamlSourceTitle') }}</h3>
-        <div class="spacer"></div>
-        <button class="btn btn-secondary" @click="syncYAMLToForm">{{ t('syncToForm') }}</button>
-      </div>
-      <div class="field">
-        <textarea v-model="yamlText" class="textarea" rows="18" :placeholder="t('yamlPh')"></textarea>
-      </div>
-      <div class="row" style="margin-bottom: 10px;">
-        <input v-model="note" class="input" style="flex: 1;" :placeholder="t('changeNotePh')" />
-      </div>
-      <div class="row">
-        <button class="btn btn-secondary" @click="validateYAML">{{ t('btnValidate') }}</button>
-        <button class="btn" @click="saveProfile(true)">{{ t('btnSave') }}</button>
-        <button class="btn btn-secondary" @click="renderPreview">{{ t('btnRender') }}</button>
-        <button class="btn btn-secondary" @click="applyProfile(false)">{{ t('btnDryRun') }}</button>
-        <button class="btn btn-ok" @click="applyProfile(true)">{{ t('btnApply') }}</button>
-      </div>
-    </div>
-
-    <!-- Lower Panels: PSK Management, Output Preview, Revision History -->
-    <div class="grid-2">
-      <div class="card">
-        <h3>{{ t('pskTitle') }}</h3>
-        <div class="muted" style="margin-bottom: 10px;">{{ t('pskHint') }}</div>
-        <div class="grid-2">
-          <div class="field">
-            <label>{{ t('colSite') }}</label>
-            <select v-if="siteIDs.length" v-model="secretSite" class="select" @change="onSecretSiteChange">
-              <option v-for="id in siteIDs" :key="id" :value="id">{{ id }}</option>
-            </select>
-            <input v-else v-model="secretSite" class="input" placeholder="ob-venue-1" />
+    <!-- SUB-TAB 2: PSK Management -->
+    <template v-else-if="subTab === 'psk'">
+      <div class="grid-2">
+        <div class="card">
+          <h3>{{ t('pskTitle') }}</h3>
+          <div class="muted" style="margin-bottom: 12px;">{{ t('pskHint') }}</div>
+          <div class="grid-2">
+            <div class="field">
+              <label>{{ t('colSite') }}</label>
+              <select v-if="siteIDs.length" v-model="secretSite" class="select" @change="onSecretSiteChange">
+                <option v-for="id in siteIDs" :key="id" :value="id">{{ id }}</option>
+              </select>
+              <input v-else v-model="secretSite" class="input" placeholder="ob-venue-1" />
+            </div>
+            <div class="field">
+              <label>{{ t('secretPath') }}</label>
+              <input v-model="secretRef" class="input" />
+            </div>
           </div>
+          <div class="field">
+            <label>{{ t('pskHexLabel') }}</label>
+            <div class="row">
+              <input v-model="secretPSK" class="input" style="flex: 1;" type="password" :placeholder="t('pskHexPh')" />
+              <button class="btn btn-secondary" @click="randomHex64">{{ t('btnRandomGen') }}</button>
+              <button class="btn" @click="saveSecret">{{ t('btnWritePsk') }}</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <h3>{{ t('colPskStatus') }}</h3>
+          <table v-if="sites.length" class="table">
+            <thead>
+              <tr>
+                <th>{{ t('colSite') }}</th>
+                <th>{{ t('colPskStatus') }}</th>
+                <th>{{ t('colDigest') }}</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr v-for="s in sites" :key="s.id">
+                <td><strong>{{ s.id }}</strong></td>
+                <td>
+                  <span class="pill" :class="secretBySite.has(s.id) ? 'pill-ok' : 'pill-warn'">
+                    {{ secretBySite.has(s.id) ? t('pskConfigured') : t('pskUnconfigured') }}
+                  </span>
+                </td>
+                <td><code>{{ secretBySite.get(s.id)?.sha256?.slice(0, 12) || '-' }}</code></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </template>
+
+    <!-- SUB-TAB 3: Raw YAML, Render Output & Revision History -->
+    <template v-else-if="subTab === 'yaml'">
+      <div class="grid-2">
+        <div class="card">
+          <div class="row" style="margin-bottom: 10px;">
+            <h3 style="margin: 0;">{{ t('yamlSourceTitle') }}</h3>
+            <div class="spacer"></div>
+            <button class="btn btn-secondary btn-sm" @click="syncYAMLToForm">{{ t('syncToForm') }}</button>
+          </div>
+          <div class="field">
+            <textarea v-model="yamlText" class="textarea" rows="18" :placeholder="t('yamlPh')"></textarea>
+          </div>
+          <div class="row" style="margin-bottom: 10px;">
+            <input v-model="note" class="input" style="flex: 1;" :placeholder="t('changeNotePh')" />
+          </div>
+          <div class="row">
+            <button class="btn btn-secondary" @click="validateYAML">{{ t('btnValidate') }}</button>
+            <button class="btn" @click="saveProfile(true)">{{ t('btnSave') }}</button>
+            <button class="btn btn-secondary" @click="renderPreview">{{ t('btnRender') }}</button>
+            <button class="btn btn-secondary" @click="applyProfile(false)">{{ t('btnDryRun') }}</button>
+            <button class="btn btn-ok" @click="applyProfile(true)">{{ t('btnApply') }}</button>
+          </div>
+        </div>
+
+        <div>
+          <div class="card">
+            <h3>{{ t('execOutput') }}</h3>
+            <div class="code-block" style="max-height: 290px;">{{ output || t('noOutput') }}</div>
+          </div>
+
+          <div class="card">
+            <h3>{{ t('revHistory') }}</h3>
+            <table v-if="revisions.length" class="table">
+              <thead>
+                <tr>
+                  <th>{{ t('colTime') }}</th>
+                  <th>{{ t('colOperator') }}</th>
+                  <th>{{ t('colDigest') }}</th>
+                  <th>{{ t('colNote') }}</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr v-for="r in revisions" :key="r.id">
+                  <td>{{ fmtDateTime(r.created_at) }}</td>
+                  <td>{{ r.operator }}</td>
+                  <td><code>{{ r.sha256.slice(0, 12) }}</code></td>
+                  <td>{{ r.note }}</td>
+                </tr>
+              </tbody>
+            </table>
+            <div v-else class="muted">{{ t('noHistory') }}</div>
+          </div>
+        </div>
+      </div>
+    </template>
+
+    <!-- Slide-Over Drawer: Edit/Create Tunnel -->
+    <div v-if="editingSite" class="drawer-backdrop" @click.self="closeDrawers">
+      <div class="drawer-panel">
+        <div class="drawer-header">
+          <h3 style="margin: 0;">{{ isNewSite ? t('drawerNewTunnel') : `${t('drawerEditTunnel')} · ${editingSite.id}` }}</h3>
+          <button class="btn btn-secondary btn-sm" @click="closeDrawers">{{ t('btnClose') }}</button>
+        </div>
+        <div class="drawer-body">
+          <div class="grid-2">
+            <div class="field">
+              <label>{{ t('siteId') }}</label>
+              <input v-model="editingSite.id" class="input" placeholder="ob-venue-1" />
+            </div>
+            <div class="field">
+              <label>{{ t('siteName') }}</label>
+              <input v-model="editingSite.display_name" class="input" />
+            </div>
+            <div class="field">
+              <label>{{ t('siteRole') }}</label>
+              <select v-model="editingSite.role" class="select">
+                <option value="server">{{ t('roleServer') }}</option>
+                <option value="ob">{{ t('roleOb') }}</option>
+                <option value="venue">{{ t('roleVenue') }}</option>
+                <option value="other">{{ t('roleOther') }}</option>
+              </select>
+            </div>
+            <div class="field">
+              <label>{{ t('peerVendor') }}</label>
+              <select v-model="editingSite.vendor" class="select">
+                <option value="Hillstone">{{ t('vendorHillstone') }}</option>
+                <option value="Huawei">{{ t('vendorHuawei') }}</option>
+                <option value="Fortinet">{{ t('vendorFortinet') }}</option>
+                <option value="Cisco">{{ t('vendorCisco') }}</option>
+                <option value="CloudVPN">{{ t('vendorCloud') }}</option>
+                <option value="Generic">{{ t('vendorGeneric') }}</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="field">
+            <label>{{ t('peerPublicIp') }}</label>
+            <input v-model="editingSite.public_endpoint" class="input" placeholder="203.0.113.21" />
+          </div>
+
+          <div class="field">
+            <label>{{ t('peerIkeId') }}</label>
+            <div class="input-combo">
+              <select v-model="editingSite.ike_id_type" class="select">
+                <option value="address">{{ t('ikeTypeAddress') }}</option>
+                <option value="fqdn">{{ t('ikeTypeFqdn') }}</option>
+                <option v-if="editingSite.ike_id_type === 'user_fqdn'" value="user_fqdn">{{ t('ikeTypeUserFqdn') }}</option>
+              </select>
+              <input
+                v-model="editingSite.ike_id_value"
+                class="input"
+                :placeholder="editingSite.ike_id_type === 'address' ? t('peerIkeIdPh') : t('peerIkeFqdnPh')"
+              />
+            </div>
+          </div>
+
+          <div class="field">
+            <label>{{ t('peerLanCidrs') }}</label>
+            <input v-model="editingSite.lan_cidrs_text" class="input" placeholder="10.101.10.0/24" />
+          </div>
+
+          <div class="grid-2">
+            <div class="field">
+              <label>{{ t('selectorMode') }}</label>
+              <select v-model="editingSite.selector_mode" class="select">
+                <option value="route_based">{{ t('modeRouteBased') }}</option>
+                <option value="exact">{{ t('modeExact') }}</option>
+                <option value="per_pair">{{ t('modePerPair') }}</option>
+              </select>
+            </div>
+            <div class="field">
+              <label>{{ t('ifIdAndPrio') }}</label>
+              <div class="grid-2-tight">
+                <input v-model.number="editingSite.if_id" type="number" class="input" />
+                <input v-model.number="editingSite.route_priority" type="number" class="input" />
+              </div>
+            </div>
+            <div class="field">
+              <label>{{ t('localWanIf') }}</label>
+              <input v-model="editingSite.outer_interface" class="input" placeholder="eth0" />
+            </div>
+            <div class="field">
+              <label>{{ t('ispLabel') }}</label>
+              <input v-model="editingSite.isp_label" class="input" placeholder="BGP-ISP-A" />
+            </div>
+          </div>
+
           <div class="field">
             <label>{{ t('secretPath') }}</label>
-            <input v-model="secretRef" class="input" />
+            <input v-model="editingSite.secret_ref" class="input" />
           </div>
-        </div>
-        <div class="field">
-          <label>{{ t('pskHexLabel') }}</label>
-          <div class="row">
-            <input v-model="secretPSK" class="input" style="flex: 1;" type="password" :placeholder="t('pskHexPh')" />
-            <button class="btn btn-secondary" @click="randomHex64">{{ t('btnRandomGen') }}</button>
-            <button class="btn" @click="saveSecret">{{ t('btnWritePsk') }}</button>
-          </div>
-        </div>
-        <div v-if="secretsMeta.length" class="muted" style="margin-top: 8px;">
-          {{ t('configuredDigests') }}{{ secretsMeta.map((s) => `${s.site_id} (${s.sha256.slice(0, 8)})`).join(', ') }}
-        </div>
-      </div>
 
-      <div class="card">
-        <h3>{{ t('execOutput') }}</h3>
-        <div class="code-block" style="max-height: 260px;">{{ output || t('noOutput') }}</div>
+          <div style="margin-top: 12px;">
+            <button class="btn btn-secondary btn-sm" @click="editingSite.show_advanced = !editingSite.show_advanced">
+              {{ editingSite.show_advanced ? t('dualIspHide') : t('dualIspShow') }}
+            </button>
+          </div>
+
+          <div v-if="editingSite.show_advanced" style="margin-top: 12px; padding-top: 12px; border-top: 1px dashed var(--border);">
+            <div class="grid-2">
+              <div class="field">
+                <label>{{ t('localSourceIp') }}</label>
+                <input v-model="editingSite.source_ip" class="input" placeholder="198.51.100.10" />
+              </div>
+              <div class="field">
+                <label>{{ t('egressGateway') }}</label>
+                <input v-model="editingSite.gateway" class="input" placeholder="198.51.100.1" />
+              </div>
+            </div>
+            <div class="field">
+              <label>{{ t('routeTablePrio') }}</label>
+              <div class="grid-2-tight">
+                <input v-model="editingSite.route_table" class="input" placeholder="101" />
+                <input v-model="editingSite.policy_priority" class="input" placeholder="1001" />
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="drawer-footer">
+          <button class="btn" @click="closeDrawers">{{ t('btnDone') }}</button>
+        </div>
       </div>
     </div>
 
-    <div class="card">
-      <h3>{{ t('revHistory') }}</h3>
-      <table v-if="revisions.length" class="table">
-        <thead>
-          <tr>
-            <th>{{ t('colTime') }}</th>
-            <th>{{ t('colOperator') }}</th>
-            <th>{{ t('colDigest') }}</th>
-            <th>{{ t('colNote') }}</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="r in revisions" :key="r.id">
-            <td>{{ fmtDateTime(r.created_at) }}</td>
-            <td>{{ r.operator }}</td>
-            <td><code>{{ r.sha256.slice(0, 12) }}</code></td>
-            <td>{{ r.note }}</td>
-          </tr>
-        </tbody>
-      </table>
-      <div v-else class="muted">{{ t('noHistory') }}</div>
+    <!-- Slide-Over Drawer: Edit Gateway Basics -->
+    <div v-if="gatewayDrawerOpen" class="drawer-backdrop" @click.self="closeDrawers">
+      <div class="drawer-panel">
+        <div class="drawer-header">
+          <h3 style="margin: 0;">{{ t('drawerEditGateway') }}</h3>
+          <button class="btn btn-secondary btn-sm" @click="closeDrawers">{{ t('btnClose') }}</button>
+        </div>
+        <div class="drawer-body">
+          <div class="grid-2">
+            <div class="field">
+              <label>{{ t('cfgId') }}</label>
+              <input v-model="form.event_id" class="input" placeholder="esports-2026" />
+            </div>
+            <div class="field">
+              <label>{{ t('cfgName') }}</label>
+              <input v-model="form.event_name" class="input" />
+            </div>
+          </div>
+          <div class="field">
+            <label>{{ t('cfgPurpose') }}</label>
+            <input v-model="form.event_purpose" class="input" :placeholder="t('cfgPurposePh')" />
+          </div>
+          <div class="grid-2">
+            <div class="field">
+              <label>{{ t('hubId') }}</label>
+              <input v-model="form.hub_id" class="input" />
+            </div>
+            <div class="field">
+              <label>{{ t('hubPublicIp') }}</label>
+              <input v-model="form.hub_public_ip" class="input" placeholder="198.51.100.10" />
+            </div>
+          </div>
+          <div class="field">
+            <label>{{ t('hubIkeId') }}</label>
+            <div class="input-combo">
+              <select v-model="form.hub_ike_type" class="select">
+                <option value="address">{{ t('ikeTypeAddress') }}</option>
+                <option value="fqdn">{{ t('ikeTypeFqdn') }}</option>
+                <option v-if="form.hub_ike_type === 'user_fqdn'" value="user_fqdn">{{ t('ikeTypeUserFqdn') }}</option>
+              </select>
+              <input
+                v-model="form.hub_ike_value"
+                class="input"
+                :placeholder="form.hub_ike_type === 'address' ? t('hubIkeIdPh') : t('ikeFqdnPh')"
+              />
+            </div>
+          </div>
+          <div class="grid-3">
+            <div class="field">
+              <label>{{ t('hubProvider') }}</label>
+              <input v-model="form.hub_provider" class="input" />
+            </div>
+            <div class="field">
+              <label>{{ t('hubLocation') }}</label>
+              <input v-model="form.hub_location" class="input" />
+            </div>
+            <div class="field">
+              <label>{{ t('hubCountry') }}</label>
+              <input v-model="form.hub_country" class="input" />
+            </div>
+          </div>
+        </div>
+        <div class="drawer-footer">
+          <button class="btn" @click="closeDrawers">{{ t('btnDone') }}</button>
+        </div>
+      </div>
     </div>
   </div>
 </template>

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref, watch } from 'vue'
+import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { api, fmtDateTime, type SyncedTimelineResponse } from '../api'
 import { causeLabel, causeSummary, t } from '../i18n'
 import SyncedFourLayerCharts from '../components/SyncedFourLayerCharts.vue'
@@ -11,8 +11,11 @@ const site = ref(props.initialSite || 'ob-venue-1')
 const siteOptions = ref<string[]>([])
 const minutes = ref(60)
 const activeFocusTs = ref<number | null>(props.focusTsMs ?? null)
+const autoRefreshSec = ref(0)
 const timeline = ref<SyncedTimelineResponse | null>(null)
 const errMsg = ref('')
+
+let timer: number | null = null
 
 async function loadSites() {
   try {
@@ -43,15 +46,29 @@ async function load() {
   }
 }
 
+function resetTimer() {
+  if (timer !== null) {
+    window.clearInterval(timer)
+    timer = null
+  }
+  if (autoRefreshSec.value > 0 && !activeFocusTs.value) {
+    timer = window.setInterval(load, autoRefreshSec.value * 1000)
+  }
+}
+
 function exitFocusMode() {
   activeFocusTs.value = null
   load()
+  resetTimer()
 }
 
 function onRangeChange() {
   activeFocusTs.value = null
   load()
+  resetTimer()
 }
+
+watch(autoRefreshSec, resetTimer)
 
 watch(
   () => [props.initialSite, props.focusTsMs] as const,
@@ -59,12 +76,18 @@ watch(
     if (newSite) site.value = newSite
     activeFocusTs.value = newTs ?? null
     load()
+    resetTimer()
   }
 )
 
 onMounted(async () => {
   await loadSites()
   await load()
+  resetTimer()
+})
+
+onBeforeUnmount(() => {
+  if (timer !== null) window.clearInterval(timer)
 })
 </script>
 
@@ -83,7 +106,20 @@ onMounted(async () => {
         <option :value="1440">{{ t('range24h') }}</option>
         <option :value="10080">{{ t('range7d') }}</option>
       </select>
+
+      <select v-model.number="autoRefreshSec" class="select" style="width: 155px;" :disabled="Boolean(activeFocusTs)">
+        <option :value="0">{{ t('autoRefreshOff') }}</option>
+        <option :value="15">{{ t('autoRefresh15s') }}</option>
+        <option :value="30">{{ t('autoRefresh30s') }}</option>
+        <option :value="60">{{ t('autoRefresh60s') }}</option>
+      </select>
+
       <button class="btn" @click="load">{{ t('refresh') }}</button>
+
+      <div v-if="autoRefreshSec > 0 && !activeFocusTs" class="row" style="gap: 6px;">
+        <span class="live-dot"></span>
+        <span class="muted">{{ t('liveUpdating') }}</span>
+      </div>
       <div class="spacer"></div>
       <span class="muted">{{ t('chartsSyncHint') }}</span>
     </div>

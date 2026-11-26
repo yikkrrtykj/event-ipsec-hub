@@ -140,6 +140,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/profiles/{id}/secrets", s.requireAdmin(s.handleWriteSecret))
 	mux.HandleFunc("POST /api/v1/profiles/{id}/export-peer", s.requireAuth(s.handleExportPeer))
 
+	// Single-tunnel live operations (reconnect / rekey)
+	mux.HandleFunc("POST /api/v1/tunnels/{site}/reconnect", s.requireAdmin(s.handleTunnelReconnect))
+	mux.HandleFunc("POST /api/v1/tunnels/{site}/rekey", s.requireAdmin(s.handleTunnelRekey))
+
 	// Failover & #12 Hub Role Swap
 	mux.HandleFunc("GET /api/v1/failover", s.requireAuth(s.handleFailoverStatus))
 	mux.HandleFunc("POST /api/v1/failover/switch-backup", s.requireAdmin(s.handleFailoverSwitchBackup))
@@ -962,6 +966,100 @@ func (s *Server) handleExportPeer(w http.ResponseWriter, r *http.Request, sess s
 	default:
 		writeJSONResp(w, http.StatusBadRequest, map[string]any{"error": "Unsupported export format."})
 	}
+}
+
+func (s *Server) handleTunnelReconnect(w http.ResponseWriter, r *http.Request, sess sessionEntry) {
+	site := strings.TrimSpace(r.PathValue("site"))
+	if site == "" {
+		writeJSONResp(w, http.StatusBadRequest, map[string]any{"error": "Site ID is required."})
+		return
+	}
+	if s.agent == nil {
+		if s.cfg.DemoMode {
+			_ = s.store.InsertTimelineEvent(storage.TimelineEvent{
+				TsMs: time.Now().UnixMilli(), Layer: "L2_IPSEC", Category: "TUNNEL_RECONNECT", Severity: "info",
+				SiteID: site, Source: "web_console", Title: fmt.Sprintf("已触发站点 %s 隧道重连 (演示模式)", site),
+			})
+			_ = s.store.RecordAudit(sess.Username, extractClientIP(r.RemoteAddr), "tunnel_reconnect", site, "PASS", map[string]any{"demo": true})
+			writeJSONResp(w, http.StatusOK, map[string]any{"status": "PASS", "site": site, "demo": true})
+			return
+		}
+		writeJSONResp(w, http.StatusServiceUnavailable, map[string]any{"error": "Gateway Agent is offline."})
+		return
+	}
+	var out map[string]any
+	err := s.agent.Call(r.Context(), rpc.MethodReconnect, rpc.ReconnectParams{
+		Site:     site,
+		Operator: sess.Username,
+	}, &out)
+	status := "PASS"
+	if err != nil {
+		status = "FAIL"
+	} else {
+		_ = s.store.InsertTimelineEvent(storage.TimelineEvent{
+			TsMs: time.Now().UnixMilli(), Layer: "L2_IPSEC", Category: "TUNNEL_RECONNECT", Severity: "info",
+			SiteID: site, Source: "web_console", Title: fmt.Sprintf("操作人 %s 触发站点 %s 隧道重连", sess.Username, site),
+		})
+	}
+	_ = s.store.RecordAudit(sess.Username, extractClientIP(r.RemoteAddr), "tunnel_reconnect", site, status, nil)
+	if err != nil {
+		writeJSONResp(w, http.StatusBadRequest, map[string]any{"status": "FAIL", "error": err.Error()})
+		return
+	}
+	writeJSONResp(w, http.StatusOK, out)
+}
+
+func (s *Server) handleTunnelRekey(w http.ResponseWriter, r *http.Request, sess sessionEntry) {
+	site := strings.TrimSpace(r.PathValue("site"))
+	if site == "" {
+		writeJSONResp(w, http.StatusBadRequest, map[string]any{"error": "Site ID is required."})
+		return
+	}
+	var req struct {
+		Kind string `json:"kind"` // child | ike
+	}
+	_ = decodeJSONBody(r, &req)
+	if req.Kind == "" {
+		req.Kind = "child"
+	}
+	if req.Kind != "child" && req.Kind != "ike" {
+		writeJSONResp(w, http.StatusBadRequest, map[string]any{"error": "kind must be 'child' or 'ike'."})
+		return
+	}
+	if s.agent == nil {
+		if s.cfg.DemoMode {
+			_ = s.store.InsertTimelineEvent(storage.TimelineEvent{
+				TsMs: time.Now().UnixMilli(), Layer: "L2_IPSEC", Category: "TUNNEL_REKEY", Severity: "info",
+				SiteID: site, Source: "web_console", Title: fmt.Sprintf("已触发站点 %s %s SA 重协商 (演示模式)", site, strings.ToUpper(req.Kind)),
+			})
+			_ = s.store.RecordAudit(sess.Username, extractClientIP(r.RemoteAddr), "tunnel_rekey", site, "PASS", map[string]any{"kind": req.Kind, "demo": true})
+			writeJSONResp(w, http.StatusOK, map[string]any{"status": "PASS", "site": site, "kind": req.Kind, "demo": true})
+			return
+		}
+		writeJSONResp(w, http.StatusServiceUnavailable, map[string]any{"error": "Gateway Agent is offline."})
+		return
+	}
+	var out map[string]any
+	err := s.agent.Call(r.Context(), rpc.MethodRekey, rpc.RekeyParams{
+		Site:     site,
+		Kind:     req.Kind,
+		Operator: sess.Username,
+	}, &out)
+	status := "PASS"
+	if err != nil {
+		status = "FAIL"
+	} else {
+		_ = s.store.InsertTimelineEvent(storage.TimelineEvent{
+			TsMs: time.Now().UnixMilli(), Layer: "L2_IPSEC", Category: "TUNNEL_REKEY", Severity: "info",
+			SiteID: site, Source: "web_console", Title: fmt.Sprintf("操作人 %s 触发站点 %s %s SA 重协商", sess.Username, site, strings.ToUpper(req.Kind)),
+		})
+	}
+	_ = s.store.RecordAudit(sess.Username, extractClientIP(r.RemoteAddr), "tunnel_rekey", site, status, map[string]any{"kind": req.Kind})
+	if err != nil {
+		writeJSONResp(w, http.StatusBadRequest, map[string]any{"status": "FAIL", "error": err.Error()})
+		return
+	}
+	writeJSONResp(w, http.StatusOK, out)
 }
 
 func (s *Server) handleFailoverStatus(w http.ResponseWriter, _ *http.Request, _ sessionEntry) {
