@@ -12,6 +12,13 @@ BIN_SRC="${1:-./ipsecvpn}"
 WEB_PORT="${IPSECVPN_WEB_PORT:-18443}"
 PUBLIC_IP="${IPSECVPN_PUBLIC_IP:-}"
 
+if [[ -z "$PUBLIC_IP" ]]; then
+    PUBLIC_IP="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src") {print $(i+1); exit}}' || true)"
+    if [[ -z "$PUBLIC_IP" ]]; then
+        PUBLIC_IP="$(hostname -I 2>/dev/null | awk '{print $1}' || true)"
+    fi
+fi
+
 if [[ ! -f "$BIN_SRC" ]]; then
     echo "ERROR: binary not found at $BIN_SRC (usage: sudo $0 /path/to/ipsecvpn)" >&2
     exit 2
@@ -103,8 +110,10 @@ for _ in {1..30}; do
 done
 systemctl enable --now ipsecvpn-web.service
 
+DISPLAY_IP="${PUBLIC_IP:-<VPS_IP>}"
 echo "event-ipsec-hub V4 installed."
+echo "Detected host IP: ${DISPLAY_IP}"
 echo "Next steps:"
-echo "  1. Check initial admin password via: journalctl -u ipsecvpn-web.service -n 20"
-echo "  2. Open https://<VPS_IP>:${WEB_PORT} and change password + set IP allowlist."
+echo "  1. Check initial admin password via: journalctl -u ipsecvpn-web.service -n 20 --no-pager | grep BOOTSTRAP_ADMIN"
+echo "  2. Open https://${DISPLAY_IP}:${WEB_PORT} and change password + set IP allowlist."
 echo "  3. After tournament ends, stop Web console anytime: sudo systemctl disable --now ipsecvpn-web.service"

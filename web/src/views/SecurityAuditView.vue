@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
+import QRCode from 'qrcode'
 import { api, downloadTextFile, fmtDateTime } from '../api'
 import { t } from '../i18n'
 
@@ -12,7 +13,9 @@ const curPass = ref('')
 const newPass = ref('')
 const totpSecret = ref('')
 const totpURI = ref('')
+const totpQR = ref('')
 const totpCode = ref('')
+const copiedSecret = ref(false)
 
 const msg = ref('')
 const errMsg = ref('')
@@ -61,9 +64,28 @@ async function changePassword() {
 }
 
 async function setupTOTP() {
+  errMsg.value = ''
   const res = await api('/api/v1/auth/totp/setup', { method: 'POST' })
   totpSecret.value = res.secret
   totpURI.value = res.otpauth_uri
+  totpQR.value = await QRCode.toDataURL(res.otpauth_uri, {
+    width: 184,
+    margin: 2,
+    color: { dark: '#0f172a', light: '#ffffff' }
+  })
+}
+
+async function copyTotpSecret() {
+  if (!totpSecret.value) return
+  try {
+    await navigator.clipboard.writeText(totpSecret.value)
+    copiedSecret.value = true
+    setTimeout(() => {
+      copiedSecret.value = false
+    }, 1500)
+  } catch {
+    // ignore clipboard restrictions
+  }
 }
 
 async function enableTOTP() {
@@ -72,6 +94,9 @@ async function enableTOTP() {
     await api('/api/v1/auth/totp/enable', { method: 'POST', body: JSON.stringify({ code: totpCode.value }) })
     msg.value = t('msgTotpEnabled')
     totpCode.value = ''
+    totpSecret.value = ''
+    totpURI.value = ''
+    totpQR.value = ''
   } catch (e: any) {
     errMsg.value = e.message
   }
@@ -132,12 +157,25 @@ onMounted(load)
           <button class="btn btn-secondary" @click="changePassword">{{ t('btnChangePass') }}</button>
           <button class="btn btn-secondary" @click="setupTOTP">{{ t('btnSetupTotp') }}</button>
         </div>
-        <div v-if="totpSecret" class="alert-banner alert-unknown">
-          <div>{{ t('totpSecretHint') }} <code>{{ totpSecret }}</code></div>
-          <div class="muted" style="word-break: break-all; margin: 4px 0;">{{ totpURI }}</div>
-          <div class="row" style="margin-top: 8px;">
-            <input v-model="totpCode" class="input" style="width: 140px;" :placeholder="t('totpCodePh')" />
-            <button class="btn btn-ok" @click="enableTOTP">{{ t('btnEnableTotp') }}</button>
+        <div v-if="totpSecret" class="sub-card" style="padding: 14px; margin-top: 4px;">
+          <div style="display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap;">
+            <div v-if="totpQR" style="background: #ffffff; padding: 8px; border-radius: 8px; flex-shrink: 0;">
+              <img :src="totpQR" alt="TOTP QR Code" style="display: block; width: 168px; height: 168px;" />
+            </div>
+            <div style="flex: 1; min-width: 220px;">
+              <div style="font-weight: 600; margin-bottom: 6px;">{{ t('totpScanHint') }}</div>
+              <div class="muted" style="margin-bottom: 6px;">{{ t('totpManualFallback') }}</div>
+              <div class="row" style="margin-bottom: 10px;">
+                <code style="font-size: 13px; letter-spacing: 0.5px;">{{ totpSecret }}</code>
+                <button class="btn btn-secondary btn-sm" @click="copyTotpSecret">
+                  {{ copiedSecret ? t('btnCopied') : t('btnCopySecret') }}
+                </button>
+              </div>
+              <div class="row">
+                <input v-model="totpCode" class="input" style="width: 150px;" :placeholder="t('totpCodePh')" @keyup.enter="enableTOTP" />
+                <button class="btn btn-ok" @click="enableTOTP">{{ t('btnEnableTotp') }}</button>
+              </div>
+            </div>
           </div>
         </div>
       </div>

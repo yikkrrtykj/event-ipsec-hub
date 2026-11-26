@@ -55,12 +55,18 @@ chmod 0600 /etc/ipsecvpn/host-authorized
 ### 第 2 步：安装 strongSwan 并启动网关控制台
 
 ```bash
-# 1. 安装并托管 Ubuntu 官方 strongSwan (charon-systemd) 及开机防泄漏守护
-./ipsecvpn-linux-amd64 install --confirm
+# 1. 安装单文件到系统路径
+install -m 0755 -o root -g root ./ipsecvpn-linux-amd64 /usr/local/sbin/ipsecvpn
 
-# 2. 注册并启动后台 Agent 与 HTTPS Web 控制台（将 <服务器公网IP> 替换为实际 IP）
-IPSECVPN_PUBLIC_IP=<服务器公网IP> bash ./install-v4.sh ./ipsecvpn-linux-amd64
+# 2. 安装并托管 Ubuntu 官方 strongSwan (charon-systemd) 及开机防泄漏守护
+/usr/local/sbin/ipsecvpn install --confirm
+
+# 3. 注册并启动后台 Agent 与 HTTPS Web 控制台（自动检测本机出口网口 IP）
+bash ./install-v4.sh /usr/local/sbin/ipsecvpn
 ```
+
+> 若服务器位于云厂商 NAT / EIP 后（本机网卡仅绑定内网 IP），可在第 3 步前手动指定公网 IP：
+> `IPSECVPN_PUBLIC_IP=<你的公网IP> bash ./install-v4.sh /usr/local/sbin/ipsecvpn`
 
 ### 第 3 步：获取初始密码并登录网页后台
 
@@ -70,10 +76,10 @@ journalctl -u ipsecvpn-web.service -n 20 --no-pager | grep BOOTSTRAP_ADMIN
 
 浏览器打开 **`https://<服务器公网IP>:18443`**（首次打开自签名证书点“继续访问”即可），使用账号 `admin` 和上面查到的初始密码登录：
 
-1. 进入 **安全与审计**：修改管理员密码、配置你的办公网 IP 白名单（可选开启两步验证）。
-2. 进入 **VPN 通道**：填写各站点公网 IP、内网网段、生成预共享密钥（PSK），点击 **预检** → **确认下发**。
-3. 进入 **对端导出**：给每个场馆/机房导出一份对接参数单发给对端管理员配置，隧道即可自动建立。
-4. 进入 **告警配置**：填入飞书自定义机器人 Webhook 并点 **发送测试告警** 验证通知。
+1. 进入 **系统设置**：修改管理员密码、扫码开启两步验证（TOTP），并配置你的办公网 IP 白名单。
+2. 进入 **VPN 通道**：本端公网 IP 与默认出口网卡已自动填充，点击 **+ 新建通道** 填写对端公网 IP 和内网网段，在 **预共享密钥 (PSK)** 中生成密钥，再点 **保存配置** → **变更预检** → **应用生效**。
+3. 进入 **配置导出**：给每个场馆/机房导出一份对接参数单发给对端管理员配置，隧道即可自动建立。
+4. 进入 **告警管理**：填入飞书自定义机器人 Webhook 并点 **发送测试消息** 验证通知。
 
 > 赛后或平时不需要网页管理时，可以随时关停 Web 服务，**不会影响已经建立的 VPN 隧道**：
 > `systemctl disable --now ipsecvpn-web.service`

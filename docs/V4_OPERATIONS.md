@@ -33,14 +33,17 @@
 从 GitHub Release（或本地构建 `bin/ipsecvpn-linux-amd64`）拷贝单文件二进制与 `scripts/install-v4.sh` 到 VPS 后执行：
 
 ```bash
-chmod +x ./ipsecvpn-linux-amd64
-# 1) 由 Go 二进制安装 strongSwan (charon-systemd) 与开机防泄露/自恢复单元
-sudo ./ipsecvpn-linux-amd64 install --dry-run --json
-sudo ./ipsecvpn-linux-amd64 install --confirm --json
+# 1) 安装单文件二进制到系统路径
+sudo install -m 0755 -o root -g root ./ipsecvpn-linux-amd64 /usr/local/sbin/ipsecvpn
 
-# 2) 安装权限分离的 systemd 服务（root Agent + 非 root Web 控制台）
-sudo IPSECVPN_PUBLIC_IP=<VPS公网IP> IPSECVPN_WEB_PORT=18443 \
-  bash scripts/install-v4.sh ./ipsecvpn-linux-amd64
+# 2) 由 Go 二进制安装 strongSwan (charon-systemd) 与开机防泄露/自恢复单元
+sudo /usr/local/sbin/ipsecvpn install --dry-run --json
+sudo /usr/local/sbin/ipsecvpn install --confirm --json
+
+# 3) 安装权限分离的 systemd 服务（root Agent + 非 root Web 控制台，默认自动检测出口网口 IP）
+sudo bash scripts/install-v4.sh /usr/local/sbin/ipsecvpn
+# 若服务器在云厂商 NAT/EIP 后（本机网卡为私网 IP），可手动覆盖公网 IP：
+# sudo IPSECVPN_PUBLIC_IP=<VPS公网IP> IPSECVPN_WEB_PORT=18443 bash scripts/install-v4.sh /usr/local/sbin/ipsecvpn
 ```
 
 安装完成后检查服务与初始管理员密码：

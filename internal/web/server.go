@@ -11,7 +11,9 @@ import (
 	"io"
 	"io/fs"
 	"math"
+	"net"
 	"net/http"
+	"os"
 	"path"
 	"sort"
 	"strconv"
@@ -163,6 +165,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/system/security", s.requireAuth(s.handleGetSecurity))
 	mux.HandleFunc("PUT /api/v1/system/security", s.requireAdmin(s.handlePutSecurity))
 	mux.HandleFunc("GET /api/v1/system/signoff", s.requireAuth(s.handleSignoffChecklist))
+	mux.HandleFunc("GET /api/v1/system/host-network", s.requireAuth(s.handleHostNetwork))
 
 	// Prometheus compatibility endpoint
 	mux.HandleFunc("GET /metrics", s.handlePrometheusMetrics)
@@ -1380,6 +1383,83 @@ func (s *Server) handleSignoffChecklist(w http.ResponseWriter, _ *http.Request, 
 - 备线负责 / 日期: _______________
 `, time.Now().UTC().Format(time.RFC3339), sess.Username, foState.HubRole, foState.ActivePath, foState.Mode)
 	writeJSONResp(w, http.StatusOK, map[string]any{"filename": "vpn-gateway-signoff-checklist.md", "content": md})
+}
+
+type hostIfaceInfo struct {
+	Name string `json:"name"`
+	IP   string `json:"ip"`
+}
+
+func detectDefaultRouteIface() string {
+	raw, err := os.ReadFile("/proc/net/route")
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(raw), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) >= 2 && fields[1] == "00000000" {
+			return fields[0]
+		}
+	}
+	return ""
+}
+
+func (s *Server) handleHostNetwork(w http.ResponseWriter, _ *http.Request, _ sessionEntry) {
+	defIface := detectDefaultRouteIface()
+	var ifaces []hostIfaceInfo
+	defIP := ""
+	if list, err := net.Interfaces(); err == nil {
+		for _, nic := range list {
+			if nic.Flags&net.FlagUp == 0 || nic.Flags&net.FlagLoopback != 0 {
+				continue
+			}
+			if strings.HasPrefix(nic.Name, "ivp") || strings.HasPrefix(nic.Name, "docker") || strings.HasPrefix(nic.Name, "br-") {
+				continue
+			}
+			addrs, err := nic.Addrs()
+			if err != nil {
+				continue
+			}
+			for _, a := range addrs {
+				ipn, ok := a.(*net.IPNet)
+				if !ok || ipn.IP == nil {
+					continue
+				}
+				ip4 := ipn.IP.To4()
+				if ip4 == nil || ip4.IsLoopback() || ip4.IsLinkLocalUnicast() {
+					continue
+				}
+				ipStr := ip4.String()
+				ifaces = append(ifaces, hostIfaceInfo{Name: nic.Name, IP: ipStr})
+				if nic.Name == defIface && defIP == "" {
+					defIP = ipStr
+				}
+				break
+			}
+		}
+	}
+	if defIface == "" && len(ifaces) > 0 {
+		defIface = ifaces[0].Name
+	}
+	if defIP == "" && len(ifaces) > 0 {
+		defIP = ifaces[0].IP
+	}
+	pubIP := defIP
+	for _, p := range s.cfg.PublicIPs {
+		if ip := net.ParseIP(strings.TrimSpace(p)); ip != nil && ip.To4() != nil {
+			pubIP = ip.To4().String()
+			break
+		}
+	}
+	if ifaces == nil {
+		ifaces = []hostIfaceInfo{}
+	}
+	writeJSONResp(w, http.StatusOK, map[string]any{
+		"public_ip":         pubIP,
+		"default_interface": defIface,
+		"default_ip":        defIP,
+		"interfaces":        ifaces,
+	})
 }
 
 func (s *Server) handlePrometheusMetrics(w http.ResponseWriter, r *http.Request) {

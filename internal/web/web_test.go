@@ -213,4 +213,15 @@ func TestWebAPIEndToEndLoginProfileExportAndTimeline(t *testing.T) {
 	if resp.StatusCode != http.StatusOK || !strings.Contains(so["content"].(string), "VPN 网关赛前上线核对单") {
 		t.Fatalf("unexpected signoff checklist: %+v", so)
 	}
+
+	// Host network auto-detection endpoint
+	resp, _ = client.Get(ts.URL + "/api/v1/system/host-network")
+	var hnet map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&hnet)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /api/v1/system/host-network failed: %d %+v", resp.StatusCode, hnet)
+	}
+	if _, ok := hnet["interfaces"].([]any); !ok {
+		t.Fatalf("expected interfaces array in host-network response: %+v", hnet)
+	}
 }

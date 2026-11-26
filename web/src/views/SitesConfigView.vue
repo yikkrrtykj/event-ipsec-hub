@@ -58,16 +58,16 @@ const isNewSite = ref(false)
 const gatewayDrawerOpen = ref(false)
 
 const form = ref({
-  event_id: 'esports-event-2026',
-  event_name: 'Multi-Venue Event Hub',
+  event_id: 'vpn-gateway',
+  event_name: '',
   event_purpose: '',
-  hub_id: 'hub-vps-primary',
-  hub_public_ip: '198.51.100.10',
+  hub_id: 'hub-primary',
+  hub_public_ip: '',
   hub_ike_type: 'address' as IkeIdType,
   hub_ike_value: '',
-  hub_provider: 'VPS-Primary',
-  hub_location: 'Hong-Kong',
-  hub_country: 'CN-HK',
+  hub_provider: 'VPS',
+  hub_location: '',
+  hub_country: '',
   ike_enc: 'aes256',
   ike_hash: 'sha256',
   ike_dh: 'modp2048',
@@ -82,11 +82,18 @@ const form = ref({
   child_lifetime: 14400
 })
 
+const hostNet = ref<{ public_ip: string; default_interface: string; default_ip: string; interfaces: { name: string; ip: string }[] }>({
+  public_ip: '',
+  default_interface: 'eth0',
+  default_ip: '',
+  interfaces: []
+})
+
 const sites = ref<SiteForm[]>([])
 const pairs = ref<PairForm[]>([])
 
 const secretSite = ref('')
-const secretRef = ref('file:/etc/ipsecvpn/secrets/ob-venue-1.psk')
+const secretRef = ref('')
 const secretPSK = ref('')
 
 const siteIDs = computed(() => sites.value.map((s) => s.id).filter(Boolean))
@@ -349,11 +356,49 @@ function hydrateFormFromProfile(p: any) {
   }
 }
 
+function initBlankForm() {
+  selectedId.value = ''
+  revisions.value = []
+  editingSiteIdx.value = null
+  const pubIP = hostNet.value.public_ip || hostNet.value.default_ip || ''
+  form.value = {
+    event_id: 'vpn-gateway',
+    event_name: lang.value === 'en' ? 'VPN Gateway' : '主控 VPN 网关',
+    event_purpose: '',
+    hub_id: 'hub-primary',
+    hub_public_ip: pubIP,
+    hub_ike_type: 'address',
+    hub_ike_value: '',
+    hub_provider: 'VPS',
+    hub_location: '',
+    hub_country: '',
+    ike_enc: 'aes256',
+    ike_hash: 'sha256',
+    ike_dh: 'modp2048',
+    esp_enc: 'aes256',
+    esp_hash: 'sha256',
+    esp_dh: 'modp2048',
+    dpd_delay: 30,
+    start_action: 'start',
+    dpd_action: 'restart',
+    close_action: 'start',
+    ike_lifetime: 86400,
+    child_lifetime: 14400
+  }
+  sites.value = []
+  pairs.value = []
+  yamlText.value = ''
+  secretSite.value = ''
+  secretRef.value = ''
+}
+
 function loadExampleTemplate() {
   selectedId.value = ''
   revisions.value = []
   editingSiteIdx.value = null
   const isEn = lang.value === 'en'
+  const defIface = hostNet.value.default_interface || 'eth0'
+  const pubIP = hostNet.value.public_ip || '198.51.100.10'
   form.value = {
     event_id: 'esports-multi-ob-hillstone',
     event_name: isEn ? 'Multi-OB Event Hub (Route-Based)' : '多场馆赛事互联（路由型）',
@@ -361,7 +406,7 @@ function loadExampleTemplate() {
       ? 'Connect isolated OB studios to central match servers via self-hosted VPN gateway'
       : '多演播室经自建 VPN 网关接入比赛服务器，演播室之间默认隔离',
     hub_id: 'hub-vps-primary',
-    hub_public_ip: '198.51.100.10',
+    hub_public_ip: pubIP,
     hub_ike_type: 'address',
     hub_ike_value: '',
     hub_provider: 'VPS-Primary',
@@ -398,7 +443,7 @@ function loadExampleTemplate() {
       secret_ref: 'file:/etc/ipsecvpn/secrets/server-core.psk',
       selector_mode: 'route_based',
       route_priority: 10,
-      outer_interface: 'eth0',
+      outer_interface: defIface,
       isp_label: 'BGP-ISP-A',
       show_advanced: false,
       source_ip: '',
@@ -423,7 +468,7 @@ function loadExampleTemplate() {
       secret_ref: 'file:/etc/ipsecvpn/secrets/ob-venue-1.psk',
       selector_mode: 'route_based',
       route_priority: 10,
-      outer_interface: 'eth0',
+      outer_interface: defIface,
       isp_label: 'BGP-ISP-A',
       show_advanced: false,
       source_ip: '',
@@ -448,7 +493,7 @@ function loadExampleTemplate() {
       secret_ref: 'file:/etc/ipsecvpn/secrets/ob-venue-2.psk',
       selector_mode: 'per_pair',
       route_priority: 10,
-      outer_interface: 'eth0',
+      outer_interface: defIface,
       isp_label: 'BGP-ISP-A',
       show_advanced: false,
       source_ip: '',
@@ -476,17 +521,22 @@ function selectorModeLabel(mode: string): string {
 function openNewSiteDrawer() {
   const nextIdx = sites.value.length + 1
   const nextIfID = sites.value.reduce((mx, s) => Math.max(mx, Number(s.if_id) || 200), 200) + 1
-  const id = `ob-venue-${nextIdx}`
+  const id = `site-${nextIdx}`
+  const defIface = hostNet.value.default_interface || 'eth0'
+  const natSource =
+    hostNet.value.default_ip && form.value.hub_public_ip && hostNet.value.default_ip !== form.value.hub_public_ip
+      ? hostNet.value.default_ip
+      : ''
   sites.value.push({
     id,
     display_name: lang.value === 'en' ? `Peer Site ${nextIdx}` : `对端站点 ${nextIdx}`,
-    role: 'ob',
+    role: nextIdx === 1 ? 'server' : 'ob',
     country: 'CN',
     location_label: '',
-    public_endpoint: `203.0.113.${20 + nextIdx}`,
+    public_endpoint: '',
     ike_id_type: 'address',
     ike_id_value: '',
-    lan_cidrs_text: `10.${100 + nextIdx}.10.0/24`,
+    lan_cidrs_text: '',
     vendor: 'Hillstone',
     model: '',
     os_version: '',
@@ -494,10 +544,10 @@ function openNewSiteDrawer() {
     secret_ref: `file:/etc/ipsecvpn/secrets/${id}.psk`,
     selector_mode: 'route_based',
     route_priority: 10,
-    outer_interface: 'eth0',
+    outer_interface: defIface,
     isp_label: 'ISP-A',
-    show_advanced: false,
-    source_ip: '',
+    show_advanced: Boolean(natSource),
+    source_ip: natSource,
     gateway: '',
     route_table: '',
     policy_priority: ''
@@ -575,14 +625,18 @@ async function syncYAMLToForm() {
 }
 
 async function loadProfiles() {
-  const res = await api('/api/v1/profiles')
+  const [res, net] = await Promise.all([
+    api('/api/v1/profiles'),
+    api('/api/v1/system/host-network').catch(() => null)
+  ])
+  if (net) hostNet.value = net
   profiles.value = res.profiles || []
   secretsMeta.value = res.secrets_meta || []
   if (profiles.value.length) {
     const target = profiles.value.find((p) => p.id === selectedId.value) || profiles.value[0]
     await selectProfile(target)
   } else if (sites.value.length === 0) {
-    loadExampleTemplate()
+    initBlankForm()
   }
 }
 
@@ -767,9 +821,12 @@ onBeforeUnmount(() => {
             <strong>{{ form.event_id || t('unnamed') }}</strong>
             <span class="muted" style="margin-left: 8px;">{{ form.event_name }}</span>
           </div>
-          <span class="pill pill-info">{{ form.hub_public_ip }}</span>
+          <span class="pill" :class="form.hub_public_ip ? 'pill-info' : 'pill-warn'">
+            {{ form.hub_public_ip || t('hubIpUnset') }}
+          </span>
           <span class="muted">
-            {{ form.hub_id }} · {{ form.hub_location }} ({{ form.hub_provider }})
+            {{ form.hub_id }}
+            <template v-if="form.hub_location || form.hub_provider"> · {{ [form.hub_location, form.hub_provider].filter(Boolean).join(' / ') }}</template>
             <template v-if="form.hub_ike_value"> · IKE {{ form.hub_ike_type.toUpperCase() }}: {{ form.hub_ike_value }}</template>
           </span>
           <div class="spacer"></div>
