@@ -264,15 +264,15 @@ def emit(case_id, expected, observed, status="PASS"):
     print(line, flush=True)
 
 
-def wait_until(predicate, timeout=60, interval=0.8):
+def wait_until(predicate, timeout=60, interval=0.8, diag=None):
     deadline = time.monotonic() + timeout
-    last = None
     while time.monotonic() < deadline:
         val = predicate()
         if val:
             return val
         time.sleep(interval)
-    raise AssertionError(f"Timed out waiting for expected V4 lab condition (last={last}).")
+    extra = diag() if diag else ""
+    raise AssertionError(f"Timed out waiting for expected V4 lab condition. {extra}")
 
 
 def ensure_profile_and_secrets():
@@ -616,15 +616,25 @@ def extract_bootstrap_password():
 
 
 def wait_status_pass(timeout=60):
+    last = {"rc": None, "stdout": "", "stderr": ""}
+
     def _ok():
         proc = cmd(str(BIN), "status", "--json", allowed=(0, 1))
+        last["rc"] = proc.returncode
+        last["stdout"] = proc.stdout[:1200]
+        last["stderr"] = proc.stderr[:400]
         if proc.returncode == 0:
             data = json.loads(proc.stdout)
             if data.get("status") == "PASS":
                 return data
         return None
 
-    return wait_until(_ok, timeout=timeout, interval=1.0)
+    def _diag():
+        sas = cmd("swanctl", "--list-sas", "--uri", "unix:///run/charon.vici", allowed=(0, 1)).stdout[:800]
+        xfrm = cmd("ip", "-o", "xfrm", "state", "list", "nokeys", allowed=(0, 1)).stdout[:600]
+        return f"last_status={last} swanctl_sas={sas!r} xfrm_states={xfrm!r}"
+
+    return wait_until(_ok, timeout=timeout, interval=1.0, diag=_diag)
 
 
 def before_reboot():
@@ -703,8 +713,8 @@ def before_reboot():
     wait_until(lambda: wc.request("GET", "/healthz")[0] == 200, timeout=30, interval=0.5)
     admin_pass = extract_bootstrap_password()
     # Save password in root-only temp file for after-reboot verification
-    Path("/var/lib/ipsecvpn/v4-lab-webpass").write_text(admin_pass, encoding="ascii")
-    Path("/var/lib/ipsecvpn/v4-lab-webpass").chmod(0o600)
+    Path("/var/lib/ipsecvpn-v4-webpass").write_text(admin_pass, encoding="ascii")
+    Path("/var/lib/ipsecvpn-v4-webpass").chmod(0o600)
 
     code, _ = wc.request("POST", "/api/v1/auth/login", {"username": "admin", "password": admin_pass})
     assert code == 200, f"Web login failed: {code}"
@@ -801,7 +811,7 @@ def after_reboot():
 
     wc = WebClient()
     wait_until(lambda: wc.request("GET", "/healthz")[0] == 200, timeout=30, interval=0.5)
-    admin_pass = Path("/var/lib/ipsecvpn/v4-lab-webpass").read_text(encoding="ascii").strip()
+    admin_pass = Path("/var/lib/ipsecvpn-v4-webpass").read_text(encoding="ascii").strip()
     assert wc.request("POST", "/api/v1/auth/login", {"username": "admin", "password": admin_pass})[0] == 200
     ov = wait_until(
         lambda: (lambda r: json.loads(r[1]) if r[0] == 200 and json.loads(r[1]).get("agent_online") is True else None)(
@@ -819,8 +829,8 @@ def after_reboot():
 
     # 7. Clean uninstall & host baseline preservation
     cmd("systemctl", "disable", "--now", "ipsecvpn-web.service", "ipsecvpn-agent.service")
-    Path("/var/lib/ipsecvpn/v4-lab-webpass").unlink(missing_ok=True)
-    un = cli("uninstall", "--confirm")
+    Path("/var/lib/ipsecvpn-v4-webpass").unlink(missing_ok=True)
+    un = cli("uninstall", "--confirm", "--maintenance")
     assert un["status"] == "PASS", un
     nft_rules = cmd("nft", "list", "ruleset").stdout
     assert "table ip ipsecvpn" not in nft_rules

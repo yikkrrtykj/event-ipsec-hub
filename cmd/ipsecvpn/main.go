@@ -776,6 +776,9 @@ func runAgent(args []string, stdout, stderr io.Writer) int {
 		return emitError(err, false, true, stdout, stderr)
 	}
 	defer st.Close()
+	if *socketGID > 0 {
+		storage.EnsureGroupWritable(*dbPath, *socketGID)
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()

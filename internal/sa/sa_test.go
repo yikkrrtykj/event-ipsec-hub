@@ -40,10 +40,10 @@ func TestParseVICIRouteBasedAndPerPairCorrelation(t *testing.T) {
 		"state":        "INSTALLED",
 		"protocol":     "ESP",
 		"mode":         "TUNNEL",
-		"spi-in":       "11223344",
+		"spi-in":       "0x11223344",
 		"spi-out":      "55667788",
-		"if-id-in":     fmt.Sprintf("%08x", ob1.IfID),
-		"if-id-out":    fmt.Sprintf("%08x", ob1.IfID),
+		"if-id-in":     fmt.Sprintf("0x%08x", ob1.IfID),
+		"if-id-out":    fmt.Sprintf("0x%08x", ob1.IfID),
 		"local-ts":     []string{"0.0.0.0/0"},
 		"remote-ts":    []string{"0.0.0.0/0"},
 		"encr-alg":     "AES_CBC",
@@ -157,5 +157,30 @@ func TestParseVICIRouteBasedAndPerPairCorrelation(t *testing.T) {
 	}
 	if err := Correlate(snap2, m, states, policies); err != nil {
 		t.Fatalf("Correlate per_pair: %v", err)
+	}
+}
+
+func TestParseKernelStatesAndPoliciesUbuntu2404(t *testing.T) {
+	stateOut := "" +
+		"src 198.51.100.10 dst 198.51.100.22 \\\tproto esp spi 0xc1234567 reqid 1 mode tunnel \\\treplay-window 32 flag af-unspec \\\tencap type espinudp sport 4500 dport 4500 addr 0.0.0.0 \\\tanti-replay context: seq 0x0, oseq 0x0, bitmap 0x00000000 \\\tif_id 0xca\n" +
+		"src 198.51.100.22 dst 198.51.100.10 \\\tproto esp spi 0xc7654321 reqid 1 mode tunnel \\\treplay-window 32 flag af-unspec \\\tencap type espinudp sport 4500 dport 4500 addr 0.0.0.0 \\\tanti-replay context: seq 0x0, oseq 0x0, bitmap 0x00000000 \\\tif_id 0xca\n"
+	states, err := ParseKernelStates(stateOut)
+	if err != nil {
+		t.Fatalf("ParseKernelStates: %v", err)
+	}
+	if len(states) != 2 || states[0].IfID != 202 || states[0].SPI != 0xc1234567 || states[1].SPI != 0xc7654321 {
+		t.Fatalf("unexpected parsed states: %+v", states)
+	}
+
+	policyOut := "" +
+		"src 0.0.0.0/0 dst 0.0.0.0/0 \\\tdir out priority 399999 ptype main \\\tif_id 0xca \\\ttmpl src 198.51.100.10 dst 198.51.100.22 \\\t\tproto esp reqid 1 mode tunnel\n" +
+		"src 0.0.0.0/0 dst 0.0.0.0/0 \\\tdir fwd priority 399999 ptype main \\\tif_id 0xca \\\ttmpl src 198.51.100.22 dst 198.51.100.10 \\\t\tproto esp reqid 1 mode tunnel\n" +
+		"src 0.0.0.0/0 dst 0.0.0.0/0 \\\tdir in priority 399999 ptype main \\\tif_id 0xca \\\ttmpl src 198.51.100.22 dst 198.51.100.10 \\\t\tproto esp reqid 1 mode tunnel\n"
+	policies, err := ParseKernelPolicies(policyOut)
+	if err != nil {
+		t.Fatalf("ParseKernelPolicies: %v", err)
+	}
+	if len(policies) != 3 || policies[0].Policy.IfID != 202 || policies[0].Policy.Source != "0.0.0.0/0" {
+		t.Fatalf("unexpected parsed policies: %+v", policies)
 	}
 }

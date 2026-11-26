@@ -31,7 +31,12 @@ install -d -m 0750 -o root -g ipsecvpn-web /run/ipsecvpn
 install -d -m 0700 -o root -g root /var/lib/ipsecvpn /etc/ipsecvpn /etc/ipsecvpn/profiles /etc/ipsecvpn/secrets /etc/ipsecvpn/tls
 install -d -m 2770 -o root -g ipsecvpn-web /var/lib/ipsecvpn-web
 install -d -m 0700 -o ipsecvpn-web -g ipsecvpn-web /var/lib/ipsecvpn-web/tls
-install -m 0755 -o root -g root "$BIN_SRC" /usr/local/sbin/ipsecvpn
+if [[ "$(realpath -m "$BIN_SRC")" != "/usr/local/sbin/ipsecvpn" ]]; then
+    install -m 0755 -o root -g root "$BIN_SRC" /usr/local/sbin/ipsecvpn
+else
+    chown root:root /usr/local/sbin/ipsecvpn
+    chmod 0755 /usr/local/sbin/ipsecvpn
+fi
 
 cat > /etc/tmpfiles.d/ipsecvpn.conf <<EOF
 d /run/ipsecvpn 0750 root ipsecvpn-web -
@@ -89,7 +94,14 @@ WantedBy=multi-user.target
 EOF
 
 systemctl daemon-reload
-systemctl enable --now ipsecvpn-agent.service ipsecvpn-web.service
+systemctl enable --now ipsecvpn-agent.service
+for _ in {1..30}; do
+    if [[ -S /run/ipsecvpn/agent.sock && -f /var/lib/ipsecvpn-web/gateway.db ]]; then
+        break
+    fi
+    sleep 0.2
+done
+systemctl enable --now ipsecvpn-web.service
 
 echo "event-ipsec-hub V4 installed."
 echo "Next steps:"

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -310,7 +311,29 @@ func Open(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	if path != ":memory:" && runtime.GOOS != "windows" {
+		if st, err := os.Stat(filepath.Dir(path)); err == nil && st.Mode()&os.ModeSetgid != 0 {
+			EnsureGroupWritable(path, -1)
+		}
+	}
 	return s, nil
+}
+
+// EnsureGroupWritable makes the SQLite database and its WAL/SHM sidecar files group-writable (0660)
+// and optionally assigns group ownership to gid (>0) so root agent and non-root web can share WAL access.
+func EnsureGroupWritable(path string, gid int) {
+	if path == "" || path == ":memory:" || runtime.GOOS == "windows" {
+		return
+	}
+	for _, p := range []string{path, path + "-wal", path + "-shm"} {
+		if _, err := os.Stat(p); err != nil {
+			continue
+		}
+		if gid > 0 {
+			_ = os.Chown(p, -1, gid)
+		}
+		_ = os.Chmod(p, 0o660)
+	}
 }
 
 func (s *Store) Close() error {

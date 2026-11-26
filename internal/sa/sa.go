@@ -34,7 +34,11 @@ func Identity(v string) string {
 }
 
 func positiveUint(text string, base int) (uint64, error) {
-	v, err := strconv.ParseUint(strings.TrimSpace(text), base, 64)
+	s := strings.TrimSpace(text)
+	if base == 16 {
+		s = strings.TrimPrefix(strings.TrimPrefix(s, "0x"), "0X")
+	}
+	v, err := strconv.ParseUint(s, base, 64)
 	if err != nil || v == 0 {
 		return 0, errors.New("expected positive identifier")
 	}
