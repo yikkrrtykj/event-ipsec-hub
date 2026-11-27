@@ -99,3 +99,68 @@ func TestMultiOBIsolationAndHillstoneModes(t *testing.T) {
 		t.Fatalf("expected empty self-diff, got %+v", diff)
 	}
 }
+
+func TestSingleSiteManifestAndNFT(t *testing.T) {
+	raw := `schema_version: "2.0"
+event:
+  id: single-stage
+  name: Single Site Staging
+hub:
+  id: hub-primary
+  platform: ubuntu-24.04
+  public_endpoint: 198.51.100.10
+  provider_label: VPS
+  location_label: Primary
+sites:
+  - id: venue-1
+    display_name: Hillstone A3800
+    role: venue
+    public_endpoint: 203.0.113.10
+    ike_identity: 203.0.113.10
+    lan_cidrs:
+      - 10.43.10.0/24
+    firewall:
+      vendor: Hillstone
+site_links:
+  - site_id: venue-1
+    secret_ref: file:/etc/ipsecvpn/secrets/venue-1.psk
+    if_id: 201
+    selector_mode: route_based
+    tunnel_local_cidr: 169.254.201.1/30
+    outer_path:
+      interface: eth0
+      isp_label: ISP-A
+traffic_policy:
+  allowed_site_pairs: []
+backup:
+  enabled: false
+`
+	p, err := profile.ParseProfile([]byte(raw))
+	if err != nil {
+		t.Fatalf("parse single-site profile: %v", err)
+	}
+	m, err := BuildManifest(p)
+	if err != nil {
+		t.Fatalf("build single-site manifest: %v", err)
+	}
+	if len(m.Links) != 1 {
+		t.Fatalf("expected 1 link, got %d", len(m.Links))
+	}
+	if len(m.Links[0].RemoteTS) != 1 || m.Links[0].RemoteTS[0] != "10.43.10.0/24" {
+		t.Fatalf("unexpected remote_ts: %v", m.Links[0].RemoteTS)
+	}
+	if len(m.Links[0].LocalTS) != 1 || m.Links[0].LocalTS[0] != "169.254.201.0/30" {
+		t.Fatalf("expected tunnel subnet fallback in local_ts, got %v", m.Links[0].LocalTS)
+	}
+	swan := SwanctlConfig(m, nil)
+	if !strings.Contains(swan, "local_ts = 0.0.0.0/0") || !strings.Contains(swan, "remote_ts = 0.0.0.0/0") {
+		t.Fatalf("route_based single site should use 0.0.0.0/0 selectors:\n%s", swan)
+	}
+	nft := NFTConfig(m, "tok1", nil, nil, nil)
+	if !strings.Contains(nft, `tcp flags syn / syn,rst tcp option maxseg size set 1360`) {
+		t.Fatalf("expected MSS clamp in single-site nft:\n%s", nft)
+	}
+	if !strings.Contains(nft, `ip saddr 169.254.201.0/30 icmp type { echo-request, echo-reply } accept`) {
+		t.Fatalf("expected tunnel subnet ICMP accept in single-site nft:\n%s", nft)
+	}
+}

@@ -454,6 +454,18 @@ func BuildManifest(p *profile.Profile) (*DeploymentManifest, error) {
 			closeAction = sharedClose
 		}
 
+		localTS := profile.AuthorizedRemoteLANs(p, site.ID)
+		if len(localTS) == 0 {
+			if sl.TunnelLocalCIDR != "" {
+				if pfx, err := netip.ParsePrefix(sl.TunnelLocalCIDR); err == nil && pfx.Addr().Is4() {
+					localTS = []string{pfx.Masked().String()}
+				}
+			}
+			if len(localTS) == 0 {
+				localTS = []string{hubSource + "/32"}
+			}
+		}
+
 		links = append(links, Link{
 			SiteID:         site.ID,
 			IfID:           sl.IfID,
@@ -463,7 +475,7 @@ func BuildManifest(p *profile.Profile) (*DeploymentManifest, error) {
 			Peer:           peerAddr,
 			LocalID:        hubID,
 			RemoteID:       peerIKEID,
-			LocalTS:        profile.AuthorizedRemoteLANs(p, site.ID),
+			LocalTS:        localTS,
 			RemoteTS:       slices.Clone(authLANs[site.ID]),
 			IKEProposal:    ikeProp,
 			ESPProposal:    espProp,

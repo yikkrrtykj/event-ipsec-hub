@@ -215,3 +215,59 @@ func TestMultiOBAuthorizedLANsAndBackupReadiness(t *testing.T) {
 		t.Fatalf("expected PASS/COMPLETE backup readiness, got %+v", r)
 	}
 }
+
+func TestSingleSiteStagingProfile(t *testing.T) {
+	singleYAML := `schema_version: "2.0"
+event:
+  id: single-test
+  name: Single Site Test
+hub:
+  id: hub-primary
+  platform: ubuntu-24.04
+  public_endpoint: 198.51.100.10
+  provider_label: VPS
+  location_label: Primary
+sites:
+  - id: venue-1
+    display_name: Hillstone A3800
+    role: venue
+    public_endpoint: 203.0.113.10
+    ike_identity: 203.0.113.10
+    lan_cidrs:
+      - 10.43.10.0/24
+    firewall:
+      vendor: Hillstone
+site_links:
+  - site_id: venue-1
+    secret_ref: file:/etc/ipsecvpn/secrets/venue-1.psk
+    if_id: 201
+    selector_mode: route_based
+    tunnel_local_cidr: 169.254.201.1/30
+    outer_path:
+      interface: eth0
+      isp_label: ISP-A
+traffic_policy:
+  allowed_site_pairs: []
+backup:
+  enabled: false
+`
+	p, err := ParseProfile([]byte(singleYAML))
+	if err != nil {
+		t.Fatalf("expected single-site profile to validate, got: %v", err)
+	}
+	lans := AuthorizedLANs(p)
+	if len(lans["venue-1"]) != 1 || lans["venue-1"][0] != "10.43.10.0/24" {
+		t.Fatalf("expected authorized LAN for single site, got %v", lans)
+	}
+
+	// Ensure 2-site profiles with empty allowed_site_pairs are still rejected.
+	base, err := LoadProfile(repoPath("config", "event.example.yaml"))
+	if err != nil {
+		t.Fatalf("load base: %v", err)
+	}
+	raw := cloneRaw(base.Raw)
+	raw["traffic_policy"].(map[string]any)["allowed_site_pairs"] = []any{}
+	if _, err := ValidateRaw(raw); err == nil || !strings.Contains(err.Error(), "allowed_site_pairs") {
+		t.Fatalf("expected 2-site profile with empty pairs to fail, got: %v", err)
+	}
+}

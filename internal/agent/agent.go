@@ -200,6 +200,11 @@ func (d *Daemon) HandleRPC(ctx context.Context, method string, raw json.RawMessa
 				Source:   "web_console",
 				Title:    fmt.Sprintf("Profile %s applied by %s", parsed.Event.ID, p.Operator),
 			})
+			go func() {
+				probeCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				defer cancel()
+				_ = d.CollectOnce(probeCtx)
+			}()
 		}
 		return res, err
 

@@ -281,6 +281,9 @@ onBeforeUnmount(() => {
                 <template v-else-if="row.sample.l2_ike_state === 1 && row.sample.l2_child_state === 1">
                   <StatusDot state="ok" :label="t('stateConnected')" />
                 </template>
+                <template v-else-if="row.sample.l2_ike_state === 0 && row.sample.l2_child_state === 0">
+                  <StatusDot state="critical" :label="t('stateDisconnected')" />
+                </template>
                 <template v-else>
                   <div style="display: flex; flex-direction: column; gap: 3px;">
                     <StatusDot :state="row.sample.l2_ike_state === 1 ? 'ok' : 'critical'" :label="`IKE ${row.sample.l2_ike_state === 1 ? t('stateConnected') : t('stateDisconnected')}`" />

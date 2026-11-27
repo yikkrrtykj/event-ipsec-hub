@@ -292,19 +292,23 @@ function buildYAMLFromForm(): string {
     if (s.policy_priority.trim() && Number(s.policy_priority) > 0) lines.push(`      policy_priority: ${Number(s.policy_priority)}`)
   }
 
-  lines.push('', 'traffic_policy:', '  allowed_site_pairs:')
-  for (const pr of pairs.value) {
-    if (!pr.a || !pr.b) continue
-    lines.push(`    - a: ${q(pr.a)}`, `      b: ${q(pr.b)}`)
-    const ac = splitCIDRs(pr.a_cidrs_text)
-    if (ac.length) {
-      lines.push('      a_cidrs:')
-      for (const c of ac) lines.push(`        - ${q(c)}`)
-    }
-    const bc = splitCIDRs(pr.b_cidrs_text)
-    if (bc.length) {
-      lines.push('      b_cidrs:')
-      for (const c of bc) lines.push(`        - ${q(c)}`)
+  const validPairs = pairs.value.filter((pr) => pr.a && pr.b)
+  if (!validPairs.length) {
+    lines.push('', 'traffic_policy:', '  allowed_site_pairs: []')
+  } else {
+    lines.push('', 'traffic_policy:', '  allowed_site_pairs:')
+    for (const pr of validPairs) {
+      lines.push(`    - a: ${q(pr.a)}`, `      b: ${q(pr.b)}`)
+      const ac = splitCIDRs(pr.a_cidrs_text)
+      if (ac.length) {
+        lines.push('      a_cidrs:')
+        for (const c of ac) lines.push(`        - ${q(c)}`)
+      }
+      const bc = splitCIDRs(pr.b_cidrs_text)
+      if (bc.length) {
+        lines.push('      b_cidrs:')
+        for (const c of bc) lines.push(`        - ${q(c)}`)
+      }
     }
   }
 
@@ -1146,9 +1150,11 @@ onBeforeUnmount(() => {
           <div class="row" style="margin-bottom: 10px;">
             <h3 style="margin: 0;">{{ t('trafficPolicyTitle') }}</h3>
             <div class="spacer"></div>
-            <button class="btn btn-secondary btn-sm" @click="addPair">{{ t('addRule') }}</button>
+            <button class="btn btn-secondary btn-sm" :disabled="sites.length < 2" @click="addPair">{{ t('addRule') }}</button>
           </div>
-          <div class="muted" style="margin-bottom: 10px;">{{ t('trafficPolicyHint') }}</div>
+          <div class="muted" style="margin-bottom: 10px;">
+            {{ sites.length === 1 ? t('singleSitePolicyHint') : t('trafficPolicyHint') }}
+          </div>
           <div v-for="(pr, idx) in pairs" :key="idx" class="sub-card" style="padding: 10px; margin-bottom: 8px;">
             <div class="row" style="margin-bottom: 8px;">
               <select v-model="pr.a" class="select" style="flex: 1;">

@@ -32,12 +32,12 @@
     },
     "sites": {
       "type": "array",
-      "minItems": 2,
+      "minItems": 1,
       "items": {"$ref": "#/$defs/site"}
     },
     "site_links": {
       "type": "array",
-      "minItems": 2,
+      "minItems": 1,
       "items": {"$ref": "#/$defs/site_link"}
     },
     "security": {"$ref": "#/$defs/security"},
@@ -48,7 +48,7 @@
       "properties": {
         "allowed_site_pairs": {
           "type": "array",
-          "minItems": 1,
+          "minItems": 0,
           "items": {
             "type": "object",
             "additionalProperties": false,

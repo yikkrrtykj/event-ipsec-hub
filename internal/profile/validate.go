@@ -671,7 +671,7 @@ func validateTopology(p *Profile) error {
 			}
 		}
 	}
-	if len(connectedSites) != len(siteMap) {
+	if len(siteMap) >= 2 && len(connectedSites) != len(siteMap) {
 		return profileErr("Every declared site must participate in at least one allowed_site_pairs rule.")
 	}
 
@@ -830,10 +830,16 @@ func AuthorizedPairs(p *Profile) []AuthorizedPair {
 }
 
 // AuthorizedLANs returns the union of authorized local LAN CIDRs per site.
+// In single-site staging mode (1 site, 0 pairs), the site's declared LAN CIDRs are authorized
+// so the tunnel and Hub-to-site routes/probes can be verified before adding a second site.
 func AuthorizedLANs(p *Profile) map[string][]string {
 	result := make(map[string][]string, len(p.Sites))
 	for _, s := range p.Sites {
 		result[s.ID] = []string{}
+	}
+	if len(p.Sites) == 1 && len(p.TrafficPolicy.AllowedSitePairs) == 0 {
+		result[p.Sites[0].ID] = slices.Clone(p.Sites[0].LANCIDRs)
+		return result
 	}
 	for _, rule := range AuthorizedPairs(p) {
 		for _, c := range rule.SourceCIDRs {
