@@ -31,6 +31,9 @@ func (f *fakeAgent) Call(_ context.Context, method string, _ any, out any) error
 	case "alert.save_channel":
 		b, _ := json.Marshal(map[string]any{"status": "PASS", "configured": true, "enabled": true, "masked_url": "https://open.feishu.cn/open-apis/bot/v2/hook/aaaa****zzzz", "has_secret": true})
 		return json.Unmarshal(b, out)
+	case "hub.tunnel_diagnostics":
+		b, _ := json.Marshal(map[string]any{"site_id": "ob-venue-1", "ike_state": 1, "child_state": 1, "swanctl_sas": "ESTABLISHED", "strongswan_logs": "IKE_SA established"})
+		return json.Unmarshal(b, out)
 	default:
 		b, _ := json.Marshal(map[string]any{"status": "PASS"})
 		return json.Unmarshal(b, out)
@@ -177,7 +180,7 @@ func TestWebAPIEndToEndLoginProfileExportAndTimeline(t *testing.T) {
 		t.Fatalf("expected 1 filtered DPD critical event, got %d %+v", resp.StatusCode, evRes)
 	}
 
-	// Single-tunnel reconnect & rekey endpoints
+	// Single-tunnel reconnect, rekey & live diagnostics endpoints
 	resp = postJSON("/api/v1/tunnels/ob-venue-1/reconnect", nil)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("tunnel reconnect failed: %d", resp.StatusCode)
@@ -185,6 +188,26 @@ func TestWebAPIEndToEndLoginProfileExportAndTimeline(t *testing.T) {
 	resp = postJSON("/api/v1/tunnels/ob-venue-1/rekey", map[string]any{"kind": "child"})
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("tunnel rekey failed: %d", resp.StatusCode)
+	}
+	resp, _ = client.Get(ts.URL + "/api/v1/tunnels/ob-venue-1/diagnostics")
+	var tdiag map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&tdiag)
+	if resp.StatusCode != http.StatusOK || tdiag["swanctl_sas"] != "ESTABLISHED" {
+		t.Fatalf("GET /api/v1/tunnels/ob-venue-1/diagnostics unexpected: %d %+v", resp.StatusCode, tdiag)
+	}
+
+	// Overview includes site metadata (peer IP & LAN CIDRs) from active profile
+	resp, _ = client.Get(ts.URL + "/api/v1/overview")
+	var ov map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&ov)
+	sitesList, _ := ov["sites"].([]any)
+	if resp.StatusCode != http.StatusOK || len(sitesList) < 2 {
+		t.Fatalf("GET /api/v1/overview unexpected: %d %+v", resp.StatusCode, ov)
+	}
+	firstCard, _ := sitesList[0].(map[string]any)
+	metaMap, _ := firstCard["meta"].(map[string]any)
+	if metaMap == nil || metaMap["peer_public_ip"] == "" {
+		t.Fatalf("expected site meta.peer_public_ip in overview: %+v", firstCard)
 	}
 
 	// Persistent Feishu channel metadata (PUT + GET without leaking raw URL/secret)
@@ -242,5 +265,14 @@ func TestWebAPIEndToEndLoginProfileExportAndTimeline(t *testing.T) {
 	_ = json.NewDecoder(resp.Body).Decode(&rev)
 	if resp.StatusCode != http.StatusOK || rev["psk_hex"] != "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" || resp.Header.Get("Cache-Control") != "no-store" {
 		t.Fatalf("POST /api/v1/secrets/reveal unexpected: status=%d cc=%q body=%+v", resp.StatusCode, resp.Header.Get("Cache-Control"), rev)
+	}
+
+	// Validate YAML containing UI-generated ICMP monitoring probe block
+	yamlWithProbe := string(yamlBytes) + "\nmonitoring:\n  enabled: true\n  probes:\n    - site_id: ob-venue-1\n      protocol: icmp\n      target: 10.101.10.1\n      path: primary\n"
+	resp = postJSON("/api/v1/profiles/validate", map[string]any{"yaml_content": yamlWithProbe})
+	if resp.StatusCode != http.StatusOK {
+		var verr map[string]any
+		_ = json.NewDecoder(resp.Body).Decode(&verr)
+		t.Fatalf("validate profile with ICMP probe failed: %d %+v", resp.StatusCode, verr)
 	}
 }

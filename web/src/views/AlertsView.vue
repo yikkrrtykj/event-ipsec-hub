@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
 import { api, fmtDateTime } from '../api'
-import { alertStatusLabel, sourceLabel, t } from '../i18n'
+import { alertMetricMeta, alertRuleNameLabel, alertStatusLabel, causeLabel, sourceLabel, t } from '../i18n'
 
 const rules = ref<any[]>([])
 const history = ref<any[]>([])
@@ -68,10 +68,25 @@ async function saveRule(rule: any) {
   msg.value = ''
   try {
     await api('/api/v1/alerts/rules', { method: 'PUT', body: JSON.stringify(rule) })
-    msg.value = t('msgRuleSaved', { name: rule.name })
+    msg.value = t('msgRuleSaved', { name: alertRuleNameLabel(rule.name) })
   } catch (e: any) {
     errMsg.value = e.message
   }
+}
+
+function displayThreshold(rule: any): number {
+  const m = alertMetricMeta(rule.metric)
+  if (m.isPercent) {
+    return Math.round((Number(rule.threshold) || 0) * 10000) / 100
+  }
+  return Number(rule.threshold) || 0
+}
+
+function updateThreshold(rule: any, rawVal: string) {
+  const num = Number(rawVal)
+  if (!Number.isFinite(num)) return
+  const m = alertMetricMeta(rule.metric)
+  rule.threshold = m.isPercent ? Math.max(0, Math.min(1, Number((num / 100).toFixed(4)))) : num
 }
 
 async function testFeishu() {
@@ -146,9 +161,25 @@ onMounted(load)
         <tbody>
           <tr v-for="r in rules" :key="r.id">
             <td><input type="checkbox" v-model="r.enabled" /></td>
-            <td><strong>{{ r.name }}</strong></td>
-            <td><code>{{ r.metric }}</code></td>
-            <td><input v-model.number="r.threshold" type="number" step="0.01" class="input" style="width: 90px;" /></td>
+            <td>
+              <strong>{{ alertRuleNameLabel(r.name) }}</strong>
+              <div class="muted" style="font-size: 11px;"><code>{{ r.name }}</code></div>
+            </td>
+            <td>{{ alertMetricMeta(r.metric).label }}</td>
+            <td>
+              <span v-if="alertMetricMeta(r.metric).isBinaryState" class="pill pill-unknown">{{ t('triggerOnDown') }}</span>
+              <div v-else class="row" style="gap: 4px;">
+                <input
+                  :value="displayThreshold(r)"
+                  type="number"
+                  :step="alertMetricMeta(r.metric).isPercent ? 1 : 1"
+                  class="input"
+                  style="width: 78px;"
+                  @input="updateThreshold(r, ($event.target as HTMLInputElement).value)"
+                />
+                <span v-if="alertMetricMeta(r.metric).unit" class="muted">{{ alertMetricMeta(r.metric).unit }}</span>
+              </div>
+            </td>
             <td><input v-model.number="r.cooldown_seconds" type="number" class="input" style="width: 85px;" /></td>
             <td>
               <span class="pill" :class="r.severity === 'critical' ? 'pill-critical' : 'pill-warn'">
@@ -183,10 +214,13 @@ onMounted(load)
                 {{ alertStatusLabel(h.status) }}
               </span>
             </td>
-            <td>{{ h.alert_name }}</td>
+            <td>{{ alertRuleNameLabel(h.alert_name) }}</td>
             <td>{{ sourceLabel(h.source) }}</td>
             <td>{{ h.site_id }}</td>
-            <td><code>{{ h.root_cause }}</code></td>
+            <td>
+              <span>{{ causeLabel(h.root_cause) }}</span>
+              <div v-if="h.root_cause" class="muted" style="font-size: 11px;"><code>{{ h.root_cause }}</code></div>
+            </td>
             <td>{{ h.delivered ? t('deliveredOk') : h.error || t('notConfigured') }}</td>
           </tr>
         </tbody>

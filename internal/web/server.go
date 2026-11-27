@@ -144,9 +144,10 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/secrets/reveal", s.requireAdmin(s.handleRevealSecret))
 	mux.HandleFunc("POST /api/v1/profiles/{id}/export-peer", s.requireAuth(s.handleExportPeer))
 
-	// Single-tunnel live operations (reconnect / rekey)
+	// Single-tunnel live operations (reconnect / rekey / live diagnostics)
 	mux.HandleFunc("POST /api/v1/tunnels/{site}/reconnect", s.requireAdmin(s.handleTunnelReconnect))
 	mux.HandleFunc("POST /api/v1/tunnels/{site}/rekey", s.requireAdmin(s.handleTunnelRekey))
+	mux.HandleFunc("GET /api/v1/tunnels/{site}/diagnostics", s.requireAuth(s.handleTunnelDiagnostics))
 
 	// Failover & #12 Hub Role Swap
 	mux.HandleFunc("GET /api/v1/failover", s.requireAuth(s.handleFailoverStatus))
@@ -456,12 +457,73 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request, _ sessio
 	for _, sm := range samples {
 		latestBySite[sm.SiteID] = sm
 	}
-	siteCards := make([]map[string]any, 0, len(latestBySite))
+
+	siteMeta := make(map[string]map[string]any)
+	var orderedActiveSites []string
+	if active != nil && strings.TrimSpace(active.YAMLContent) != "" {
+		if parsed, err := profile.ParseProfile([]byte(active.YAMLContent)); err == nil && parsed != nil {
+			linkBySite := make(map[string]profile.SiteLink, len(parsed.SiteLinks))
+			for _, sl := range parsed.SiteLinks {
+				if _, ok := linkBySite[sl.SiteID]; !ok {
+					linkBySite[sl.SiteID] = sl
+				}
+			}
+			probeBySite := make(map[string]string)
+			if parsed.Monitoring != nil && parsed.Monitoring.Enabled {
+				for _, pr := range parsed.Monitoring.Probes {
+					if pr.Path == "" || pr.Path == "primary" {
+						probeBySite[pr.SiteID] = pr.Target
+					}
+				}
+			}
+			for _, st := range parsed.Sites {
+				orderedActiveSites = append(orderedActiveSites, st.ID)
+				sl := linkBySite[st.ID]
+				siteMeta[st.ID] = map[string]any{
+					"display_name":   st.DisplayName,
+					"peer_public_ip": st.PublicEndpoint,
+					"lan_cidrs":      st.LANCIDRs,
+					"vendor":         st.Firewall.Vendor,
+					"selector_mode":  sl.SelectorMode,
+					"isp_label":      sl.OuterPath.ISPLabel,
+					"probe_target":   probeBySite[st.ID],
+				}
+			}
+		}
+	}
+
+	seenSites := make(map[string]struct{}, len(latestBySite)+len(orderedActiveSites))
+	siteCards := make([]map[string]any, 0, len(latestBySite)+len(orderedActiveSites))
 	for _, sm := range latestBySite {
+		seenSites[sm.SiteID] = struct{}{}
 		diag := telemetry.Diagnose(sm, events)
-		siteCards = append(siteCards, map[string]any{
+		card := map[string]any{
 			"sample":    sm,
 			"diagnosis": diag,
+		}
+		if m, ok := siteMeta[sm.SiteID]; ok {
+			card["meta"] = m
+		}
+		siteCards = append(siteCards, card)
+	}
+	for _, sid := range orderedActiveSites {
+		if _, ok := seenSites[sid]; ok {
+			continue
+		}
+		m := siteMeta[sid]
+		ispLabel, _ := m["isp_label"].(string)
+		placeholder := storage.MetricSample{
+			SiteID:       sid,
+			ISPLabel:     ispLabel,
+			L1OuterState: telemetry.StateUnknown,
+			L2IKEState:   telemetry.StateUnknown,
+			L2ChildState: telemetry.StateUnknown,
+			L4UDPState:   telemetry.StateUnknown,
+		}
+		siteCards = append(siteCards, map[string]any{
+			"sample":    placeholder,
+			"diagnosis": telemetry.Diagnose(placeholder, events),
+			"meta":      m,
 		})
 	}
 	sort.Slice(siteCards, func(i, j int) bool {
@@ -1115,6 +1177,40 @@ func (s *Server) handleTunnelRekey(w http.ResponseWriter, r *http.Request, sess 
 	_ = s.store.RecordAudit(sess.Username, extractClientIP(r.RemoteAddr), "tunnel_rekey", site, status, map[string]any{"kind": req.Kind})
 	if err != nil {
 		writeJSONResp(w, http.StatusBadRequest, map[string]any{"status": "FAIL", "error": err.Error()})
+		return
+	}
+	writeJSONResp(w, http.StatusOK, out)
+}
+
+func (s *Server) handleTunnelDiagnostics(w http.ResponseWriter, r *http.Request, _ sessionEntry) {
+	site := strings.TrimSpace(r.PathValue("site"))
+	if site == "" {
+		writeJSONResp(w, http.StatusBadRequest, map[string]any{"error": "Site ID is required."})
+		return
+	}
+	if s.agent == nil {
+		nowMs := time.Now().UnixMilli()
+		evs, _ := s.store.QueryTimelineEvents(site, nowMs-24*60*60_000, nowMs+1000, 15)
+		if s.cfg.DemoMode {
+			writeJSONResp(w, http.StatusOK, map[string]any{
+				"site_id":         site,
+				"ike_state":       1,
+				"child_state":     1,
+				"swanctl_sas":     fmt.Sprintf("(演示模式) 站点 %s IKEv2 / ESP SA 模拟在线", site),
+				"strongswan_logs": "(演示模式) 未连接宿主机 strongSwan 进程",
+				"recent_events":   evs,
+				"captured_at_ms":  nowMs,
+			})
+			return
+		}
+		writeJSONResp(w, http.StatusServiceUnavailable, map[string]any{"error": "Gateway Agent is offline."})
+		return
+	}
+	var out map[string]any
+	if err := s.agent.Call(r.Context(), rpc.MethodTunnelDiagnostics, rpc.TunnelDiagnosticsParams{
+		Site: site,
+	}, &out); err != nil {
+		writeJSONResp(w, http.StatusBadGateway, map[string]any{"error": err.Error()})
 		return
 	}
 	writeJSONResp(w, http.StatusOK, out)

@@ -31,6 +31,7 @@ interface SiteForm {
   gateway: string
   route_table: string
   policy_priority: string
+  probe_target?: string
   psk_draft?: string
 }
 
@@ -99,6 +100,16 @@ const secretPSK = ref('')
 const revealedPSKs = ref<Record<string, string>>({})
 const copiedTag = ref('')
 const revealingSite = ref('')
+const savedBaselineYAML = ref('')
+const hasUnappliedChanges = ref(false)
+const applyingBusy = ref(false)
+
+const isFormDirty = computed(() => {
+  if (hasUnappliedChanges.value) return true
+  if (sites.value.length === 0) return false
+  if (!savedBaselineYAML.value) return true
+  return buildYAMLFromForm() !== savedBaselineYAML.value
+})
 
 const siteIDs = computed(() => sites.value.map((s) => s.id).filter(Boolean))
 const espIsGCM = computed(() => form.value.esp_enc.endsWith('gcm16'))
@@ -288,7 +299,22 @@ function buildYAMLFromForm(): string {
     }
   }
 
-  lines.push('', 'backup:', '  enabled: false', '')
+  lines.push('', 'backup:', '  enabled: false')
+  const probes = sites.value
+    .filter((s) => s.id.trim() && (s.probe_target || '').trim())
+    .map((s) => ({ site_id: s.id.trim(), target: (s.probe_target || '').trim() }))
+  if (probes.length) {
+    lines.push('', 'monitoring:', '  enabled: true', '  probes:')
+    for (const pr of probes) {
+      lines.push(
+        `    - site_id: ${q(pr.site_id)}`,
+        '      protocol: icmp',
+        `      target: ${q(pr.target)}`,
+        '      path: primary'
+      )
+    }
+  }
+  lines.push('')
   return lines.join('\n')
 }
 
@@ -325,6 +351,12 @@ function hydrateFormFromProfile(p: any) {
   for (const sl of p.site_links || []) {
     if (!linkBySite.has(sl.site_id)) linkBySite.set(sl.site_id, sl)
   }
+  const probeBySite = new Map<string, string>()
+  for (const pr of p.monitoring?.probes || []) {
+    if ((!pr.path || pr.path === 'primary') && pr.site_id && pr.target) {
+      probeBySite.set(pr.site_id, pr.target)
+    }
+  }
 
   sites.value = (p.sites || []).map((st: any, idx: number) => {
     const sl = linkBySite.get(st.id) || {}
@@ -354,7 +386,8 @@ function hydrateFormFromProfile(p: any) {
       source_ip: op.source_ip || '',
       gateway: op.gateway || '',
       route_table: op.route_table ? String(op.route_table) : '',
-      policy_priority: op.policy_priority ? String(op.policy_priority) : ''
+      policy_priority: op.policy_priority ? String(op.policy_priority) : '',
+      probe_target: probeBySite.get(st.id) || ''
     }
   })
 
@@ -620,10 +653,23 @@ function openNewSiteDrawer() {
     gateway: '',
     route_table: '',
     policy_priority: '',
+    probe_target: '',
     psk_draft: generateHex64()
   })
   isNewSite.value = true
   editingSiteIdx.value = sites.value.length - 1
+}
+
+function syncPairsWithSites() {
+  const validIDs = new Set(sites.value.map((s) => s.id.trim()).filter(Boolean))
+  pairs.value = pairs.value.filter((pr) => validIDs.has(pr.a) && validIDs.has(pr.b) && pr.a !== pr.b)
+  if (sites.value.length === 2 && pairs.value.length === 0) {
+    const a = sites.value[0].id.trim()
+    const b = sites.value[1].id.trim()
+    if (a && b && a !== b) {
+      pairs.value.push({ a, b, a_cidrs_text: '', b_cidrs_text: '' })
+    }
+  }
 }
 
 function openEditSiteDrawer(idx: number) {
@@ -638,6 +684,7 @@ function openEditSiteDrawer(idx: number) {
 function closeDrawers() {
   editingSiteIdx.value = null
   gatewayDrawerOpen.value = false
+  syncPairsWithSites()
 }
 
 function onKeyDown(ev: KeyboardEvent) {
@@ -647,6 +694,7 @@ function onKeyDown(ev: KeyboardEvent) {
 function removeSite(idx: number) {
   if (editingSiteIdx.value === idx) editingSiteIdx.value = null
   sites.value.splice(idx, 1)
+  syncPairsWithSites()
 }
 
 function addPair() {
@@ -735,7 +783,10 @@ async function selectProfile(p: any) {
     }).catch(() => null)
   ])
   revisions.value = revs.revisions || []
-  if (parsed?.profile) hydrateFormFromProfile(parsed.profile)
+  if (parsed?.profile) {
+    hydrateFormFromProfile(parsed.profile)
+    savedBaselineYAML.value = buildYAMLFromForm()
+  }
 }
 
 function currentYAML(): string {
@@ -758,9 +809,10 @@ async function validateYAML() {
   }
 }
 
-async function saveProfile(activate = true) {
+async function saveProfile(activate = true): Promise<string | null> {
   errMsg.value = ''
   infoMsg.value = ''
+  syncPairsWithSites()
   try {
     // Capture pending drawer PSKs before loadProfiles() re-hydrates form
     const pendingSecrets = sites.value
@@ -792,9 +844,37 @@ async function saveProfile(activate = true) {
     output.value = JSON.stringify(res, null, 2)
     infoMsg.value = t('msgSaved', { id: res.id })
     note.value = ''
+    hasUnappliedChanges.value = true
     await loadProfiles()
+    return res.id
   } catch (e: any) {
     errMsg.value = e.message
+    return null
+  }
+}
+
+async function saveAndApply(confirmed: boolean) {
+  if (applyingBusy.value) return
+  applyingBusy.value = true
+  try {
+    const pid = await saveProfile(true)
+    if (!pid) return
+    const res = await api(`/api/v1/profiles/${encodeURIComponent(pid)}/apply`, {
+      method: 'POST',
+      body: JSON.stringify({ confirmed, maintenance: false })
+    })
+    output.value = JSON.stringify(res, null, 2)
+    if (confirmed) {
+      hasUnappliedChanges.value = false
+      savedBaselineYAML.value = buildYAMLFromForm()
+      infoMsg.value = t('msgSavedAndApplied', { id: pid })
+    } else {
+      infoMsg.value = t('msgDryRunDone')
+    }
+  } catch (e: any) {
+    errMsg.value = e.message
+  } finally {
+    applyingBusy.value = false
   }
 }
 
@@ -825,6 +905,10 @@ async function applyProfile(confirmed: boolean) {
       body: JSON.stringify({ confirmed, maintenance: false })
     })
     output.value = JSON.stringify(res, null, 2)
+    if (confirmed) {
+      hasUnappliedChanges.value = false
+      savedBaselineYAML.value = buildYAMLFromForm()
+    }
     infoMsg.value = confirmed ? t('msgApplied') : t('msgDryRunDone')
   } catch (e: any) {
     errMsg.value = e.message
@@ -934,6 +1018,13 @@ onBeforeUnmount(() => {
 
     <div v-if="errMsg" class="alert-banner alert-critical">{{ errMsg }}</div>
     <div v-if="infoMsg" class="alert-banner alert-ok">{{ infoMsg }}</div>
+    <div v-if="isFormDirty && subTab === 'tunnels'" class="alert-banner alert-warn">
+      <div class="row">
+        <span>{{ t('unsavedChangesBanner') }}</span>
+        <div class="spacer"></div>
+        <button class="btn btn-ok btn-sm" :disabled="applyingBusy" @click="saveAndApply(true)">{{ t('btnSaveAndApply') }}</button>
+      </div>
+    </div>
 
     <!-- Saved profile switcher bar -->
     <div class="card" style="padding: 12px 16px;">
@@ -1163,11 +1254,9 @@ onBeforeUnmount(() => {
       <div class="card">
         <div class="row">
           <input v-model="note" class="input" style="flex: 1;" :placeholder="t('changeNotePh')" />
-          <button class="btn btn-secondary" @click="validateYAML">{{ t('btnValidate') }}</button>
-          <button class="btn" @click="saveProfile(true)">{{ t('btnSave') }}</button>
-          <button class="btn btn-secondary" @click="renderPreview">{{ t('btnRender') }}</button>
-          <button class="btn btn-secondary" @click="applyProfile(false)">{{ t('btnDryRun') }}</button>
-          <button class="btn btn-ok" @click="applyProfile(true)">{{ t('btnApply') }}</button>
+          <button class="btn btn-secondary" :disabled="applyingBusy" @click="saveProfile(true)">{{ t('btnSaveDraft') }}</button>
+          <button class="btn btn-secondary" :disabled="applyingBusy" @click="saveAndApply(false)">{{ t('btnDryRun') }}</button>
+          <button class="btn btn-ok" :disabled="applyingBusy" @click="saveAndApply(true)">{{ t('btnSaveAndApply') }}</button>
         </div>
         <div v-if="output" class="code-block" style="margin-top: 12px; max-height: 240px;">{{ output }}</div>
       </div>
@@ -1383,6 +1472,12 @@ onBeforeUnmount(() => {
           <div class="field">
             <label>{{ t('peerLanCidrs') }}</label>
             <input v-model="editingSite.lan_cidrs_text" class="input" placeholder="10.101.10.0/24" />
+          </div>
+
+          <div class="field">
+            <label>{{ t('probeTargetLabel') }}</label>
+            <input v-model="editingSite.probe_target" class="input" :placeholder="t('probeTargetPh')" />
+            <div class="muted" style="font-size: 11.5px; margin-top: 4px;">{{ t('probeTargetHint') }}</div>
           </div>
 
           <div class="field">

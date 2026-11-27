@@ -305,9 +305,26 @@ const dict: Record<Lang, Record<string, string>> = {
     changeNotePh: '变更备注（选填）',
     btnValidate: '校验配置',
     btnSave: '保存配置',
+    btnSaveDraft: '仅保存',
+    btnSaveAndApply: '保存并应用',
     btnRender: '预览生成文件',
-    btnDryRun: '变更预检',
+    btnDryRun: '预检差异',
     btnApply: '应用生效',
+    probeTargetLabel: '内网健康探测 IP（选填）',
+    probeTargetPh: '如 192.168.141.1（留空则仅监控外层与隧道）',
+    probeTargetHint: '填对端内网网关或服务器 IP，开启第 4 层内网连通性与延迟监控。',
+    unsavedChangesBanner: '当前有尚未下发到网关的配置修改，点击「保存并应用」即可立即生效。',
+    msgSavedAndApplied: '配置 {id} 已保存并下发生效。',
+    btnDiagLogs: '诊断日志',
+    diagDrawerTitle: '隧道实时诊断',
+    ikePhase1: '一阶段 (IKE)',
+    ipsecPhase2: '二阶段 (IPsec)',
+    saDetailsTitle: '当前 SA 状态 (swanctl --list-sas)',
+    strongswanLogTitle: 'strongSwan 协商日志（最近 45 条）',
+    copyLogsBtn: '复制日志',
+    refreshLogsBtn: '刷新',
+    statePending: '等待采集',
+    triggerOnDown: '断开即触发',
     yamlSourceTitle: 'YAML 配置源码',
     syncToForm: '同步到可视化表单',
     yamlPh: '在此粘贴或编辑 YAML 配置...',
@@ -704,9 +721,26 @@ const dict: Record<Lang, Record<string, string>> = {
     changeNotePh: 'Change note (optional)',
     btnValidate: 'Validate',
     btnSave: 'Save Profile',
+    btnSaveDraft: 'Save Draft',
+    btnSaveAndApply: 'Save & Apply',
     btnRender: 'Preview Files',
     btnDryRun: 'Dry-Run Diff',
     btnApply: 'Apply Live',
+    probeTargetLabel: 'LAN Health Probe IP (Optional)',
+    probeTargetPh: 'e.g. 192.168.141.1 (blank = disable L4 probe)',
+    probeTargetHint: 'Enter a peer LAN gateway/server IP to enable Layer-4 end-to-end ICMP monitoring.',
+    unsavedChangesBanner: 'You have configuration changes not yet applied to the live gateway.',
+    msgSavedAndApplied: 'Profile {id} saved and applied live.',
+    btnDiagLogs: 'Logs & SA',
+    diagDrawerTitle: 'Live Tunnel Diagnostics',
+    ikePhase1: 'Phase 1 (IKE)',
+    ipsecPhase2: 'Phase 2 (IPsec)',
+    saDetailsTitle: 'Active SA Status (swanctl --list-sas)',
+    strongswanLogTitle: 'strongSwan Negotiation Logs (Last 45 Lines)',
+    copyLogsBtn: 'Copy Logs',
+    refreshLogsBtn: 'Refresh',
+    statePending: 'Pending',
+    triggerOnDown: 'On Down',
     yamlSourceTitle: 'YAML Source',
     syncToForm: 'Sync to Visual Form',
     yamlPh: 'Paste or edit YAML configuration...',
@@ -922,4 +956,65 @@ export function sourceLabel(src: string): string {
     web_console: 'Console'
   }
   return (lang.value === 'en' ? en[src] : zh[src]) || src || '-'
+}
+
+export function alertRuleNameLabel(name: string): string {
+  const zh: Record<string, string> = {
+    IpsecIkeDown: 'IKE 认证会话断开',
+    IpsecChildDown: 'IPsec 数据隧道断开',
+    IpsecPathDown: '内网健康探测不通',
+    LanProbeDown: '内网健康探测不通',
+    IpsecOuterIspDegraded: '外层公网丢包过高',
+    OuterWanLossHigh: '外层公网丢包过高',
+    IpsecUdpLossHigh: '内网探针丢包过高',
+    LanProbeLossHigh: '内网探针丢包过高',
+    IpsecXfrmErrorSpike: '加解密 / MTU 异常突增',
+    XfrmErrorSpike: '加解密 / MTU 异常突增',
+    IpsecFrequentRekey: '隧道频繁重协商抖动',
+    FrequentRekeys: '隧道频繁重协商抖动'
+  }
+  const en: Record<string, string> = {
+    IpsecIkeDown: 'IKE Session Down',
+    IpsecChildDown: 'IPsec Tunnel Down',
+    IpsecPathDown: 'LAN Health Probe Down',
+    LanProbeDown: 'LAN Health Probe Down',
+    IpsecOuterIspDegraded: 'High WAN Packet Loss',
+    OuterWanLossHigh: 'High WAN Packet Loss',
+    IpsecUdpLossHigh: 'High LAN Probe Loss',
+    LanProbeLossHigh: 'High LAN Probe Loss',
+    IpsecXfrmErrorSpike: 'XFRM Crypto/MTU Error Spike',
+    XfrmErrorSpike: 'XFRM Crypto/MTU Error Spike',
+    IpsecFrequentRekey: 'Frequent Tunnel Rekeys',
+    FrequentRekeys: 'Frequent Tunnel Rekeys'
+  }
+  return (lang.value === 'en' ? en[name] : zh[name]) || name
+}
+
+export interface AlertMetricMeta {
+  label: string
+  unit: string
+  isPercent: boolean
+  isBinaryState: boolean
+}
+
+export function alertMetricMeta(metric: string): AlertMetricMeta {
+  const isEn = lang.value === 'en'
+  switch (metric) {
+    case 'l2_ike_state':
+      return { label: isEn ? 'Phase 1 IKE State' : '一阶段 IKE 状态', unit: '', isPercent: false, isBinaryState: true }
+    case 'l2_child_state':
+      return { label: isEn ? 'Phase 2 IPsec State' : '二阶段 IPsec 状态', unit: '', isPercent: false, isBinaryState: true }
+    case 'l4_udp_state':
+      return { label: isEn ? 'LAN Probe Reachability' : '内网探测可达性', unit: '', isPercent: false, isBinaryState: true }
+    case 'l1_outer_loss':
+      return { label: isEn ? 'Outer WAN Packet Loss' : '外层公网丢包率', unit: '%', isPercent: true, isBinaryState: false }
+    case 'l4_udp_loss':
+      return { label: isEn ? 'LAN Probe Packet Loss' : '内网探测丢包率', unit: '%', isPercent: true, isBinaryState: false }
+    case 'l3_xfrm_err_delta':
+      return { label: isEn ? 'XFRM Errors / Interval' : '加解密异常增量', unit: isEn ? 'errs' : '次/周期', isPercent: false, isBinaryState: false }
+    case 'l2_rekeys_10m':
+      return { label: isEn ? 'Rekeys in 10 min' : '10 分钟重协商次数', unit: isEn ? 'times' : '次', isPercent: false, isBinaryState: false }
+    default:
+      return { label: metric, unit: '', isPercent: false, isBinaryState: false }
+  }
 }

@@ -4,7 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os/exec"
 	"path/filepath"
+	"regexp"
+	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -232,6 +236,13 @@ func (d *Daemon) HandleRPC(ctx context.Context, method string, raw json.RawMessa
 			Site:      p.Site,
 			Kind:      p.Kind,
 		})
+
+	case rpc.MethodTunnelDiagnostics:
+		var p rpc.TunnelDiagnosticsParams
+		if err := json.Unmarshal(raw, &p); err != nil {
+			return nil, secureio.Stop("Invalid tunnel diagnostics RPC parameters.")
+		}
+		return d.tunnelDiagnostics(ctx, strings.TrimSpace(p.Site)), nil
 
 	case rpc.MethodWriteSecret:
 		var p rpc.WriteSecretParams
@@ -594,6 +605,105 @@ func extractHubID(active *live.ActiveRecord) string {
 		return fmt.Sprint(hub["id"])
 	}
 	return ""
+}
+
+var diagRedactHexRE = regexp.MustCompile(`\b[0-9a-fA-F]{64,}\b`)
+
+func sanitizeDiagOutput(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return ""
+	}
+	return diagRedactHexRE.ReplaceAllString(s, "<REDACTED>")
+}
+
+func (d *Daemon) tunnelDiagnostics(ctx context.Context, siteID string) map[string]any {
+	res := map[string]any{
+		"site_id":        siteID,
+		"ike_state":      telemetry.StateUnknown,
+		"child_state":    telemetry.StateUnknown,
+		"captured_at_ms": time.Now().UnixMilli(),
+	}
+
+	linkName := ""
+	if inst, err := transaction.InstalledRecord(); err == nil {
+		if active, m, liveSnap, _, err := diagnostics.InspectOwned(d.host, inst, false); err == nil && m != nil && active != nil {
+			for _, l := range m.Links {
+				if l.SiteID == siteID {
+					linkName = l.Name()
+					res["link_name"] = linkName
+					res["peer_ip"] = l.Peer
+					res["local_id"] = l.LocalID
+					res["remote_id"] = l.RemoteID
+					res["selector_mode"] = l.SelectorMode
+					res["ike_proposal"] = l.IKEProposal
+					res["esp_proposal"] = l.ESPProposal
+					res["local_ts"] = l.LocalTS
+					res["remote_ts"] = l.RemoteTS
+
+					ike := liveSnap.Get(linkName)
+					if ike != nil {
+						res["ike_state"] = telemetry.StateUp
+						if ike.Child != nil {
+							res["child_state"] = telemetry.StateUp
+							res["rx_bytes"] = ike.Child.Counts[0]
+							res["tx_bytes"] = ike.Child.Counts[1]
+						} else {
+							res["child_state"] = telemetry.StateDown
+						}
+					} else {
+						res["ike_state"] = telemetry.StateDown
+						res["child_state"] = telemetry.StateDown
+					}
+					break
+				}
+			}
+		}
+	}
+
+	if runtime.GOOS == "linux" {
+		sasArgs := []string{"--list-sas", "--uri", host.SocketURI}
+		if linkName != "" {
+			sasArgs = append(sasArgs, "--ike", linkName)
+		}
+		cctx, cancel := context.WithTimeout(ctx, 4*time.Second)
+		out, err := exec.CommandContext(cctx, "swanctl", sasArgs...).CombinedOutput()
+		cancel()
+		sasText := sanitizeDiagOutput(string(out))
+		if sasText == "" && linkName != "" {
+			cctx2, cancel2 := context.WithTimeout(ctx, 4*time.Second)
+			out2, _ := exec.CommandContext(cctx2, "swanctl", "--list-sas", "--uri", host.SocketURI).CombinedOutput()
+			cancel2()
+			sasText = sanitizeDiagOutput(string(out2))
+		}
+		if err != nil && sasText == "" {
+			sasText = fmt.Sprintf("swanctl unavailable: %v", err)
+		}
+		if sasText == "" {
+			sasText = "(当前暂无活动 SA；如果刚下发配置，请确认对端已配置并等待数秒，或查看下方 strongSwan 协商日志)"
+		}
+		res["swanctl_sas"] = sasText
+
+		jctx, jcancel := context.WithTimeout(ctx, 4*time.Second)
+		jout, jerr := exec.CommandContext(jctx, "journalctl", "-u", "strongswan", "-u", "strongswan-starter", "--no-pager", "-n", "45", "--output=short-iso").CombinedOutput()
+		jcancel()
+		logText := sanitizeDiagOutput(string(jout))
+		if jerr != nil && logText == "" {
+			logText = fmt.Sprintf("journalctl unavailable: %v", jerr)
+		}
+		res["strongswan_logs"] = logText
+	} else {
+		res["swanctl_sas"] = "(非 Linux 运行环境，未连接 strongSwan VICI)"
+		res["strongswan_logs"] = "(非 Linux 运行环境，无 journalctl 协商日志)"
+	}
+
+	if d.store != nil {
+		nowMs := time.Now().UnixMilli()
+		if evs, err := d.store.QueryTimelineEvents(siteID, nowMs-24*60*60_000, nowMs+1000, 15); err == nil {
+			res["recent_events"] = evs
+		}
+	}
+	return res
 }
 
 // Serve runs the Unix Socket RPC server, periodic 4-layer collector, and retention pruner.

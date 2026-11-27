@@ -119,15 +119,15 @@ func alertRuleTitleZH(name string) string {
 		return "IPsec 数据隧道断开"
 	case "IpsecIkeDown":
 		return "IKE 认证会话断开"
-	case "LanProbeDown":
-		return "内网端到端探针不通"
-	case "OuterWanLossHigh":
+	case "IpsecPathDown", "LanProbeDown":
+		return "内网健康探测不通"
+	case "IpsecOuterIspDegraded", "OuterWanLossHigh":
 		return "外层公网丢包过高"
-	case "LanProbeLossHigh":
+	case "IpsecUdpLossHigh", "LanProbeLossHigh":
 		return "内网探针丢包过高"
-	case "XfrmErrorSpike":
+	case "IpsecXfrmErrorSpike", "XfrmErrorSpike":
 		return "加解密 / MTU 异常突增"
-	case "FrequentRekeys":
+	case "IpsecFrequentRekey", "FrequentRekeys":
 		return "隧道频繁重协商抖动"
 	default:
 		if name == "" {

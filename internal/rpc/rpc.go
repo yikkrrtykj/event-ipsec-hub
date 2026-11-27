@@ -34,9 +34,10 @@ const (
 	MethodCheckHost       = "hub.check"
 	MethodApplyProfile    = "hub.apply"
 	MethodRollback        = "hub.rollback"
-	MethodReconnect       = "hub.reconnect"
-	MethodRekey           = "hub.rekey"
-	MethodWriteSecret     = "secret.write"
+	MethodReconnect        = "hub.reconnect"
+	MethodRekey            = "hub.rekey"
+	MethodTunnelDiagnostics = "hub.tunnel_diagnostics"
+	MethodWriteSecret      = "secret.write"
 	MethodReadSecretAudit = "secret.read_for_export"
 	MethodFailoverGate     = "failover.gate"
 	MethodSyncAllowlist    = "firewall.sync_web_allowlist"
@@ -67,6 +68,10 @@ type RekeyParams struct {
 	Site     string `json:"site"`
 	Kind     string `json:"kind"` // child | ike
 	Operator string `json:"operator"`
+}
+
+type TunnelDiagnosticsParams struct {
+	Site string `json:"site"`
 }
 
 type WriteSecretParams struct {

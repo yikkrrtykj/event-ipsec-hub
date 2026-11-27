@@ -11,7 +11,7 @@ const site = ref(props.initialSite || 'ob-venue-1')
 const siteOptions = ref<string[]>([])
 const minutes = ref(60)
 const activeFocusTs = ref<number | null>(props.focusTsMs ?? null)
-const autoRefreshSec = ref(0)
+const autoRefreshSec = ref(15)
 const timeline = ref<SyncedTimelineResponse | null>(null)
 const errMsg = ref('')
 
