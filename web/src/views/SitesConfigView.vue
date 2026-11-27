@@ -1,7 +1,10 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { Copy, Eye, Plus, RefreshCw, SlidersHorizontal, X } from 'lucide-vue-next'
 import { api, fmtDateTime } from '../api'
 import { lang, t } from '../i18n'
+import { copyToClipboard, toast } from '../toast'
+import StatusDot from '../components/StatusDot.vue'
 
 const emit = defineEmits<{ (e: 'navigate', tab: string, site?: string): void }>()
 
@@ -31,6 +34,7 @@ interface SiteForm {
   gateway: string
   route_table: string
   policy_priority: string
+  tunnel_local_cidr?: string
   probe_target?: string
   psk_draft?: string
 }
@@ -272,7 +276,12 @@ function buildYAMLFromForm(): string {
       `    secret_ref: ${q(refPath)}`,
       `    if_id: ${Number(s.if_id) || 201}`,
       `    selector_mode: ${q(s.selector_mode || 'route_based')}`,
-      `    route_priority: ${Number(s.route_priority) || 10}`,
+      `    route_priority: ${Number(s.route_priority) || 10}`
+    )
+    if ((s.tunnel_local_cidr || '').trim()) {
+      lines.push(`    tunnel_local_cidr: ${q(s.tunnel_local_cidr!)}`)
+    }
+    lines.push(
       '    outer_path:',
       `      interface: ${q(s.outer_interface || 'eth0')}`,
       `      isp_label: ${q(s.isp_label || 'ISP-A')}`
@@ -387,6 +396,7 @@ function hydrateFormFromProfile(p: any) {
       gateway: op.gateway || '',
       route_table: op.route_table ? String(op.route_table) : '',
       policy_priority: op.policy_priority ? String(op.policy_priority) : '',
+      tunnel_local_cidr: sl.tunnel_local_cidr || '',
       probe_target: probeBySite.get(st.id) || ''
     }
   })
@@ -586,26 +596,13 @@ function generateHex64(): string {
 
 async function copyText(val: string, tag: string) {
   if (!val) return
-  try {
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-      await navigator.clipboard.writeText(val)
-    } else {
-      throw new Error('fallback')
-    }
-  } catch {
-    const ta = document.createElement('textarea')
-    ta.value = val
-    ta.style.position = 'fixed'
-    ta.style.opacity = '0'
-    document.body.appendChild(ta)
-    ta.select()
-    document.execCommand('copy')
-    document.body.removeChild(ta)
+  if (await copyToClipboard(val)) {
+    copiedTag.value = tag
+    toast.success(t('btnCopied'))
+    setTimeout(() => {
+      if (copiedTag.value === tag) copiedTag.value = ''
+    }, 1600)
   }
-  copiedTag.value = tag
-  setTimeout(() => {
-    if (copiedTag.value === tag) copiedTag.value = ''
-  }, 1600)
 }
 
 function onEditSiteIdInput() {
@@ -843,12 +840,14 @@ async function saveProfile(activate = true): Promise<string | null> {
     }
     output.value = JSON.stringify(res, null, 2)
     infoMsg.value = t('msgSaved', { id: res.id })
+    toast.success(t('msgSaved', { id: res.id }))
     note.value = ''
     hasUnappliedChanges.value = true
     await loadProfiles()
     return res.id
   } catch (e: any) {
     errMsg.value = e.message
+    toast.error(e.message)
     return null
   }
 }
@@ -868,11 +867,14 @@ async function saveAndApply(confirmed: boolean) {
       hasUnappliedChanges.value = false
       savedBaselineYAML.value = buildYAMLFromForm()
       infoMsg.value = t('msgSavedAndApplied', { id: pid })
+      toast.success(t('msgSavedAndApplied', { id: pid }))
     } else {
       infoMsg.value = t('msgDryRunDone')
+      toast.info(t('msgDryRunDone'))
     }
   } catch (e: any) {
     errMsg.value = e.message
+    toast.error(e.message)
   } finally {
     applyingBusy.value = false
   }
@@ -1000,14 +1002,22 @@ onBeforeUnmount(() => {
 <template>
   <div>
     <!-- Top Header & Sub-tabs -->
-    <div class="row" style="margin-bottom: 10px;">
-      <h2 style="margin: 0; font-size: 18px;">{{ t('navConfig') }}</h2>
-      <div class="spacer"></div>
-      <select v-model="hubRole" class="select" style="width: 155px;">
-        <option value="primary">{{ t('rolePrefixPrimary') }}</option>
-        <option value="backup">{{ t('rolePrefixBackup') }}</option>
-      </select>
-      <button class="btn btn-secondary" @click="loadExampleTemplate">{{ t('loadExample') }}</button>
+    <div class="page-header">
+      <h2 class="page-title">{{ t('navConfig') }}</h2>
+      <div class="row" style="gap: 8px;">
+        <select v-model="hubRole" class="select" style="width: 150px;">
+          <option value="primary">{{ t('rolePrefixPrimary') }}</option>
+          <option value="backup">{{ t('rolePrefixBackup') }}</option>
+        </select>
+        <button class="btn btn-secondary" @click="loadExampleTemplate">{{ t('loadExample') }}</button>
+        <button v-if="subTab === 'tunnels'" class="btn btn-secondary" :disabled="applyingBusy || !sites.length" @click="saveAndApply(false)">
+          {{ t('btnDryRun') }}
+        </button>
+        <button v-if="subTab === 'tunnels'" class="btn" @click="openNewSiteDrawer">
+          <Plus :size="14" />
+          <span>{{ t('newTunnelBtn').replace(/^\+\s*/, '') }}</span>
+        </button>
+      </div>
     </div>
 
     <div class="tabs-bar">
@@ -1052,25 +1062,29 @@ onBeforeUnmount(() => {
             <strong>{{ form.event_id || t('unnamed') }}</strong>
             <span class="muted" style="margin-left: 8px;">{{ form.event_name }}</span>
           </div>
-          <span class="pill" :class="form.hub_public_ip ? 'pill-info' : 'pill-warn'">
-            {{ form.hub_public_ip || t('hubIpUnset') }}
-          </span>
+          <span v-if="form.hub_public_ip" class="code-chip">{{ form.hub_public_ip }}</span>
+          <span v-else class="pill pill-warn">{{ t('hubIpUnset') }}</span>
           <span class="muted">
             {{ form.hub_id }}
             <template v-if="form.hub_location || form.hub_provider"> · {{ [form.hub_location, form.hub_provider].filter(Boolean).join(' / ') }}</template>
             <template v-if="form.hub_ike_value"> · IKE {{ form.hub_ike_type.toUpperCase() }}: {{ form.hub_ike_value }}</template>
           </span>
           <div class="spacer"></div>
-          <button class="btn btn-secondary btn-sm" @click="gatewayDrawerOpen = true">{{ t('editGatewayBtn') }}</button>
+          <button class="btn btn-secondary btn-sm" @click="gatewayDrawerOpen = true">
+            <SlidersHorizontal :size="13" />
+            <span>{{ t('editGatewayBtn') }}</span>
+          </button>
         </div>
       </div>
 
       <!-- VPN Tunnels Table -->
-      <div class="card">
-        <div class="row" style="margin-bottom: 12px;">
-          <h3 style="margin: 0;">{{ t('peerSitesTitle') }} ({{ sites.length }})</h3>
-          <div class="spacer"></div>
-          <button class="btn" @click="openNewSiteDrawer">{{ t('newTunnelBtn') }}</button>
+      <div class="card card-flush">
+        <div class="card-header">
+          <h3>{{ t('peerSitesTitle') }} ({{ sites.length }})</h3>
+          <button class="btn btn-sm" @click="openNewSiteDrawer">
+            <Plus :size="13" />
+            <span>{{ t('newTunnelBtn').replace(/^\+\s*/, '') }}</span>
+          </button>
         </div>
 
         <table v-if="sites.length" class="table">
@@ -1088,38 +1102,42 @@ onBeforeUnmount(() => {
             <tr v-for="(s, idx) in sites" :key="idx">
               <td>
                 <strong>{{ s.id || t('unnamed') }}</strong>
-                <div class="muted">{{ s.display_name }} · {{ siteRoleLabel(s.role) }}</div>
+                <div class="muted" style="font-size: 12px;">{{ s.display_name }} · {{ siteRoleLabel(s.role) }}</div>
               </td>
               <td>
-                <code>{{ s.public_endpoint }}</code>
-                <div v-if="s.ike_id_value" class="muted">{{ s.ike_id_type.toUpperCase() }}: {{ s.ike_id_value }}</div>
+                <span v-if="s.public_endpoint" class="code-chip">{{ s.public_endpoint }}</span>
+                <span v-else class="muted">-</span>
+                <div v-if="s.ike_id_value" class="muted" style="font-size: 11.5px;">{{ s.ike_id_type.toUpperCase() }}: {{ s.ike_id_value }}</div>
               </td>
-              <td><code>{{ s.lan_cidrs_text }}</code></td>
+              <td>
+                <div class="row" style="gap: 4px;">
+                  <span v-for="c in splitCIDRs(s.lan_cidrs_text)" :key="c" class="code-chip">{{ c }}</span>
+                  <span v-if="!splitCIDRs(s.lan_cidrs_text).length" class="muted">-</span>
+                </div>
+              </td>
               <td>
                 <div>{{ s.vendor }}</div>
-                <div class="muted">{{ selectorModeLabel(s.selector_mode) }}</div>
+                <div class="muted" style="font-size: 12px;">{{ selectorModeLabel(s.selector_mode) }}</div>
               </td>
               <td>
-                <button
-                  class="pill"
-                  :class="secretBySite.has(s.id) ? 'pill-ok' : 'pill-warn'"
-                  style="cursor: pointer;"
-                  @click="openPSKForSite(s.id)"
-                >
-                  {{ secretBySite.has(s.id) ? t('pskConfigured') : t('pskUnconfigured') }}
+                <button class="btn btn-ghost" style="padding: 3px 6px;" @click="openPSKForSite(s.id)">
+                  <StatusDot
+                    :state="secretBySite.has(s.id) ? 'ok' : 'warn'"
+                    :label="secretBySite.has(s.id) ? t('pskConfigured') : t('pskUnconfigured')"
+                  />
                 </button>
               </td>
               <td>
-                <div class="row" style="gap: 6px;">
-                  <button class="btn btn-secondary btn-sm" @click="openEditSiteDrawer(idx)">{{ t('editTunnelBtn') }}</button>
-                  <button v-if="selectedId" class="btn btn-secondary btn-sm" @click="emit('navigate', 'export', s.id)">{{ t('exportPeerBtn') }}</button>
-                  <button class="btn btn-danger btn-sm" @click="removeSite(idx)">{{ t('deleteBtn') }}</button>
+                <div class="row" style="gap: 2px;">
+                  <button class="btn btn-ghost" @click="openEditSiteDrawer(idx)">{{ t('editTunnelBtn') }}</button>
+                  <button v-if="selectedId" class="btn btn-ghost" @click="emit('navigate', 'export', s.id)">{{ t('exportPeerBtn') }}</button>
+                  <button class="btn btn-ghost" style="color: var(--danger-fg);" @click="removeSite(idx)">{{ t('deleteBtn') }}</button>
                 </div>
               </td>
             </tr>
           </tbody>
         </table>
-        <div v-else class="muted">{{ t('noTunnelsHint') }}</div>
+        <div v-else class="muted" style="padding: 22px 20px;">{{ t('noTunnelsHint') }}</div>
       </div>
 
       <!-- Traffic Policy + IKE/IPsec Crypto Params -->
@@ -1412,8 +1430,8 @@ onBeforeUnmount(() => {
     <div v-if="editingSite" class="drawer-backdrop" @click.self="closeDrawers">
       <div class="drawer-panel">
         <div class="drawer-header">
-          <h3 style="margin: 0;">{{ isNewSite ? t('drawerNewTunnel') : `${t('drawerEditTunnel')} · ${editingSite.id}` }}</h3>
-          <button class="btn btn-secondary btn-sm" @click="closeDrawers">{{ t('btnClose') }}</button>
+          <h3>{{ isNewSite ? t('drawerNewTunnel') : `${t('drawerEditTunnel')} · ${editingSite.id}` }}</h3>
+          <button class="btn btn-secondary btn-icon" @click="closeDrawers"><X :size="15" /></button>
         </div>
         <div class="drawer-body">
           <div v-if="errMsg" class="alert-banner alert-critical">{{ errMsg }}</div>
@@ -1474,10 +1492,17 @@ onBeforeUnmount(() => {
             <input v-model="editingSite.lan_cidrs_text" class="input" placeholder="10.101.10.0/24" />
           </div>
 
-          <div class="field">
-            <label>{{ t('probeTargetLabel') }}</label>
-            <input v-model="editingSite.probe_target" class="input" :placeholder="t('probeTargetPh')" />
-            <div class="muted" style="font-size: 11.5px; margin-top: 4px;">{{ t('probeTargetHint') }}</div>
+          <div class="grid-2">
+            <div class="field">
+              <label>{{ t('probeTargetLabel') }}</label>
+              <input v-model="editingSite.probe_target" class="input" :placeholder="t('probeTargetPh')" />
+              <div class="muted" style="font-size: 11.5px; margin-top: 4px;">{{ t('probeTargetHint') }}</div>
+            </div>
+            <div class="field">
+              <label>{{ t('tunnelLocalCidrLabel') }}</label>
+              <input v-model="editingSite.tunnel_local_cidr" class="input" :placeholder="t('tunnelLocalCidrPh')" />
+              <div class="muted" style="font-size: 11.5px; margin-top: 4px;">{{ t('tunnelLocalCidrHint') }}</div>
+            </div>
           </div>
 
           <div class="field">
@@ -1489,16 +1514,17 @@ onBeforeUnmount(() => {
             </select>
           </div>
 
-          <div class="muted" style="font-size: 12px; margin: -4px 0 12px; padding: 8px 10px; border-radius: 6px; background: rgba(59, 130, 246, 0.08); border: 1px solid rgba(59, 130, 246, 0.2);">
+          <div class="hint-box">
             {{ selectorModeHint(editingSite.selector_mode) }}
           </div>
 
-          <div class="sub-card" style="padding: 12px; margin-bottom: 12px;">
+          <div class="sub-card">
             <div class="row" style="margin-bottom: 8px;">
               <strong style="font-size: 13px;">{{ t('pskTitle') }}</strong>
-              <span class="pill" :class="secretBySite.has(editingSite.id) ? 'pill-ok' : 'pill-warn'">
-                {{ secretBySite.has(editingSite.id) ? t('pskConfigured') : t('pskUnconfigured') }}
-              </span>
+              <StatusDot
+                :state="secretBySite.has(editingSite.id) ? 'ok' : 'warn'"
+                :label="secretBySite.has(editingSite.id) ? t('pskConfigured') : t('pskUnconfigured')"
+              />
               <div class="spacer"></div>
               <button
                 v-if="secretBySite.has(editingSite.id)"
@@ -1506,7 +1532,8 @@ onBeforeUnmount(() => {
                 :disabled="revealingSite === editingSite.id"
                 @click="revealSitePSK(editingSite.id, editingSite.secret_ref)"
               >
-                {{ t('btnShowPsk') }}
+                <Eye :size="13" />
+                <span>{{ t('btnShowPsk') }}</span>
               </button>
             </div>
             <div class="field" style="margin-bottom: 8px;">
@@ -1514,18 +1541,22 @@ onBeforeUnmount(() => {
                 v-model="editingSite.psk_draft"
                 class="input"
                 type="text"
-                style="font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px;"
+                style="font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px;"
                 :placeholder="t('pskHexPh')"
               />
             </div>
             <div class="row" style="margin-bottom: 6px;">
-              <button class="btn btn-secondary btn-sm" @click="editingSite.psk_draft = generateHex64()">{{ t('btnRandomGen') }}</button>
+              <button class="btn btn-secondary btn-sm" @click="editingSite.psk_draft = generateHex64()">
+                <RefreshCw :size="12" />
+                <span>{{ t('btnRandomGen') }}</span>
+              </button>
               <button
                 class="btn btn-secondary btn-sm"
                 :disabled="!editingSite.psk_draft"
                 @click="copyText(editingSite.psk_draft || '', 'drawer-psk')"
               >
-                {{ copiedTag === 'drawer-psk' ? t('btnCopied') : t('btnCopyPsk') }}
+                <Copy :size="12" />
+                <span>{{ copiedTag === 'drawer-psk' ? t('btnCopied') : t('btnCopyPsk') }}</span>
               </button>
               <button
                 class="btn btn-sm"
@@ -1599,8 +1630,8 @@ onBeforeUnmount(() => {
     <div v-if="gatewayDrawerOpen" class="drawer-backdrop" @click.self="closeDrawers">
       <div class="drawer-panel">
         <div class="drawer-header">
-          <h3 style="margin: 0;">{{ t('drawerEditGateway') }}</h3>
-          <button class="btn btn-secondary btn-sm" @click="closeDrawers">{{ t('btnClose') }}</button>
+          <h3>{{ t('drawerEditGateway') }}</h3>
+          <button class="btn btn-secondary btn-icon" @click="closeDrawers"><X :size="15" /></button>
         </div>
         <div class="drawer-body">
           <div v-if="errMsg" class="alert-banner alert-critical">{{ errMsg }}</div>

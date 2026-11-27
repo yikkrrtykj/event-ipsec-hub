@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -547,7 +548,7 @@ func (d *Daemon) CollectOnce(ctx context.Context) error {
 		// Layer 4 end-to-end inner probe (if configured for this site in active profile)
 		l4Res := telemetry.InnerProbeResult{State: telemetry.StateUnknown}
 		if ps, ok := innerProbes[l.SiteID]; ok {
-			l4Res = telemetry.ProbeInner(ctx, ps.Protocol, ps.Target, ps.Port, "", "")
+			l4Res = telemetry.ProbeInner(ctx, ps.Protocol, ps.Target, ps.Port, l.TunnelLocalIP(), "")
 		}
 
 		sample := storage.MetricSample{
@@ -728,7 +729,16 @@ func (d *Daemon) Serve(ctx context.Context) error {
 				_ = d.CollectOnce(ctx)
 			case <-pruneTicker.C:
 				if d.store != nil {
-					cutoff := time.Now().Add(-time.Duration(d.cfg.RetentionDays) * 24 * time.Hour).UnixMilli()
+					days := d.cfg.RetentionDays
+					if raw, ok, _ := d.store.GetKV("retention_days"); ok && raw != "" {
+						if parsed, err := strconv.Atoi(strings.TrimSpace(raw)); err == nil && parsed >= 1 && parsed <= 90 {
+							days = parsed
+						}
+					}
+					if days <= 0 {
+						days = 14
+					}
+					cutoff := time.Now().Add(-time.Duration(days) * 24 * time.Hour).UnixMilli()
 					_, _ = d.store.PruneOlderThan(cutoff)
 				}
 			}

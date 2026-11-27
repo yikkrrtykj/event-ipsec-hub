@@ -1,7 +1,24 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue'
+import {
+  Activity,
+  ArrowLeftRight,
+  Bell,
+  FileOutput,
+  GitCompareArrows,
+  Languages,
+  LayoutGrid,
+  LogOut,
+  Moon,
+  ScrollText,
+  Settings,
+  Shield,
+  Sun
+} from 'lucide-vue-next'
 import { api } from './api'
 import { lang, t, toggleLang } from './i18n'
+import { theme, toggleTheme } from './theme'
+import ToastHost from './components/ToastHost.vue'
 import DashboardView from './views/DashboardView.vue'
 import DiagnosticsView from './views/DiagnosticsView.vue'
 import EventsView from './views/EventsView.vue'
@@ -14,7 +31,7 @@ import SecurityAuditView from './views/SecurityAuditView.vue'
 const user = ref<any>(null)
 const checking = ref(true)
 const activeTab = ref('dashboard')
-const diagSite = ref('ob-venue-1')
+const diagSite = ref('')
 const diagFocusTs = ref<number | null>(null)
 const eventSite = ref('')
 const exportSite = ref('')
@@ -23,6 +40,17 @@ const username = ref('admin')
 const password = ref('')
 const totpCode = ref('')
 const loginErr = ref('')
+
+const navIcons: Record<string, any> = {
+  dashboard: LayoutGrid,
+  config: ArrowLeftRight,
+  export: FileOutput,
+  diagnostics: Activity,
+  events: ScrollText,
+  failover: GitCompareArrows,
+  alerts: Bell,
+  security: Settings
+}
 
 const navGroups = computed(() => [
   {
@@ -118,37 +146,52 @@ onMounted(checkAuth)
 
   <div v-else-if="!user" class="login-wrap">
     <div class="login-card">
-      <div class="row" style="margin-bottom: 6px;">
-        <h2 style="margin: 0;">{{ t('consoleTitle') }}</h2>
+      <div class="row" style="margin-bottom: 18px;">
+        <div class="brand-mark">
+          <Shield :size="16" :stroke-width="2" />
+        </div>
+        <div>
+          <h2 style="margin: 0; font-size: 16px; font-weight: 650;">{{ t('consoleTitle') }}</h2>
+          <div class="muted" style="font-size: 11.5px; font-family: ui-monospace, monospace;">event-ipsec-hub</div>
+        </div>
         <div class="spacer"></div>
-        <button class="btn btn-secondary" style="padding: 4px 10px; font-size: 12px;" @click="toggleLang">
+        <button class="btn btn-secondary btn-icon" :title="t('switchThemeTitle')" @click="toggleTheme">
+          <Sun v-if="theme === 'dark'" :size="15" />
+          <Moon v-else :size="15" />
+        </button>
+        <button class="btn btn-secondary btn-sm" @click="toggleLang">
           {{ lang === 'zh' ? 'EN' : '中文' }}
         </button>
       </div>
-      <div class="muted" style="margin-bottom: 18px;">event-ipsec-hub</div>
       <div v-if="loginErr" class="alert-banner alert-critical">{{ loginErr }}</div>
       <div class="field">
         <label>{{ t('username') }}</label>
-        <input v-model="username" class="input" @keyup.enter="login" />
+        <input v-model="username" class="input" autocomplete="username" @keyup.enter="login" />
       </div>
       <div class="field">
         <label>{{ t('password') }}</label>
-        <input v-model="password" type="password" class="input" @keyup.enter="login" />
+        <input v-model="password" type="password" class="input" autocomplete="current-password" @keyup.enter="login" />
       </div>
       <div class="field">
         <label>{{ t('totpLabel') }}</label>
-        <input v-model="totpCode" class="input" :placeholder="t('totpPlaceholder')" @keyup.enter="login" />
+        <input v-model="totpCode" class="input" :placeholder="t('totpPlaceholder')" inputmode="numeric" @keyup.enter="login" />
       </div>
-      <button class="btn" style="width: 100%; margin-top: 6px;" @click="login">{{ t('loginBtn') }}</button>
+      <button class="btn" style="width: 100%; margin-top: 6px; padding: 9px 14px;" @click="login">{{ t('loginBtn') }}</button>
     </div>
   </div>
 
   <div v-else class="layout">
     <aside class="sidebar">
       <div class="brand">
-        <h1>{{ t('brandTitle') }}</h1>
-        <span>event-ipsec-hub</span>
+        <div class="brand-mark">
+          <Shield :size="16" :stroke-width="2" />
+        </div>
+        <div>
+          <h1>{{ t('brandTitle') }}</h1>
+          <span>event-ipsec-hub</span>
+        </div>
       </div>
+
       <template v-for="group in navGroups" :key="group.title">
         <div class="nav-group">{{ group.title }}</div>
         <button
@@ -158,13 +201,15 @@ onMounted(checkAuth)
           :class="{ active: activeTab === item.id }"
           @click="selectTab(item.id)"
         >
-          {{ item.label }}
+          <component :is="navIcons[item.id]" :size="16" :stroke-width="1.75" />
+          <span>{{ item.label }}</span>
         </button>
       </template>
+
       <div class="spacer"></div>
-      <div class="muted" style="padding: 10px 8px; border-top: 1px solid var(--border);">
-        {{ user.username }} · {{ user.role === 'admin' ? t('roleAdmin') : t('roleReadonly') }}
-        <div v-if="user.must_change_password" style="color: #fbbf24; margin-top: 4px;">
+      <div class="sidebar-footer">
+        <div style="font-weight: 500; color: var(--text-main);">{{ user.username }} · {{ user.role === 'admin' ? t('roleAdmin') : t('roleReadonly') }}</div>
+        <div v-if="user.must_change_password" style="color: var(--warn-fg); margin-top: 4px; font-size: 11.5px;">
           {{ t('mustChangePass') }}
         </div>
       </div>
@@ -173,12 +218,22 @@ onMounted(checkAuth)
     <div class="main">
       <header class="topbar">
         <div class="row">
-          <strong style="font-size: 14px;">{{ activeLabel }}</strong>
+          <strong style="font-size: 14.5px; font-weight: 600;">{{ activeLabel }}</strong>
           <span v-if="user.demo_mode" class="pill pill-warn">{{ t('demoEnv') }}</span>
         </div>
-        <div class="row">
-          <button class="btn btn-secondary" @click="toggleLang">{{ lang === 'zh' ? 'English' : '中文' }}</button>
-          <button class="btn btn-secondary" @click="logout">{{ t('logout') }}</button>
+        <div class="row" style="gap: 8px;">
+          <button class="btn btn-secondary btn-icon" :title="t('switchThemeTitle')" @click="toggleTheme">
+            <Sun v-if="theme === 'dark'" :size="15" />
+            <Moon v-else :size="15" />
+          </button>
+          <button class="btn btn-secondary btn-sm" @click="toggleLang">
+            <Languages :size="14" />
+            <span>{{ lang === 'zh' ? 'English' : '中文' }}</span>
+          </button>
+          <button class="btn btn-secondary btn-sm" @click="logout">
+            <LogOut :size="14" />
+            <span>{{ t('logout') }}</span>
+          </button>
         </div>
       </header>
 
@@ -199,4 +254,6 @@ onMounted(checkAuth)
       </main>
     </div>
   </div>
+
+  <ToastHost />
 </template>

@@ -1,7 +1,10 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
+import { Download, RotateCcw, Search, Activity } from 'lucide-vue-next'
 import { api, downloadTextFile, fmtDateTime, type TimelineEvent } from '../api'
 import { sourceLabel, t } from '../i18n'
+import StatusDot from '../components/StatusDot.vue'
+import { toast } from '../toast'
 
 const props = defineProps<{ initialSite?: string }>()
 const emit = defineEmits<{ (e: 'navigate', tab: string, site?: string, focusTsMs?: number): void }>()
@@ -124,6 +127,7 @@ function exportCSV() {
   ])
   const csv = '\uFEFF' + [header, ...rows].map((r) => r.map(esc).join(',')).join('\n')
   downloadTextFile(`vpn-events-page${page.value}.csv`, csv)
+  toast.success(`vpn-events-page${page.value}.csv`)
 }
 
 watch(() => props.initialSite, (v) => {
@@ -141,10 +145,12 @@ onMounted(async () => {
 
 <template>
   <div>
-    <div class="row" style="margin-bottom: 14px;">
-      <h2 style="margin: 0; font-size: 18px;">{{ t('navEvents') }}</h2>
-      <div class="spacer"></div>
-      <button class="btn btn-secondary" :disabled="!events.length" @click="exportCSV">{{ t('btnExportCsv') }}</button>
+    <div class="page-header">
+      <h2 class="page-title">{{ t('navEvents') }}</h2>
+      <button class="btn btn-secondary btn-sm" :disabled="!events.length" @click="exportCSV">
+        <Download :size="14" :stroke-width="1.75" />
+        {{ t('btnExportCsv') }}
+      </button>
     </div>
 
     <div v-if="errMsg" class="alert-banner alert-critical">{{ errMsg }}</div>
@@ -196,56 +202,63 @@ onMounted(async () => {
           :placeholder="t('keywordPh')"
           @keyup.enter="search(1)"
         />
-        <button class="btn" :disabled="loading" @click="search(1)">{{ t('btnSearch') }}</button>
-        <button class="btn btn-secondary" @click="resetFilters">{{ t('btnReset') }}</button>
+        <button class="btn" :disabled="loading" @click="search(1)">
+          <Search :size="14" :stroke-width="1.75" />
+          {{ t('btnSearch') }}
+        </button>
+        <button class="btn btn-secondary" @click="resetFilters">
+          <RotateCcw :size="14" :stroke-width="1.75" />
+          {{ t('btnReset') }}
+        </button>
       </div>
     </div>
 
     <!-- Paginated Event Results -->
-    <div class="card">
+    <div class="card card-flush">
       <table v-if="events.length" class="table">
         <thead>
           <tr>
             <th style="width: 165px;">{{ t('colTime') }}</th>
-            <th style="width: 80px;">{{ t('colLevel') }}</th>
+            <th style="width: 90px;">{{ t('colLevel') }}</th>
             <th style="width: 120px;">{{ t('colLayer') }}</th>
             <th style="width: 130px;">{{ t('colSite') }}</th>
             <th style="width: 160px;">{{ t('colEvent') }}</th>
             <th style="width: 110px;">{{ t('colSource') }}</th>
             <th>{{ t('colDetail') }}</th>
-            <th style="width: 105px;">{{ t('colAction') }}</th>
+            <th style="width: 110px;">{{ t('colAction') }}</th>
           </tr>
         </thead>
         <tbody>
           <tr v-for="ev in events" :key="ev.id || ev.ts_ms">
-            <td>{{ fmtDateTime(ev.ts_ms) }}</td>
+            <td class="mono" style="font-size: 12px;">{{ fmtDateTime(ev.ts_ms) }}</td>
             <td>
-              <span class="pill" :class="ev.severity === 'critical' ? 'pill-critical' : ev.severity === 'warning' ? 'pill-warn' : 'pill-info'">
-                {{ ev.severity === 'critical' ? t('sevCritical') : ev.severity === 'warning' ? t('sevWarning') : t('sevInfo') }}
-              </span>
+              <StatusDot
+                :state="ev.severity === 'critical' ? 'critical' : ev.severity === 'warning' ? 'warn' : 'ok'"
+                :label="ev.severity === 'critical' ? t('sevCritical') : ev.severity === 'warning' ? t('sevWarning') : t('sevInfo')"
+              />
             </td>
             <td class="muted">{{ layerText(ev.layer) }}</td>
             <td>
               <a
                 v-if="ev.site_id"
                 href="#"
-                style="color: #60a5fa; text-decoration: none; font-weight: 500;"
+                style="color: var(--text-main); text-decoration: underline; text-underline-offset: 3px; font-weight: 500;"
                 @click.prevent="emit('navigate', 'diagnostics', ev.site_id, ev.ts_ms)"
               >
                 {{ ev.site_id }}
               </a>
               <span v-else class="muted">-</span>
             </td>
-            <td><code>{{ ev.category }}</code></td>
+            <td><span class="code-chip">{{ ev.category }}</span></td>
             <td>{{ sourceLabel(ev.source) }}</td>
             <td>{{ ev.title }}</td>
             <td>
               <button
                 v-if="ev.site_id"
-                class="btn btn-secondary"
-                style="padding: 4px 10px; font-size: 12px;"
+                class="btn btn-ghost btn-sm"
                 @click="emit('navigate', 'diagnostics', ev.site_id, ev.ts_ms)"
               >
+                <Activity :size="13" :stroke-width="1.75" />
                 {{ t('viewChartBtn') }}
               </button>
               <span v-else class="muted">-</span>
@@ -253,18 +266,18 @@ onMounted(async () => {
           </tr>
         </tbody>
       </table>
-      <div v-else class="muted">{{ t('noMatchedEvents') }}</div>
+      <div v-else class="muted" style="padding: 28px 18px; text-align: center;">{{ t('noMatchedEvents') }}</div>
 
-      <div class="row" style="margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border);">
-        <span class="muted">{{ t('pageSummary', { total, page, pages: totalPages }) }}</span>
+      <div class="row" style="padding: 12px 16px; border-top: 1px solid var(--border);">
+        <span class="muted" style="font-size: 12.5px;">{{ t('pageSummary', { total, page, pages: totalPages }) }}</span>
         <div class="spacer"></div>
         <select v-model.number="pageSize" class="select" style="width: 115px;" @change="search(1)">
           <option :value="25">{{ t('perPage', { n: 25 }) }}</option>
           <option :value="50">{{ t('perPage', { n: 50 }) }}</option>
           <option :value="100">{{ t('perPage', { n: 100 }) }}</option>
         </select>
-        <button class="btn btn-secondary" :disabled="page <= 1" @click="search(page - 1)">{{ t('prevPage') }}</button>
-        <button class="btn btn-secondary" :disabled="page >= totalPages" @click="search(page + 1)">{{ t('nextPage') }}</button>
+        <button class="btn btn-secondary btn-sm" :disabled="page <= 1" @click="search(page - 1)">{{ t('prevPage') }}</button>
+        <button class="btn btn-secondary btn-sm" :disabled="page >= totalPages" @click="search(page + 1)">{{ t('nextPage') }}</button>
       </div>
     </div>
   </div>

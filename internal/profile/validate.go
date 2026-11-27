@@ -575,6 +575,29 @@ func validateTopology(p *Profile) error {
 		return err
 	}
 
+	var tunnelPrefixes []netip.Prefix
+	for _, l := range p.SiteLinks {
+		if l.TunnelLocalCIDR == "" {
+			continue
+		}
+		pref, err := netip.ParsePrefix(l.TunnelLocalCIDR)
+		if err != nil || !pref.Addr().Is4() || pref.Bits() < 29 || pref.Bits() > 31 {
+			return profileErr("Invalid tunnel_local_cidr (expected IPv4 /29, /30, or /31 host CIDR).")
+		}
+		if pref.Bits() < 31 {
+			// Reject network address (masked == addr) for /29 and /30.
+			if pref.Addr() == pref.Masked().Addr() {
+				return profileErr("tunnel_local_cidr must specify a host address, not the network address.")
+			}
+		}
+		for _, prev := range tunnelPrefixes {
+			if prev.Overlaps(pref) {
+				return profileErr("tunnel_local_cidr subnets must not overlap across links.")
+			}
+		}
+		tunnelPrefixes = append(tunnelPrefixes, pref)
+	}
+
 	if len(linkSiteSet) != len(siteMap) {
 		return profileErr("Each site must have exactly one link (or Dual-ISP links) and no unknown links.")
 	}

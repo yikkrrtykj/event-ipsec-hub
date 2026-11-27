@@ -111,6 +111,7 @@ func buildConnections(p *profile.Profile) []map[string]any {
 			"peer_local_ts":          l.RemoteTS,
 			"peer_remote_ts":         l.LocalTS,
 			"selector_mode":          l.SelectorMode,
+			"tunnel_local_cidr":      l.TunnelLocalCIDR,
 			"primary_route_priority": prio,
 			"ike": map[string]any{
 				"version":           2,
@@ -331,6 +332,32 @@ func profileDigest(p *profile.Profile) string {
 	return manifest.Digest(b)
 }
 
+func suggestPeerTunnelCIDR(hubCIDR string) string {
+	pfx, err := netip.ParsePrefix(strings.TrimSpace(hubCIDR))
+	if err != nil || !pfx.Addr().Is4() {
+		return ""
+	}
+	bits := pfx.Bits()
+	a := pfx.Addr().As4()
+	if bits == 31 {
+		a[3] ^= 1
+		return fmt.Sprintf("%s/%d", netip.AddrFrom4(a).String(), bits)
+	}
+	if bits == 30 {
+		base := pfx.Masked().Addr().As4()
+		hostOffset := a[3] - base[3]
+		if hostOffset == 1 {
+			base[3] += 2
+			return fmt.Sprintf("%s/%d", netip.AddrFrom4(base).String(), bits)
+		}
+		if hostOffset == 2 {
+			base[3] += 1
+			return fmt.Sprintf("%s/%d", netip.AddrFrom4(base).String(), bits)
+		}
+	}
+	return ""
+}
+
 // PeerParameters generates the site-perspective handoff JSON payload.
 func PeerParameters(p *profile.Profile, siteID, template string) (map[string]any, error) {
 	var site *profile.Site
@@ -445,11 +472,12 @@ func PeerParameters(p *profile.Profile, siteID, template string) (map[string]any
 			"allow_native_esp_only_if_required": true,
 			"status":                             "SKIP",
 		},
-		"ike":           conn["ike"],
-		"child":         conn["child"],
-		"selector_mode": selectorMode,
-		"local_ts":      localTS,
-		"remote_ts":     remoteTS,
+		"ike":               conn["ike"],
+		"child":             conn["child"],
+		"selector_mode":     selectorMode,
+		"tunnel_local_cidr": conn["tunnel_local_cidr"],
+		"local_ts":          localTS,
+		"remote_ts":         remoteTS,
 		"allowed_traffic": map[string]any{
 			"remote_site_id":  strings.Join(remoteIDs, ", "),
 			"remote_site_ids": remoteIDs,
@@ -531,7 +559,15 @@ func RenderPeerMarkdown(data map[string]any) string {
 	fmt.Fprintf(&b, "| 提议 | `%s` |\n", child["proposal"])
 	fmt.Fprintf(&b, "| 生存期 | `%vs` |\n", child["lifetime_seconds"])
 	fmt.Fprintf(&b, "| 本端 Traffic Selectors | `%s` |\n", strings.Join(localTS, ", "))
-	fmt.Fprintf(&b, "| 远端 Traffic Selectors | `%s` |\n\n", strings.Join(remoteTS, ", "))
+	fmt.Fprintf(&b, "| 远端 Traffic Selectors | `%s` |\n", strings.Join(remoteTS, ", "))
+	fmt.Fprintf(&b, "| 建议 MTU / TCP MSS | `MTU 1400 / TCP MSS 1360` |\n")
+	if hubTun, _ := data["tunnel_local_cidr"].(string); hubTun != "" {
+		fmt.Fprintf(&b, "| Hub 侧隧道接口 IP | `%s` |\n", hubTun)
+		if peerTun := suggestPeerTunnelCIDR(hubTun); peerTun != "" {
+			fmt.Fprintf(&b, "| 本端建议 tunnel 接口 IP | `%s`（配置后可供 Hub 内网探活） |\n", peerTun)
+		}
+	}
+	b.WriteString("\n")
 	return b.String()
 }
 

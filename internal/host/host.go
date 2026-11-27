@@ -1035,11 +1035,18 @@ func (h *OSHost) Baseline(
 		}
 	}
 	for _, r := range routes {
-		if _, ok := ownedRoutes[ParseRouteKey(r)]; !ok {
-			foreignRoutes = append(foreignRoutes, r)
-			if r["dst"] == "default" {
-				defaultRoutes = append(defaultRoutes, r)
+		rk := ParseRouteKey(r)
+		if _, ok := ownedRoutes[rk]; ok {
+			continue
+		}
+		if rk.Protocol == "kernel" && rk.Dev != "" {
+			if _, ok := ownedLinks[rk.Dev]; ok {
+				continue
 			}
+		}
+		foreignRoutes = append(foreignRoutes, r)
+		if r["dst"] == "default" {
+			defaultRoutes = append(defaultRoutes, r)
 		}
 	}
 	for _, l := range links {

@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { RefreshCw, ArrowRight } from 'lucide-vue-next'
 import { api, fmtDateTime, type SyncedTimelineResponse } from '../api'
 import { causeLabel, causeSummary, t } from '../i18n'
 import SyncedFourLayerCharts from '../components/SyncedFourLayerCharts.vue'
@@ -93,35 +94,36 @@ onBeforeUnmount(() => {
 
 <template>
   <div>
-    <div class="row" style="margin-bottom: 14px;">
-      <select v-if="siteOptions.length" v-model="site" class="select" style="width: 190px;" @change="load">
-        <option v-for="s in siteOptions" :key="s" :value="s">{{ s }}</option>
-      </select>
-      <input v-else v-model="site" class="input" style="width: 190px;" :placeholder="t('sitePlaceholder')" />
-
-      <select v-model.number="minutes" class="select" style="width: 135px;" @change="onRangeChange">
-        <option :value="15">{{ t('range15m') }}</option>
-        <option :value="60">{{ t('range1h') }}</option>
-        <option :value="360">{{ t('range6h') }}</option>
-        <option :value="1440">{{ t('range24h') }}</option>
-        <option :value="10080">{{ t('range7d') }}</option>
-      </select>
-
-      <select v-model.number="autoRefreshSec" class="select" style="width: 155px;" :disabled="Boolean(activeFocusTs)">
-        <option :value="0">{{ t('autoRefreshOff') }}</option>
-        <option :value="15">{{ t('autoRefresh15s') }}</option>
-        <option :value="30">{{ t('autoRefresh30s') }}</option>
-        <option :value="60">{{ t('autoRefresh60s') }}</option>
-      </select>
-
-      <button class="btn" @click="load">{{ t('refresh') }}</button>
-
-      <div v-if="autoRefreshSec > 0 && !activeFocusTs" class="row" style="gap: 6px;">
-        <span class="live-dot"></span>
-        <span class="muted">{{ t('liveUpdating') }}</span>
+    <div class="page-header">
+      <div class="row" style="gap: 8px;">
+        <h2 class="page-title">{{ t('navDiagnostics') }}</h2>
+        <select v-if="siteOptions.length" v-model="site" class="select" style="width: 175px;" @change="load">
+          <option v-for="s in siteOptions" :key="s" :value="s">{{ s }}</option>
+        </select>
+        <input v-else v-model="site" class="input" style="width: 175px;" :placeholder="t('sitePlaceholder')" />
       </div>
-      <div class="spacer"></div>
-      <span class="muted">{{ t('chartsSyncHint') }}</span>
+
+      <div class="row" style="gap: 8px;">
+        <select v-model.number="minutes" class="select" style="width: 130px;" @change="onRangeChange">
+          <option :value="15">{{ t('range15m') }}</option>
+          <option :value="60">{{ t('range1h') }}</option>
+          <option :value="360">{{ t('range6h') }}</option>
+          <option :value="1440">{{ t('range24h') }}</option>
+          <option :value="10080">{{ t('range7d') }}</option>
+        </select>
+
+        <select v-model.number="autoRefreshSec" class="select" style="width: 145px;" :disabled="Boolean(activeFocusTs)">
+          <option :value="0">{{ t('autoRefreshOff') }}</option>
+          <option :value="15">{{ t('autoRefresh15s') }}</option>
+          <option :value="30">{{ t('autoRefresh30s') }}</option>
+          <option :value="60">{{ t('autoRefresh60s') }}</option>
+        </select>
+
+        <button class="btn btn-secondary" @click="load">
+          <RefreshCw :size="14" :stroke-width="1.75" />
+          {{ t('refresh') }}
+        </button>
+      </div>
     </div>
 
     <div v-if="activeFocusTs" class="alert-banner alert-warn">
@@ -166,8 +168,9 @@ onBeforeUnmount(() => {
         <div class="row">
           <span class="muted">{{ t('windowEventSummary', { n: timeline.events.length }) }}</span>
           <div class="spacer"></div>
-          <button class="btn btn-secondary" @click="emit('navigate', 'events', site)">
+          <button class="btn btn-secondary btn-sm" @click="emit('navigate', 'events', site)">
             {{ t('openEventsPage') }}
+            <ArrowRight :size="13" :stroke-width="1.75" />
           </button>
         </div>
       </div>

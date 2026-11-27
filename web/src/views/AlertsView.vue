@@ -1,7 +1,10 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue'
+import { Send } from 'lucide-vue-next'
 import { api, fmtDateTime } from '../api'
 import { alertMetricMeta, alertRuleNameLabel, alertStatusLabel, causeLabel, sourceLabel, t } from '../i18n'
+import { toast } from '../toast'
+import StatusDot from '../components/StatusDot.vue'
 
 const rules = ref<any[]>([])
 const history = ref<any[]>([])
@@ -14,7 +17,6 @@ const channelMeta = ref<{ configured: boolean; enabled: boolean; masked_url: str
 const feishuEnabled = ref(true)
 const feishuURL = ref('')
 const feishuSecret = ref('')
-const msg = ref('')
 const errMsg = ref('')
 
 async function load() {
@@ -38,7 +40,6 @@ async function load() {
 
 async function saveChannel() {
   errMsg.value = ''
-  msg.value = ''
   try {
     const res = await api('/api/v1/alerts/channel', {
       method: 'PUT',
@@ -57,20 +58,21 @@ async function saveChannel() {
     }
     feishuURL.value = ''
     feishuSecret.value = ''
-    msg.value = t('msgChannelSaved')
+    toast.success(t('msgChannelSaved'))
   } catch (e: any) {
     errMsg.value = e.message
+    toast.error(e.message)
   }
 }
 
 async function saveRule(rule: any) {
   errMsg.value = ''
-  msg.value = ''
   try {
     await api('/api/v1/alerts/rules', { method: 'PUT', body: JSON.stringify(rule) })
-    msg.value = t('msgRuleSaved', { name: alertRuleNameLabel(rule.name) })
+    toast.success(t('msgRuleSaved', { name: alertRuleNameLabel(rule.name) }))
   } catch (e: any) {
     errMsg.value = e.message
+    toast.error(e.message)
   }
 }
 
@@ -91,15 +93,15 @@ function updateThreshold(rule: any, rawVal: string) {
 
 async function testFeishu() {
   errMsg.value = ''
-  msg.value = ''
   try {
     await api('/api/v1/alerts/feishu/test', {
       method: 'POST',
       body: JSON.stringify({ webhook_url: feishuURL.value.trim(), secret: feishuSecret.value })
     })
-    msg.value = t('msgFeishuSent')
+    toast.success(t('msgFeishuSent'))
   } catch (e: any) {
     errMsg.value = e.message
+    toast.error(e.message)
   }
 }
 
@@ -108,17 +110,19 @@ onMounted(load)
 
 <template>
   <div>
-    <h2 style="margin: 0 0 14px; font-size: 18px;">{{ t('navAlerts') }}</h2>
+    <div class="page-header">
+      <h2 class="page-title">{{ t('navAlerts') }}</h2>
+    </div>
     <div v-if="errMsg" class="alert-banner alert-critical">{{ errMsg }}</div>
-    <div v-if="msg" class="alert-banner alert-ok">{{ msg }}</div>
 
     <div class="card">
       <div class="row" style="margin-bottom: 12px;">
         <h3 style="margin: 0;">{{ t('feishuTitle') }}</h3>
-        <span class="pill" :class="channelMeta.configured && channelMeta.enabled ? 'pill-ok' : 'pill-warn'">
-          {{ channelMeta.configured ? t('feishuConfigured') : t('feishuNotConfigured') }}
-        </span>
-        <code v-if="channelMeta.masked_url" class="muted">{{ channelMeta.masked_url }}</code>
+        <StatusDot
+          :state="channelMeta.configured && channelMeta.enabled ? 'ok' : 'unknown'"
+          :label="channelMeta.configured ? t('feishuConfigured') : t('feishuNotConfigured')"
+        />
+        <span v-if="channelMeta.masked_url" class="code-chip">{{ channelMeta.masked_url }}</span>
       </div>
       <div v-if="channelMeta.configured" class="muted" style="margin-bottom: 10px;">
         {{ t('feishuLeaveBlankHint') }}
@@ -139,13 +143,18 @@ onMounted(load)
           <span>{{ t('feishuEnabledCb') }}</span>
         </label>
         <div class="spacer"></div>
-        <button class="btn btn-secondary" @click="testFeishu">{{ t('btnSendTest') }}</button>
+        <button class="btn btn-secondary" @click="testFeishu">
+          <Send :size="13" />
+          <span>{{ t('btnSendTest') }}</span>
+        </button>
         <button class="btn" @click="saveChannel">{{ t('btnSaveChannel') }}</button>
       </div>
     </div>
 
-    <div class="card">
-      <h3>{{ t('alertRulesTitle') }}</h3>
+    <div class="card card-flush">
+      <div class="card-header">
+        <h3>{{ t('alertRulesTitle') }}</h3>
+      </div>
       <table class="table">
         <thead>
           <tr>
@@ -162,17 +171,17 @@ onMounted(load)
           <tr v-for="r in rules" :key="r.id">
             <td><input type="checkbox" v-model="r.enabled" /></td>
             <td>
-              <strong>{{ alertRuleNameLabel(r.name) }}</strong>
+              <div style="font-weight: 600;">{{ alertRuleNameLabel(r.name) }}</div>
               <div class="muted" style="font-size: 11px;"><code>{{ r.name }}</code></div>
             </td>
             <td>{{ alertMetricMeta(r.metric).label }}</td>
             <td>
               <span v-if="alertMetricMeta(r.metric).isBinaryState" class="pill pill-unknown">{{ t('triggerOnDown') }}</span>
-              <div v-else class="row" style="gap: 4px;">
+              <div v-else class="row" style="gap: 6px;">
                 <input
                   :value="displayThreshold(r)"
                   type="number"
-                  :step="alertMetricMeta(r.metric).isPercent ? 1 : 1"
+                  step="1"
                   class="input"
                   style="width: 78px;"
                   @input="updateThreshold(r, ($event.target as HTMLInputElement).value)"
@@ -180,20 +189,23 @@ onMounted(load)
                 <span v-if="alertMetricMeta(r.metric).unit" class="muted">{{ alertMetricMeta(r.metric).unit }}</span>
               </div>
             </td>
-            <td><input v-model.number="r.cooldown_seconds" type="number" class="input" style="width: 85px;" /></td>
+            <td><input v-model.number="r.cooldown_seconds" type="number" class="input" style="width: 82px;" /></td>
             <td>
-              <span class="pill" :class="r.severity === 'critical' ? 'pill-critical' : 'pill-warn'">
-                {{ r.severity === 'critical' ? t('sevCritical') : t('sevWarning') }}
-              </span>
+              <StatusDot
+                :state="r.severity === 'critical' ? 'critical' : 'warn'"
+                :label="r.severity === 'critical' ? t('sevCritical') : t('sevWarning')"
+              />
             </td>
-            <td><button class="btn btn-secondary" @click="saveRule(r)">{{ t('btnSaveShort') }}</button></td>
+            <td><button class="btn btn-secondary btn-sm" @click="saveRule(r)">{{ t('btnSaveShort') }}</button></td>
           </tr>
         </tbody>
       </table>
     </div>
 
-    <div class="card">
-      <h3>{{ t('alertHistoryTitle') }}</h3>
+    <div class="card card-flush">
+      <div class="card-header">
+        <h3>{{ t('alertHistoryTitle') }}</h3>
+      </div>
       <table v-if="history.length" class="table">
         <thead>
           <tr>
@@ -208,24 +220,25 @@ onMounted(load)
         </thead>
         <tbody>
           <tr v-for="h in history" :key="h.id">
-            <td>{{ fmtDateTime(h.ts_ms) }}</td>
+            <td class="muted">{{ fmtDateTime(h.ts_ms) }}</td>
             <td>
-              <span class="pill" :class="h.status === 'FIRING' ? 'pill-critical' : h.status === 'RECOVERED' ? 'pill-ok' : 'pill-warn'">
-                {{ alertStatusLabel(h.status) }}
-              </span>
+              <StatusDot
+                :state="h.status === 'FIRING' ? 'critical' : h.status === 'RECOVERED' ? 'ok' : 'warn'"
+                :label="alertStatusLabel(h.status)"
+              />
             </td>
-            <td>{{ alertRuleNameLabel(h.alert_name) }}</td>
-            <td>{{ sourceLabel(h.source) }}</td>
-            <td>{{ h.site_id }}</td>
+            <td style="font-weight: 500;">{{ alertRuleNameLabel(h.alert_name) }}</td>
+            <td class="muted">{{ sourceLabel(h.source) }}</td>
+            <td><span class="code-chip">{{ h.site_id || '-' }}</span></td>
             <td>
               <span>{{ causeLabel(h.root_cause) }}</span>
               <div v-if="h.root_cause" class="muted" style="font-size: 11px;"><code>{{ h.root_cause }}</code></div>
             </td>
-            <td>{{ h.delivered ? t('deliveredOk') : h.error || t('notConfigured') }}</td>
+            <td class="muted">{{ h.delivered ? t('deliveredOk') : h.error || t('notConfigured') }}</td>
           </tr>
         </tbody>
       </table>
-      <div v-else class="muted">{{ t('noAlertHistory') }}</div>
+      <div v-else class="muted" style="padding: 20px;">{{ t('noAlertHistory') }}</div>
     </div>
   </div>
 </template>

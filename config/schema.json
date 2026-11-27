@@ -217,6 +217,10 @@
         "dpd_action": {"enum": ["clear", "restart"]},
         "close_action": {"enum": ["none", "start"]},
         "route_priority": {"$ref": "#/$defs/priority"},
+        "tunnel_local_cidr": {
+          "type": "string",
+          "pattern": "^([0-9]{1,3}\\.){3}[0-9]{1,3}/(29|30|31)$"
+        },
         "outer_path": {
           "type": "object",
           "additionalProperties": false,

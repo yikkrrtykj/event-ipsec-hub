@@ -460,13 +460,25 @@ func (m *Manager) Replace(target *manifest.DeploymentManifest, keys map[string][
 			if _, err := m.Host.Command("XFRM create", []string{"ip", "link", "add", "name", ls.Name, "type", "xfrm", "if_id", strconv.FormatUint(uint64(ls.IfID), 10)}, nil, nil, 30*time.Second, true); err != nil {
 				return err
 			}
-			// Linux 6.8 ignores IFLA_IFALIAS on newlink; set alias and up explicitly.
-			if _, err := m.Host.Command("XFRM mark and activate", []string{"ip", "link", "set", "dev", ls.Name, "alias", m.Alias, "up"}, nil, nil, 30*time.Second, true); err != nil {
+			// Linux 6.8 ignores IFLA_IFALIAS on newlink; set alias, tunnel MTU 1400, and up explicitly.
+			if _, err := m.Host.Command("XFRM mark and activate", []string{"ip", "link", "set", "dev", ls.Name, "alias", m.Alias, "mtu", "1400", "up"}, nil, nil, 30*time.Second, true); err != nil {
 				return err
 			}
 		} else {
-			if _, err := m.Host.Command("XFRM up", []string{"ip", "link", "set", "dev", ls.Name, "up"}, nil, nil, 30*time.Second, true); err != nil {
+			if _, err := m.Host.Command("XFRM up", []string{"ip", "link", "set", "dev", ls.Name, "mtu", "1400", "up"}, nil, nil, 30*time.Second, true); err != nil {
 				return err
+			}
+		}
+	}
+	if target != nil {
+		for _, l := range target.Links {
+			if l.TunnelLocalCIDR != "" {
+				if _, err := m.Host.Command("XFRM address flush", []string{"ip", "-4", "addr", "flush", "dev", l.Name()}, nil, nil, 30*time.Second, true); err != nil {
+					return err
+				}
+				if _, err := m.Host.Command("XFRM address assign", []string{"ip", "-4", "addr", "add", l.TunnelLocalCIDR, "dev", l.Name()}, nil, nil, 30*time.Second, true); err != nil {
+					return err
+				}
 			}
 		}
 	}

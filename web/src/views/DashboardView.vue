@@ -1,13 +1,15 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { Copy, RefreshCw, RotateCw, Terminal, X } from 'lucide-vue-next'
 import { api, fmtDateTime, type DiagnosisResult, type MetricSample, type TimelineEvent } from '../api'
 import { causeLabel, causeSummary, failoverModeLabel, sourceLabel, t } from '../i18n'
+import { copyToClipboard, toast } from '../toast'
+import StatusDot from '../components/StatusDot.vue'
 
 const emit = defineEmits<{ (e: 'navigate', tab: string, site?: string, focusTsMs?: number): void }>()
 
 const overview = ref<any>(null)
 const errMsg = ref('')
-const okMsg = ref('')
 const busySite = ref('')
 const autoRefreshSec = ref(15)
 const diagSiteId = ref('')
@@ -16,6 +18,19 @@ const diagData = ref<any>(null)
 const diagErr = ref('')
 const copiedDiag = ref(false)
 let timer: number | null = null
+
+const siteRows = computed(() => (overview.value?.sites || []) as Array<{ sample: MetricSample; diagnosis: DiagnosisResult; meta?: any }>)
+
+const onlineCount = computed(() =>
+  siteRows.value.filter((r) => r.sample.l2_ike_state === 1 && r.sample.l2_child_state === 1).length
+)
+
+const avgOuterRtt = computed(() => {
+  const valid = siteRows.value.filter((r) => r.sample.l1_outer_state === 1 && r.sample.l1_outer_rtt_ms > 0)
+  if (!valid.length) return '-'
+  const avg = valid.reduce((acc, r) => acc + r.sample.l1_outer_rtt_ms, 0) / valid.length
+  return `${avg.toFixed(1)} ms`
+})
 
 async function load() {
   errMsg.value = ''
@@ -29,40 +44,37 @@ async function load() {
 async function seedDemo() {
   try {
     await api('/api/v1/diagnostics/seed-demo', { method: 'POST' })
+    toast.success(t('seedDemo'))
     await load()
   } catch (e: any) {
-    errMsg.value = e.message
+    toast.error(e.message)
   }
 }
 
 async function reconnectTunnel(siteId: string) {
-  errMsg.value = ''
-  okMsg.value = ''
   busySite.value = siteId
   try {
     await api(`/api/v1/tunnels/${encodeURIComponent(siteId)}/reconnect`, { method: 'POST' })
-    okMsg.value = t('msgReconnectDone', { site: siteId })
+    toast.success(t('msgReconnectDone', { site: siteId }))
     await load()
   } catch (e: any) {
-    errMsg.value = e.message
+    toast.error(e.message)
   } finally {
     busySite.value = ''
   }
 }
 
 async function rekeyTunnel(siteId: string) {
-  errMsg.value = ''
-  okMsg.value = ''
   busySite.value = siteId
   try {
     await api(`/api/v1/tunnels/${encodeURIComponent(siteId)}/rekey`, {
       method: 'POST',
       body: JSON.stringify({ kind: 'child' })
     })
-    okMsg.value = t('msgRekeyDone', { site: siteId })
+    toast.success(t('msgRekeyDone', { site: siteId }))
     await load()
   } catch (e: any) {
-    errMsg.value = e.message
+    toast.error(e.message)
   } finally {
     busySite.value = ''
   }
@@ -80,11 +92,11 @@ function resetTimer() {
 
 watch(autoRefreshSec, resetTimer)
 
-function pillClass(sev: string) {
-  if (sev === 'ok') return 'pill-ok'
-  if (sev === 'warning') return 'pill-warn'
-  if (sev === 'critical') return 'pill-critical'
-  return 'pill-unknown'
+function dotState(sev: string): 'ok' | 'warn' | 'critical' | 'unknown' {
+  if (sev === 'ok') return 'ok'
+  if (sev === 'warning') return 'warn'
+  if (sev === 'critical') return 'critical'
+  return 'unknown'
 }
 
 async function openDiagnostics(siteId: string) {
@@ -114,26 +126,13 @@ function closeDiagnostics() {
 async function copyDiagLogs() {
   if (!diagData.value) return
   const text = `=== swanctl --list-sas (${diagSiteId.value}) ===\n${diagData.value.swanctl_sas || ''}\n\n=== strongSwan logs ===\n${diagData.value.strongswan_logs || ''}`
-  try {
-    if (navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(text)
-    } else {
-      throw new Error('fallback')
-    }
-  } catch {
-    const ta = document.createElement('textarea')
-    ta.value = text
-    ta.style.position = 'fixed'
-    ta.style.opacity = '0'
-    document.body.appendChild(ta)
-    ta.select()
-    document.execCommand('copy')
-    document.body.removeChild(ta)
+  if (await copyToClipboard(text)) {
+    copiedDiag.value = true
+    toast.success(t('btnCopied'))
+    setTimeout(() => {
+      copiedDiag.value = false
+    }, 1500)
   }
-  copiedDiag.value = true
-  setTimeout(() => {
-    copiedDiag.value = false
-  }, 1500)
 }
 
 function onKeyDown(ev: KeyboardEvent) {
@@ -154,147 +153,162 @@ onBeforeUnmount(() => {
 
 <template>
   <div>
-    <div class="row" style="margin-bottom: 14px;">
-      <div v-if="autoRefreshSec > 0" class="row" style="gap: 6px;">
-        <span class="live-dot"></span>
-        <span class="muted">{{ t('liveUpdating') }}</span>
+    <div class="page-header">
+      <div class="row">
+        <h2 class="page-title">{{ t('navDashboard') }}</h2>
+        <StatusDot v-if="autoRefreshSec > 0" state="ok" :label="t('liveUpdating')" :pulse="true" />
       </div>
-      <div class="spacer"></div>
-      <select v-model.number="autoRefreshSec" class="select" style="width: 155px;">
-        <option :value="0">{{ t('autoRefreshOff') }}</option>
-        <option :value="15">{{ t('autoRefresh15s') }}</option>
-        <option :value="30">{{ t('autoRefresh30s') }}</option>
-        <option :value="60">{{ t('autoRefresh60s') }}</option>
-      </select>
-      <button v-if="overview?.demo_mode" class="btn btn-secondary" @click="seedDemo">{{ t('seedDemo') }}</button>
-      <button class="btn" @click="load">{{ t('refresh') }}</button>
+      <div class="row" style="gap: 8px;">
+        <select v-model.number="autoRefreshSec" class="select" style="width: 145px;">
+          <option :value="0">{{ t('autoRefreshOff') }}</option>
+          <option :value="15">{{ t('autoRefresh15s') }}</option>
+          <option :value="30">{{ t('autoRefresh30s') }}</option>
+          <option :value="60">{{ t('autoRefresh60s') }}</option>
+        </select>
+        <button v-if="overview?.demo_mode" class="btn btn-secondary" @click="seedDemo">{{ t('seedDemo') }}</button>
+        <button class="btn btn-secondary" @click="load">
+          <RefreshCw :size="14" />
+          <span>{{ t('refresh') }}</span>
+        </button>
+      </div>
     </div>
 
     <div v-if="errMsg" class="alert-banner alert-critical">{{ errMsg }}</div>
-    <div v-if="okMsg" class="alert-banner alert-ok">{{ okMsg }}</div>
 
     <template v-if="overview">
+      <!-- Joined 4-Cell Minimalist KPI Strip -->
+      <div class="kpi-strip">
+        <div class="kpi-cell">
+          <div class="kpi-label">{{ t('onlineTunnelsLabel') }}</div>
+          <div class="row" style="gap: 8px;">
+            <span class="kpi-value">{{ onlineCount }} / {{ siteRows.length }}</span>
+            <StatusDot :state="siteRows.length > 0 && onlineCount === siteRows.length ? 'ok' : siteRows.length === 0 ? 'unknown' : 'warn'" />
+          </div>
+          <div class="kpi-sub">{{ overview.active_profile?.id || t('notActivated') }}</div>
+        </div>
+        <div class="kpi-cell">
+          <div class="kpi-label">{{ t('avgOuterRttLabel') }}</div>
+          <div class="kpi-value">{{ avgOuterRtt }}</div>
+          <div class="kpi-sub">{{ t('savedConfigsCount', { n: overview.profile_count }) }}</div>
+        </div>
+        <div class="kpi-cell">
+          <div class="kpi-label">{{ t('failoverState') }}</div>
+          <div class="kpi-value" style="font-size: 17px;">{{ failoverModeLabel(overview.failover?.mode) }}</div>
+          <div class="kpi-sub">
+            {{ overview.failover?.hub_role === 'backup' ? t('gatewayBackup') : t('gatewayPrimary') }}
+            · {{ overview.failover?.active_path === 'backup' ? t('pathBackup') : t('pathPrimary') }}
+          </div>
+        </div>
+        <div class="kpi-cell">
+          <div class="kpi-label">{{ t('agentService') }}</div>
+          <div style="padding-top: 4px;">
+            <StatusDot
+              :state="overview.agent_online ? 'ok' : 'warn'"
+              :label="overview.agent_online ? t('agentOnline') : t('agentOffline')"
+              :pulse="overview.agent_online"
+            />
+          </div>
+          <div class="kpi-sub">{{ causeLabel(overview.overall.code) }}</div>
+        </div>
+      </div>
+
+      <!-- Overall Diagnosis Notice (only shown prominently when warning/critical or informative) -->
       <div
+        v-if="overview.overall.severity !== 'ok' && siteRows.length > 0"
         class="alert-banner"
         :class="
-          overview.overall.severity === 'ok'
-            ? 'alert-ok'
-            : overview.overall.severity === 'warning'
-              ? 'alert-warn'
-              : overview.overall.severity === 'critical'
-                ? 'alert-critical'
-                : 'alert-unknown'
+          overview.overall.severity === 'warning'
+            ? 'alert-warn'
+            : overview.overall.severity === 'critical'
+              ? 'alert-critical'
+              : 'alert-unknown'
         "
       >
         <div class="row">
-          <span class="pill" :class="pillClass(overview.overall.severity)">{{ causeLabel(overview.overall.code) }}</span>
+          <StatusDot :state="dotState(overview.overall.severity)" :label="causeLabel(overview.overall.code)" />
           <span>{{ causeSummary(overview.overall) }}</span>
         </div>
       </div>
 
-      <div class="grid-4" style="margin-bottom: 16px;">
-        <div class="card" style="margin-bottom: 0;">
-          <div class="muted">{{ t('currentConfig') }}</div>
-          <div style="font-size: 16px; font-weight: 700; margin-top: 6px;">
-            {{ overview.active_profile?.id || t('notActivated') }}
-          </div>
-          <div class="muted" style="margin-top: 4px;">{{ t('savedConfigsCount', { n: overview.profile_count }) }}</div>
+      <!-- VPN Tunnels Table -->
+      <div class="card card-flush">
+        <div class="card-header">
+          <h3>{{ t('tunnelList') }}</h3>
+          <button class="btn btn-secondary btn-sm" @click="emit('navigate', 'config')">{{ t('navConfig') }}</button>
         </div>
-        <div class="card" style="margin-bottom: 0;">
-          <div class="muted">{{ t('failoverState') }}</div>
-          <div style="font-size: 16px; font-weight: 700; margin-top: 6px;">
-            {{ failoverModeLabel(overview.failover?.mode) }}
-          </div>
-          <div class="muted" style="margin-top: 4px;">
-            {{ t('currentGateway') }}: {{ overview.failover?.hub_role === 'backup' ? t('gatewayBackup') : t('gatewayPrimary') }}
-            · {{ t('activePath') }}: {{ overview.failover?.active_path === 'backup' ? t('pathBackup') : t('pathPrimary') }}
-          </div>
-        </div>
-        <div class="card" style="margin-bottom: 0;">
-          <div class="muted">{{ t('agentService') }}</div>
-          <div style="margin-top: 8px;">
-            <span class="pill" :class="overview.agent_online ? 'pill-ok' : 'pill-warn'">
-              {{ overview.agent_online ? t('agentOnline') : t('agentOffline') }}
-            </span>
-          </div>
-        </div>
-        <div class="card" style="margin-bottom: 0;">
-          <div class="muted">{{ t('monitoredTunnels') }}</div>
-          <div style="font-size: 22px; font-weight: 700; margin-top: 4px;">{{ overview.sites?.length || 0 }}</div>
-        </div>
-      </div>
-
-      <div class="card">
-        <h3>{{ t('tunnelList') }}</h3>
-        <div v-if="!overview.sites?.length" class="muted">
+        <div v-if="!siteRows.length" class="muted" style="padding: 24px 20px;">
           {{ t('noTunnelData') }}
         </div>
         <table v-else class="table">
           <thead>
             <tr>
               <th>{{ t('colPeerSite') }}</th>
+              <th>{{ t('peerPublicIp') }} / {{ t('colLanCidrs') }}</th>
               <th>{{ t('colOuterLink') }}</th>
               <th>{{ t('colTunnelState') }}</th>
               <th>{{ t('colBandwidth') }}</th>
               <th>{{ t('colLanProbe') }}</th>
-              <th>{{ t('colDiagnosis') }}</th>
               <th>{{ t('colAction') }}</th>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="row in overview.sites as Array<{ sample: MetricSample; diagnosis: DiagnosisResult; meta?: any }>" :key="row.sample.site_id">
+            <tr v-for="row in siteRows" :key="row.sample.site_id">
               <td>
-                <strong>{{ row.sample.site_id }}</strong>
-                <span v-if="row.meta?.display_name && row.meta.display_name !== row.sample.site_id" class="muted" style="margin-left: 6px;">{{ row.meta.display_name }}</span>
-                <div class="muted" style="font-size: 11.5px;">
-                  <code v-if="row.meta?.peer_public_ip">{{ row.meta.peer_public_ip }}</code>
-                  <span v-if="row.meta?.lan_cidrs?.length"> · {{ row.meta.lan_cidrs.join(', ') }}</span>
-                  <span v-else-if="row.sample.isp_label">{{ row.sample.isp_label }}</span>
+                <div style="font-weight: 600;">{{ row.sample.site_id }}</div>
+                <div v-if="row.meta?.display_name && row.meta.display_name !== row.sample.site_id" class="muted" style="font-size: 12px;">
+                  {{ row.meta.display_name }}
                 </div>
               </td>
               <td>
-                <span class="pill" :class="row.sample.l1_outer_state === 1 ? 'pill-ok' : row.sample.l1_outer_state === 0 ? 'pill-critical' : 'pill-unknown'">
-                  {{ row.sample.l1_outer_state === 1 ? `${row.sample.l1_outer_rtt_ms.toFixed(1)} ms` : row.sample.l1_outer_state === 0 ? t('stateDown') : t('statePending') }}
-                </span>
-                <div v-if="row.sample.l1_outer_state >= 0" class="muted">{{ t('lossPrefix') }} {{ (row.sample.l1_outer_loss * 100).toFixed(0) }}%</div>
+                <div class="row" style="gap: 6px;">
+                  <span v-if="row.meta?.peer_public_ip" class="code-chip">{{ row.meta.peer_public_ip }}</span>
+                  <span v-for="cidr in (row.meta?.lan_cidrs || [])" :key="cidr" class="code-chip">{{ cidr }}</span>
+                </div>
+              </td>
+              <td>
+                <StatusDot
+                  :state="row.sample.l1_outer_state === 1 ? 'ok' : row.sample.l1_outer_state === 0 ? 'critical' : 'unknown'"
+                  :label="row.sample.l1_outer_state === 1 ? `${row.sample.l1_outer_rtt_ms.toFixed(1)} ms` : row.sample.l1_outer_state === 0 ? t('stateDown') : t('statePending')"
+                />
+                <div v-if="row.sample.l1_outer_state >= 0" class="muted" style="font-size: 11.5px;">
+                  {{ t('lossPrefix') }} {{ (row.sample.l1_outer_loss * 100).toFixed(0) }}%
+                </div>
               </td>
               <td>
                 <template v-if="row.sample.l2_ike_state === -1 && row.sample.l2_child_state === -1">
-                  <span class="pill pill-unknown">{{ t('statePending') }}</span>
+                  <StatusDot state="unknown" :label="t('statePending')" />
                 </template>
                 <template v-else-if="row.sample.l2_ike_state === 1 && row.sample.l2_child_state === 1">
-                  <span class="pill pill-ok">{{ t('stateConnected') }}</span>
+                  <StatusDot state="ok" :label="t('stateConnected')" />
                 </template>
                 <template v-else>
-                  <div class="row" style="gap: 4px; flex-wrap: wrap;">
-                    <span class="pill" :class="row.sample.l2_ike_state === 1 ? 'pill-ok' : 'pill-critical'">
-                      IKE {{ row.sample.l2_ike_state === 1 ? '✓' : '✗' }}
-                    </span>
-                    <span class="pill" :class="row.sample.l2_child_state === 1 ? 'pill-ok' : 'pill-critical'">
-                      IPsec {{ row.sample.l2_child_state === 1 ? '✓' : '✗' }}
-                    </span>
+                  <div style="display: flex; flex-direction: column; gap: 3px;">
+                    <StatusDot :state="row.sample.l2_ike_state === 1 ? 'ok' : 'critical'" :label="`IKE ${row.sample.l2_ike_state === 1 ? t('stateConnected') : t('stateDisconnected')}`" />
+                    <StatusDot :state="row.sample.l2_child_state === 1 ? 'ok' : 'critical'" :label="`IPsec ${row.sample.l2_child_state === 1 ? t('stateConnected') : t('stateDisconnected')}`" />
                   </div>
                 </template>
               </td>
               <td>
-                <div>{{ t('bwIn') }} {{ (row.sample.l3_rx_bps / 1e6).toFixed(2) }} / {{ t('bwOut') }} {{ (row.sample.l3_tx_bps / 1e6).toFixed(2) }} Mbps</div>
-                <div class="muted">{{ t('errCountPrefix') }} +{{ row.sample.l3_xfrm_err_delta + row.sample.l3_nft_drop_delta }}</div>
+                <div style="font-size: 12.5px;">
+                  {{ (row.sample.l3_rx_bps / 1e6).toFixed(2) }} / {{ (row.sample.l3_tx_bps / 1e6).toFixed(2) }} Mbps
+                </div>
+                <div v-if="row.sample.l3_xfrm_err_delta + row.sample.l3_nft_drop_delta > 0" class="muted" style="font-size: 11.5px; color: var(--warn-fg);">
+                  {{ t('errCountPrefix') }} +{{ row.sample.l3_xfrm_err_delta + row.sample.l3_nft_drop_delta }}
+                </div>
               </td>
               <td>
-                <span class="pill" :class="row.sample.l4_udp_state === 1 ? 'pill-ok' : row.sample.l4_udp_state === 0 ? 'pill-critical' : 'pill-unknown'">
-                  {{ row.sample.l4_udp_state === 1 ? `${row.sample.l4_udp_rtt_ms.toFixed(1)} ms` : row.sample.l4_udp_state === 0 ? t('stateUnreachable') : t('stateUnchecked') }}
-                </span>
+                <StatusDot
+                  :state="row.sample.l4_udp_state === 1 ? 'ok' : row.sample.l4_udp_state === 0 ? 'critical' : 'unknown'"
+                  :label="row.sample.l4_udp_state === 1 ? `${row.sample.l4_udp_rtt_ms.toFixed(1)} ms` : row.sample.l4_udp_state === 0 ? t('stateUnreachable') : t('stateUnchecked')"
+                />
                 <div v-if="row.meta?.probe_target" class="muted" style="font-size: 11px;"><code>{{ row.meta.probe_target }}</code></div>
               </td>
               <td>
-                <span class="pill" :class="pillClass(row.diagnosis.severity)">{{ causeLabel(row.diagnosis.code) }}</span>
-              </td>
-              <td>
-                <div class="row" style="gap: 6px;">
-                  <button class="btn btn-secondary btn-sm" @click="openDiagnostics(row.sample.site_id)">{{ t('btnDiagLogs') }}</button>
-                  <button class="btn btn-secondary btn-sm" @click="emit('navigate', 'diagnostics', row.sample.site_id)">{{ t('viewMonitor') }}</button>
-                  <button class="btn btn-secondary btn-sm" :disabled="busySite === row.sample.site_id" @click="reconnectTunnel(row.sample.site_id)">{{ t('btnReconnect') }}</button>
-                  <button class="btn btn-secondary btn-sm" :disabled="busySite === row.sample.site_id" @click="rekeyTunnel(row.sample.site_id)">{{ t('btnRekey') }}</button>
+                <div class="row" style="gap: 2px;">
+                  <button class="btn btn-ghost" @click="openDiagnostics(row.sample.site_id)">{{ t('btnDiagLogs') }}</button>
+                  <button class="btn btn-ghost" @click="emit('navigate', 'diagnostics', row.sample.site_id)">{{ t('viewMonitor') }}</button>
+                  <button class="btn btn-ghost" :disabled="busySite === row.sample.site_id" @click="reconnectTunnel(row.sample.site_id)">{{ t('btnReconnect') }}</button>
+                  <button class="btn btn-ghost" :disabled="busySite === row.sample.site_id" @click="rekeyTunnel(row.sample.site_id)">{{ t('btnRekey') }}</button>
                 </div>
               </td>
             </tr>
@@ -302,11 +316,11 @@ onBeforeUnmount(() => {
         </table>
       </div>
 
-      <div class="card">
-        <div class="row" style="margin-bottom: 10px;">
-          <h3 style="margin: 0;">{{ t('recentEvents') }}</h3>
-          <div class="spacer"></div>
-          <button class="btn btn-secondary" @click="emit('navigate', 'events')">{{ t('viewAllEvents') }}</button>
+      <!-- Recent Events -->
+      <div class="card card-flush">
+        <div class="card-header">
+          <h3>{{ t('recentEvents') }}</h3>
+          <button class="btn btn-secondary btn-sm" @click="emit('navigate', 'events')">{{ t('viewAllEvents') }}</button>
         </div>
         <table v-if="overview.recent_events?.length" class="table">
           <thead>
@@ -320,25 +334,25 @@ onBeforeUnmount(() => {
           </thead>
           <tbody>
             <tr v-for="ev in (overview.recent_events as TimelineEvent[]).slice().reverse().slice(0, 5)" :key="ev.id || ev.ts_ms">
-              <td>{{ fmtDateTime(ev.ts_ms) }}</td>
-              <td><code>{{ ev.category }}</code></td>
+              <td class="muted">{{ fmtDateTime(ev.ts_ms) }}</td>
+              <td><span class="code-chip">{{ ev.category }}</span></td>
               <td>
-                <a
+                <button
                   v-if="ev.site_id"
-                  href="#"
-                  style="color: #60a5fa; text-decoration: none;"
-                  @click.prevent="emit('navigate', 'diagnostics', ev.site_id, ev.ts_ms)"
+                  class="btn btn-ghost"
+                  style="padding: 2px 6px;"
+                  @click="emit('navigate', 'diagnostics', ev.site_id, ev.ts_ms)"
                 >
                   {{ ev.site_id }}
-                </a>
-                <span v-else>-</span>
+                </button>
+                <span v-else class="muted">-</span>
               </td>
-              <td>{{ sourceLabel(ev.source) }}</td>
+              <td class="muted">{{ sourceLabel(ev.source) }}</td>
               <td>{{ ev.title }}</td>
             </tr>
           </tbody>
         </table>
-        <div v-else class="muted">{{ t('noEvents') }}</div>
+        <div v-else class="muted" style="padding: 20px;">{{ t('noEvents') }}</div>
       </div>
     </template>
 
@@ -346,38 +360,50 @@ onBeforeUnmount(() => {
     <div v-if="diagSiteId" class="drawer-backdrop" @click.self="closeDiagnostics">
       <div class="drawer-panel" style="width: min(740px, 95vw);">
         <div class="drawer-header">
-          <h3 style="margin: 0;">{{ t('diagDrawerTitle') }} · {{ diagSiteId }}</h3>
+          <div class="row" style="gap: 8px;">
+            <Terminal :size="16" />
+            <h3>{{ t('diagDrawerTitle') }} · {{ diagSiteId }}</h3>
+          </div>
           <div class="row" style="gap: 6px;">
-            <button class="btn btn-secondary btn-sm" :disabled="diagLoading" @click="refreshDiagnostics">{{ t('refreshLogsBtn') }}</button>
+            <button class="btn btn-secondary btn-sm" :disabled="diagLoading" @click="refreshDiagnostics">
+              <RefreshCw :size="13" />
+              <span>{{ t('refreshLogsBtn') }}</span>
+            </button>
             <button class="btn btn-secondary btn-sm" :disabled="!diagData" @click="copyDiagLogs">
-              {{ copiedDiag ? t('btnCopied') : t('copyLogsBtn') }}
+              <Copy :size="13" />
+              <span>{{ copiedDiag ? t('btnCopied') : t('copyLogsBtn') }}</span>
             </button>
             <button class="btn btn-secondary btn-sm" :disabled="busySite === diagSiteId" @click="reconnectTunnel(diagSiteId).then(refreshDiagnostics)">
-              {{ t('btnReconnect') }}
+              <RotateCw :size="13" />
+              <span>{{ t('btnReconnect') }}</span>
             </button>
-            <button class="btn btn-secondary btn-sm" @click="closeDiagnostics">{{ t('btnClose') }}</button>
+            <button class="btn btn-secondary btn-icon" @click="closeDiagnostics">
+              <X :size="15" />
+            </button>
           </div>
         </div>
         <div class="drawer-body">
           <div v-if="diagErr" class="alert-banner alert-critical">{{ diagErr }}</div>
           <div v-if="diagLoading && !diagData" class="muted">{{ t('loading') }}</div>
           <template v-if="diagData">
-            <div class="sub-card" style="padding: 12px; margin-bottom: 14px;">
-              <div class="row" style="gap: 10px; flex-wrap: wrap;">
+            <div class="sub-card">
+              <div class="row" style="gap: 14px;">
                 <span>
                   <span class="muted">{{ t('ikePhase1') }}：</span>
-                  <span class="pill" :class="diagData.ike_state === 1 ? 'pill-ok' : diagData.ike_state === 0 ? 'pill-critical' : 'pill-unknown'">
-                    {{ diagData.ike_state === 1 ? t('stateConnected') : diagData.ike_state === 0 ? t('stateDisconnected') : t('statePending') }}
-                  </span>
+                  <StatusDot
+                    :state="diagData.ike_state === 1 ? 'ok' : diagData.ike_state === 0 ? 'critical' : 'unknown'"
+                    :label="diagData.ike_state === 1 ? t('stateConnected') : diagData.ike_state === 0 ? t('stateDisconnected') : t('statePending')"
+                  />
                 </span>
                 <span>
                   <span class="muted">{{ t('ipsecPhase2') }}：</span>
-                  <span class="pill" :class="diagData.child_state === 1 ? 'pill-ok' : diagData.child_state === 0 ? 'pill-critical' : 'pill-unknown'">
-                    {{ diagData.child_state === 1 ? t('stateConnected') : diagData.child_state === 0 ? t('stateDisconnected') : t('statePending') }}
-                  </span>
+                  <StatusDot
+                    :state="diagData.child_state === 1 ? 'ok' : diagData.child_state === 0 ? 'critical' : 'unknown'"
+                    :label="diagData.child_state === 1 ? t('stateConnected') : diagData.child_state === 0 ? t('stateDisconnected') : t('statePending')"
+                  />
                 </span>
-                <span v-if="diagData.peer_ip" class="muted">Peer: <code>{{ diagData.peer_ip }}</code></span>
-                <span v-if="diagData.link_name" class="muted">XFRM: <code>{{ diagData.link_name }}</code></span>
+                <span v-if="diagData.peer_ip" class="code-chip">{{ diagData.peer_ip }}</span>
+                <span v-if="diagData.link_name" class="code-chip">{{ diagData.link_name }}</span>
                 <div class="spacer"></div>
                 <span v-if="diagData.captured_at_ms" class="muted" style="font-size: 11.5px;">{{ fmtDateTime(diagData.captured_at_ms) }}</span>
               </div>
@@ -385,12 +411,12 @@ onBeforeUnmount(() => {
 
             <div class="field">
               <label>{{ t('saDetailsTitle') }}</label>
-              <div class="code-block" style="max-height: 220px; font-size: 12px;">{{ diagData.swanctl_sas || '-' }}</div>
+              <div class="code-block" style="max-height: 220px;">{{ diagData.swanctl_sas || '-' }}</div>
             </div>
 
             <div class="field" style="margin-bottom: 0;">
               <label>{{ t('strongswanLogTitle') }}</label>
-              <div class="code-block" style="max-height: 320px; font-size: 11.5px;">{{ diagData.strongswan_logs || '-' }}</div>
+              <div class="code-block" style="max-height: 340px;">{{ diagData.strongswan_logs || '-' }}</div>
             </div>
           </template>
         </div>

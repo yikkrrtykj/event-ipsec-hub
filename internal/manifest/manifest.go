@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"net/netip"
 	"slices"
 	"sort"
 	"strings"
@@ -82,9 +83,30 @@ type Link struct {
 	DPDAction      string   `json:"dpd_action"`
 	CloseAction    string   `json:"close_action"`
 	RouteTable     *int     `json:"route_table"`
-	PolicyPriority int      `json:"policy_priority"`
-	LinkID         string   `json:"link_id"`
-	ISPLabel       string   `json:"isp_label"`
+	PolicyPriority  int      `json:"policy_priority"`
+	LinkID          string   `json:"link_id"`
+	ISPLabel        string   `json:"isp_label"`
+	TunnelLocalCIDR string   `json:"tunnel_local_cidr,omitempty"`
+}
+
+func (l Link) TunnelLocalIP() string {
+	if l.TunnelLocalCIDR == "" {
+		return ""
+	}
+	if p, err := netip.ParsePrefix(l.TunnelLocalCIDR); err == nil && p.Addr().Is4() {
+		return p.Addr().String()
+	}
+	return ""
+}
+
+func (l Link) TunnelSubnet() string {
+	if l.TunnelLocalCIDR == "" {
+		return ""
+	}
+	if p, err := netip.ParsePrefix(l.TunnelLocalCIDR); err == nil && p.Addr().Is4() {
+		return p.Masked().String()
+	}
+	return ""
 }
 
 func (l Link) KeyID() string {
@@ -454,9 +476,10 @@ func BuildManifest(p *profile.Profile) (*DeploymentManifest, error) {
 			DPDAction:      dpdAction,
 			CloseAction:    closeAction,
 			RouteTable:     sl.OuterPath.RouteTable,
-			PolicyPriority: policyPrio,
-			LinkID:         sl.KeyID(),
-			ISPLabel:       sl.OuterPath.ISPLabel,
+			PolicyPriority:  policyPrio,
+			LinkID:          sl.KeyID(),
+			ISPLabel:        sl.OuterPath.ISPLabel,
+			TunnelLocalCIDR: sl.TunnelLocalCIDR,
 		})
 	}
 
@@ -619,6 +642,16 @@ func NFTConfig(m *DeploymentManifest, token string, guarded []string, interfaces
 	fmt.Fprintf(&b, "    chain owner_%s {\n    }\n", token)
 	b.WriteString("    chain forward {\n")
 	b.WriteString("        type filter hook forward priority -5; policy accept;\n")
+	if m != nil && len(links) > 0 {
+		quotedNames := make([]string, 0, len(links))
+		for _, l := range links {
+			quotedNames = append(quotedNames, fmt.Sprintf("%q", l.Name()))
+		}
+		sort.Strings(quotedNames)
+		ifaceSet := strings.Join(quotedNames, ", ")
+		fmt.Fprintf(&b, "        iifname { %s } tcp flags syn / syn,rst tcp option maxseg size set 1360\n", ifaceSet)
+		fmt.Fprintf(&b, "        oifname { %s } tcp flags syn / syn,rst tcp option maxseg size set 1360\n", ifaceSet)
+	}
 	if m != nil {
 		for _, r := range m.ResolvedForwardRules() {
 			fmt.Fprintf(&b, "        iifname %q oifname %q ip saddr { %s } ip daddr { %s } accept\n",
@@ -638,6 +671,9 @@ func NFTConfig(m *DeploymentManifest, token string, guarded []string, interfaces
 	b.WriteString("        type filter hook output priority -5; policy accept;\n")
 	for _, l := range links {
 		fmt.Fprintf(&b, "        oifname %q ip daddr { %s } accept\n", l.Name(), strings.Join(l.RemoteTS, ", "))
+		if sub := l.TunnelSubnet(); sub != "" {
+			fmt.Fprintf(&b, "        oifname %q ip daddr %s accept\n", l.Name(), sub)
+		}
 	}
 	for _, cidr := range networks {
 		fmt.Fprintf(&b, "        ip daddr %s drop\n", cidr)
@@ -656,6 +692,9 @@ func NFTConfig(m *DeploymentManifest, token string, guarded []string, interfaces
 	}
 	for _, l := range links {
 		fmt.Fprintf(&b, "        iifname %q ip saddr { %s } ct state established,related accept\n", l.Name(), strings.Join(l.RemoteTS, ", "))
+		if sub := l.TunnelSubnet(); sub != "" {
+			fmt.Fprintf(&b, "        iifname %q ip saddr %s icmp type { echo-request, echo-reply } accept\n", l.Name(), sub)
+		}
 	}
 	for _, name := range names {
 		fmt.Fprintf(&b, "        iifname %q drop\n", name)

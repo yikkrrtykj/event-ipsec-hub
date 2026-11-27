@@ -75,9 +75,10 @@ type SiteLink struct {
 	SelectorMode  string    `json:"selector_mode,omitempty"`
 	StartAction   string    `json:"start_action,omitempty"`
 	DPDAction     string    `json:"dpd_action,omitempty"`
-	CloseAction   string    `json:"close_action,omitempty"`
-	RoutePriority *int      `json:"route_priority,omitempty"`
-	OuterPath     OuterPath `json:"outer_path"`
+	CloseAction     string    `json:"close_action,omitempty"`
+	RoutePriority   *int      `json:"route_priority,omitempty"`
+	TunnelLocalCIDR string    `json:"tunnel_local_cidr,omitempty"`
+	OuterPath       OuterPath `json:"outer_path"`
 }
 
 func (l SiteLink) KeyID() string {

@@ -1,15 +1,17 @@
 <script setup lang="ts">
 import { onMounted, ref, watch } from 'vue'
+import { Copy, Download, FileCode2 } from 'lucide-vue-next'
 import { api, downloadTextFile } from '../api'
 import { t } from '../i18n'
+import { copyToClipboard, toast } from '../toast'
 
 const props = defineProps<{ initialSite?: string }>()
 
 const profiles = ref<any[]>([])
 const profileId = ref('')
 const availableSites = ref<string[]>([])
-const siteId = ref(props.initialSite || 'ob-venue-1')
-const format = ref('tencent-json')
+const siteId = ref(props.initialSite || '')
+const format = ref('hillstone-md')
 const includePSK = ref(false)
 const confirmPassword = ref('')
 const filename = ref('')
@@ -63,16 +65,20 @@ async function generate() {
     filename.value = res.filename
     content.value = res.content
     confirmPassword.value = ''
+    toast.success(res.filename)
   } catch (e: any) {
     errMsg.value = e.message
+    toast.error(e.message)
   }
 }
 
 async function copyText() {
   if (!content.value) return
-  await navigator.clipboard.writeText(content.value)
-  copied.value = true
-  setTimeout(() => (copied.value = false), 2000)
+  if (await copyToClipboard(content.value)) {
+    copied.value = true
+    toast.success(t('btnCopied'))
+    setTimeout(() => (copied.value = false), 1800)
+  }
 }
 
 onMounted(load)
@@ -80,7 +86,9 @@ onMounted(load)
 
 <template>
   <div>
-    <h2 style="margin: 0 0 14px; font-size: 18px;">{{ t('navExport') }}</h2>
+    <div class="page-header">
+      <h2 class="page-title">{{ t('navExport') }}</h2>
+    </div>
     <div v-if="errMsg" class="alert-banner alert-critical">{{ errMsg }}</div>
 
     <div class="card">
@@ -96,21 +104,21 @@ onMounted(load)
           <select v-if="availableSites.length" v-model="siteId" class="select">
             <option v-for="id in availableSites" :key="id" :value="id">{{ id }}</option>
           </select>
-          <input v-else v-model="siteId" class="input" placeholder="ob-venue-1" />
+          <input v-else v-model="siteId" class="input" placeholder="venue-1" />
         </div>
         <div class="field">
           <label>{{ t('exportFormat') }}</label>
           <select v-model="format" class="select">
-            <option value="tencent-json">{{ t('fmtStandardJson') }}</option>
             <option value="hillstone-md">{{ t('fmtHillstoneMd') }}</option>
-            <option value="generic-md">{{ t('fmtGenericMd') }}</option>
             <option value="hillstone-draft">{{ t('fmtHillstoneCli') }}</option>
+            <option value="tencent-json">{{ t('fmtStandardJson') }}</option>
+            <option value="generic-md">{{ t('fmtGenericMd') }}</option>
             <option value="strongswan-draft">{{ t('fmtStrongswan') }}</option>
           </select>
         </div>
       </div>
 
-      <div class="row" style="margin-top: 8px; padding-top: 10px; border-top: 1px solid var(--border);">
+      <div class="row" style="margin-top: 8px; padding-top: 12px; border-top: 1px solid var(--border);">
         <label style="display: flex; align-items: center; gap: 8px; cursor: pointer;">
           <input type="checkbox" v-model="includePSK" />
           <span>{{ t('includePskPlain') }}</span>
@@ -125,18 +133,27 @@ onMounted(load)
           :placeholder="t('confirmAdminPassPh')"
         />
         <div class="spacer"></div>
-        <button class="btn" @click="generate">{{ t('btnGenerateCfg') }}</button>
+        <button class="btn" :disabled="!profileId || !siteId" @click="generate">
+          <FileCode2 :size="14" />
+          <span>{{ t('btnGenerateCfg') }}</span>
+        </button>
       </div>
     </div>
 
     <div v-if="content" class="card">
-      <div class="row" style="margin-bottom: 10px;">
-        <strong>{{ filename }}</strong>
+      <div class="row" style="margin-bottom: 12px;">
+        <span class="code-chip">{{ filename }}</span>
         <div class="spacer"></div>
-        <button class="btn btn-secondary" @click="copyText">{{ copied ? t('btnCopied') : t('btnCopy') }}</button>
-        <button class="btn btn-ok" @click="downloadTextFile(filename, content)">{{ t('btnDownload') }}</button>
+        <button class="btn btn-secondary btn-sm" @click="copyText">
+          <Copy :size="13" />
+          <span>{{ copied ? t('btnCopied') : t('btnCopy') }}</span>
+        </button>
+        <button class="btn btn-sm" @click="downloadTextFile(filename, content)">
+          <Download :size="13" />
+          <span>{{ t('btnDownload') }}</span>
+        </button>
       </div>
-      <div class="code-block">{{ content }}</div>
+      <div class="code-block" style="max-height: 480px;">{{ content }}</div>
     </div>
   </div>
 </template>

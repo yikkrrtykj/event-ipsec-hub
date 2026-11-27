@@ -267,12 +267,28 @@ func TestWebAPIEndToEndLoginProfileExportAndTimeline(t *testing.T) {
 		t.Fatalf("POST /api/v1/secrets/reveal unexpected: status=%d cc=%q body=%+v", resp.StatusCode, resp.Header.Get("Cache-Control"), rev)
 	}
 
-	// Validate YAML containing UI-generated ICMP monitoring probe block
-	yamlWithProbe := string(yamlBytes) + "\nmonitoring:\n  enabled: true\n  probes:\n    - site_id: ob-venue-1\n      protocol: icmp\n      target: 10.101.10.1\n      path: primary\n"
+	// Validate YAML containing UI-generated ICMP monitoring probe + tunnel_local_cidr
+	yamlWithProbe := strings.Replace(string(yamlBytes), "    selector_mode: route_based\n", "    selector_mode: route_based\n    tunnel_local_cidr: 169.254.201.1/30\n", 1) +
+		"\nmonitoring:\n  enabled: true\n  probes:\n    - site_id: ob-venue-1\n      protocol: icmp\n      target: 169.254.201.2\n      path: primary\n"
 	resp = postJSON("/api/v1/profiles/validate", map[string]any{"yaml_content": yamlWithProbe})
 	if resp.StatusCode != http.StatusOK {
 		var verr map[string]any
 		_ = json.NewDecoder(resp.Body).Decode(&verr)
-		t.Fatalf("validate profile with ICMP probe failed: %d %+v", resp.StatusCode, verr)
+		t.Fatalf("validate profile with tunnel_local_cidr + ICMP probe failed: %d %+v", resp.StatusCode, verr)
+	}
+
+	// Security settings exposes current_client_ip and rejects invalid CIDR
+	resp, _ = client.Get(ts.URL + "/api/v1/system/security")
+	var sec map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&sec)
+	if resp.StatusCode != http.StatusOK || sec["current_client_ip"] == "" {
+		t.Fatalf("GET /api/v1/system/security missing current_client_ip: %+v", sec)
+	}
+	badSecBody, _ := json.Marshal(map[string]any{"allowlist": []string{"not-an-ip"}, "retention_days": 14})
+	badSecReq, _ := http.NewRequest(http.MethodPut, ts.URL+"/api/v1/system/security", bytes.NewReader(badSecBody))
+	badSecReq.Header.Set("Content-Type", "application/json")
+	resp, _ = client.Do(badSecReq)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 on invalid allowlist CIDR, got %d", resp.StatusCode)
 	}
 }

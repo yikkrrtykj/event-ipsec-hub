@@ -70,6 +70,9 @@ func TestMultiOBIsolationAndHillstoneModes(t *testing.T) {
 	}
 	ob1, ob2, srv := bySite["ob-venue-1"], bySite["ob-venue-2"], bySite["server-core"]
 
+	if !strings.Contains(forward, `tcp flags syn / syn,rst tcp option maxseg size set 1360`) {
+		t.Fatal("expected TCP MSS 1360 clamping in forward chain")
+	}
 	if !strings.Contains(forward, `iifname "`+ob1.Name()+`" oifname "`+srv.Name()+`"`) {
 		t.Fatal("missing OB1 -> Server allow rule")
 	}

@@ -484,9 +484,10 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request, _ sessio
 					"peer_public_ip": st.PublicEndpoint,
 					"lan_cidrs":      st.LANCIDRs,
 					"vendor":         st.Firewall.Vendor,
-					"selector_mode":  sl.SelectorMode,
-					"isp_label":      sl.OuterPath.ISPLabel,
-					"probe_target":   probeBySite[st.ID],
+					"selector_mode":     sl.SelectorMode,
+					"isp_label":         sl.OuterPath.ISPLabel,
+					"tunnel_local_cidr": sl.TunnelLocalCIDR,
+					"probe_target":      probeBySite[st.ID],
 				}
 			}
 		}
@@ -1474,15 +1475,16 @@ func (s *Server) handleAuditLogs(w http.ResponseWriter, _ *http.Request, _ sessi
 	writeJSONResp(w, http.StatusOK, map[string]any{"logs": logs})
 }
 
-func (s *Server) handleGetSecurity(w http.ResponseWriter, _ *http.Request, _ sessionEntry) {
+func (s *Server) handleGetSecurity(w http.ResponseWriter, r *http.Request, _ sessionEntry) {
 	allowlist, expiresAt, retentionDays := s.getSecuritySettings()
 	if allowlist == nil {
 		allowlist = []string{}
 	}
 	writeJSONResp(w, http.StatusOK, map[string]any{
-		"allowlist":      allowlist,
-		"expires_at_ms":  expiresAt,
-		"retention_days": retentionDays,
+		"allowlist":         allowlist,
+		"expires_at_ms":     expiresAt,
+		"retention_days":    retentionDays,
+		"current_client_ip": extractClientIP(r.RemoteAddr),
 	})
 }
 
@@ -1496,7 +1498,31 @@ func (s *Server) handlePutSecurity(w http.ResponseWriter, r *http.Request, sess 
 		writeJSONResp(w, http.StatusBadRequest, map[string]any{"error": "Invalid JSON."})
 		return
 	}
-	rawAL, _ := json.Marshal(req.Allowlist)
+	cleanAL := make([]string, 0, len(req.Allowlist))
+	for _, raw := range req.Allowlist {
+		entry := strings.TrimSpace(raw)
+		if entry == "" {
+			continue
+		}
+		if strings.Contains(entry, "/") {
+			if _, _, err := net.ParseCIDR(entry); err != nil {
+				writeJSONResp(w, http.StatusBadRequest, map[string]any{"error": fmt.Sprintf("白名单网段格式无效: %s", entry)})
+				return
+			}
+		} else if net.ParseIP(entry) == nil {
+			writeJSONResp(w, http.StatusBadRequest, map[string]any{"error": fmt.Sprintf("白名单 IP 格式无效: %s", entry)})
+			return
+		}
+		cleanAL = append(cleanAL, entry)
+	}
+	if len(cleanAL) > 0 && !IsIPAllowed(r.RemoteAddr, cleanAL) {
+		writeJSONResp(w, http.StatusBadRequest, map[string]any{
+			"error": fmt.Sprintf("当前管理端 IP (%s) 不在新的白名单内，已阻止保存以防止锁定自己。请先加入当前 IP 后重试。", extractClientIP(r.RemoteAddr)),
+		})
+		return
+	}
+	req.Allowlist = cleanAL
+	rawAL, _ := json.Marshal(cleanAL)
 	_ = s.store.SetKV("web_allowlist", string(rawAL))
 	_ = s.store.SetKV("web_expires_at", strconv.FormatInt(req.ExpiresAtMs, 10))
 	if req.RetentionDays >= 1 && req.RetentionDays <= 90 {
