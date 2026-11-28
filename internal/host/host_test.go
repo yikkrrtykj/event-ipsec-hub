@@ -241,3 +241,23 @@ func TestCheckFirewallDockerCoexistence(t *testing.T) {
 		t.Fatal("expected xt REDIRECT target to be rejected")
 	}
 }
+
+func TestFingerprintStripsBridgeTimers(t *testing.T) {
+	a := map[string]any{
+		"ifname": "docker0",
+		"linkinfo": map[string]any{
+			"info_kind": "bridge",
+			"info_data": map[string]any{"gc_timer": 28412, "hello_timer": 199, "tcn_timer": 0},
+		},
+	}
+	b := map[string]any{
+		"ifname": "docker0",
+		"linkinfo": map[string]any{
+			"info_kind": "bridge",
+			"info_data": map[string]any{"gc_timer": 28301, "hello_timer": 42, "tcn_timer": 12},
+		},
+	}
+	if Fingerprint(a) != Fingerprint(b) {
+		t.Fatal("expected bridge ticking timers to be ignored in Fingerprint")
+	}
+}

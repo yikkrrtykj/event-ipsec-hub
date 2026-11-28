@@ -1252,19 +1252,31 @@ func (h *OSHost) Baseline(
 	}
 	for _, l := range links {
 		name, _ := l["ifname"].(string)
-		if _, ok := ownedLinks[name]; !ok {
-			foreignLinks = append(foreignLinks, map[string]any{
-				"ifname":   l["ifname"],
-				"address":  l["address"],
-				"mtu":      l["mtu"],
-				"linkinfo": l["linkinfo"],
-			})
+		if _, ok := ownedLinks[name]; ok || strings.HasPrefix(name, "veth") {
+			continue
 		}
+		var linkKind any
+		if li, ok := l["linkinfo"].(map[string]any); ok {
+			lk := map[string]any{}
+			if v, ok := li["info_kind"]; ok {
+				lk["info_kind"] = v
+			}
+			if v, ok := li["info_slave_kind"]; ok {
+				lk["info_slave_kind"] = v
+			}
+			linkKind = lk
+		}
+		foreignLinks = append(foreignLinks, map[string]any{
+			"ifname":   l["ifname"],
+			"address":  l["address"],
+			"mtu":      l["mtu"],
+			"linkinfo": linkKind,
+		})
 	}
 	var addrSummary []any
 	for _, row := range addrs {
 		name, _ := row["ifname"].(string)
-		if _, ok := ownedLinks[name]; ok {
+		if _, ok := ownedLinks[name]; ok || strings.HasPrefix(name, "veth") {
 			continue
 		}
 		var tuples []string
@@ -1329,7 +1341,9 @@ func cleanVolatile(v any) any {
 	case map[string]any:
 		out := make(map[string]any, len(tv))
 		for k, item := range tv {
-			if k == "handle" || k == "expires" || k == "used" {
+			if k == "handle" || k == "expires" || k == "used" ||
+				k == "gc_timer" || k == "hello_timer" || k == "tcn_timer" || k == "topology_change_timer" ||
+				k == "valid_life_time" || k == "preferred_life_time" {
 				continue
 			}
 			if k == "counter" {
