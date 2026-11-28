@@ -114,7 +114,7 @@ func buildConnections(p *profile.Profile) []map[string]any {
 			"tunnel_local_cidr":      l.TunnelLocalCIDR,
 			"primary_route_priority": prio,
 			"ike": map[string]any{
-				"version":           2,
+				"version":           l.EffectiveIKEVersion(),
 				"authentication":    "PSK",
 				"psk":               PSKPlaceholder,
 				"proposal":          ikeAlg.Proposal,
@@ -128,7 +128,7 @@ func buildConnections(p *profile.Profile) []map[string]any {
 				"dpd_action":        l.DPDAction,
 				"close_action":      l.CloseAction,
 				"initiator":         initiator,
-				"forced_nat_t":      true,
+				"forced_nat_t":      l.EffectiveIKEVersion() == 2,
 			},
 			"child": map[string]any{
 				"mode":              "tunnel",
@@ -646,6 +646,7 @@ type StandardIKESpec struct {
 	PropoAuthenAlgorithm string `json:"PropoAuthenAlgorithm"`
 	PropoEncryAlgorithm  string `json:"PropoEncryAlgorithm"`
 	IKEVersion           string `json:"IKEVersion"`
+	ExchangeMode         string `json:"ExchangeMode,omitempty"`
 	IKESaLifetimeSeconds int    `json:"IKESaLifetimeSeconds"`
 	DhGroupName          string `json:"DhGroupName"`
 	LocalIdentity        string `json:"LocalIdentity"`
@@ -727,11 +728,19 @@ func RenderStandardJSON(p *profile.Profile, siteID string, plaintextPSK string) 
 		remoteFQDN = peerWire.Value
 	}
 
+	ikeVerStr := "IKEV2"
+	exchangeMode := ""
+	if v, ok := ike["version"].(int); ok && v == 1 {
+		ikeVerStr = "IKEV1"
+		exchangeMode = "MAIN"
+	}
+
 	return &StandardPeerConfig{
 		IKEOptionsSpecification: StandardIKESpec{
 			PropoAuthenAlgorithm: tencentHashName(ikeAlg.Integrity),
 			PropoEncryAlgorithm:  tencentEncryName(ikeAlg.Encryption),
-			IKEVersion:           "IKEV2",
+			IKEVersion:           ikeVerStr,
+			ExchangeMode:         exchangeMode,
 			IKESaLifetimeSeconds: ikeLife,
 			DhGroupName:          tencentDHGroup(ikeAlg.Group),
 			LocalIdentity:        localIDType,

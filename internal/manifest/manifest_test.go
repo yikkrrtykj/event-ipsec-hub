@@ -164,3 +164,67 @@ backup:
 		t.Fatalf("expected tunnel subnet ICMP accept in single-site nft:\n%s", nft)
 	}
 }
+
+func TestIKEv1MainModeSwanctl(t *testing.T) {
+	raw := `schema_version: "2.0"
+event:
+  id: ikev1-hillstone
+  name: Hillstone IKEv1 Test
+hub:
+  id: hub-primary
+  platform: ubuntu-24.04
+  public_endpoint: 198.51.100.10
+  provider_label: VPS
+  location_label: Primary
+sites:
+  - id: venue-1
+    display_name: Hillstone WebUI
+    role: venue
+    public_endpoint: 203.0.113.10
+    ike_identity: 203.0.113.10
+    lan_cidrs:
+      - 10.43.10.0/24
+    firewall:
+      vendor: Hillstone
+security:
+  ike_version: 1
+  ike_proposal: aes256-sha256-prfsha256-modp2048
+  esp_proposal: aes256-sha256-modp2048
+  ike_lifetime_seconds: 86400
+  child_lifetime_seconds: 14400
+  child_lifetime_kb: 4096000
+site_links:
+  - site_id: venue-1
+    secret_ref: file:/etc/ipsecvpn/secrets/venue-1.psk
+    if_id: 201
+    selector_mode: route_based
+    outer_path:
+      interface: eth0
+      isp_label: ISP-A
+traffic_policy:
+  allowed_site_pairs: []
+backup:
+  enabled: false
+`
+	p, err := profile.ParseProfile([]byte(raw))
+	if err != nil {
+		t.Fatalf("parse IKEv1 profile: %v", err)
+	}
+	m, err := BuildManifest(p)
+	if err != nil {
+		t.Fatalf("build IKEv1 manifest: %v", err)
+	}
+	swan := SwanctlConfig(m, nil)
+	for _, want := range []string{
+		"version = 1",
+		"aggressive = no",
+		"proposals = aes256-sha256-modp2048",
+		"reauth_time = 86400s",
+		"encap = no",
+		"life_bytes = 4194304000",
+	} {
+		if !strings.Contains(swan, want) {
+			t.Fatalf("expected %q in IKEv1 swanctl.conf:\n%s", want, swan)
+		}
+	}
+}

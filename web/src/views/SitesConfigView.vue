@@ -74,6 +74,7 @@ const form = ref({
   hub_provider: 'VPS',
   hub_location: '',
   hub_country: '',
+  ike_version: 2,
   ike_enc: 'aes256',
   ike_hash: 'sha256',
   ike_dh: 'modp2048',
@@ -259,6 +260,7 @@ function buildYAMLFromForm(): string {
   lines.push(
     '',
     'security:',
+    `  ike_version: ${Number(f.ike_version) === 1 ? 1 : 2}`,
     `  ike_proposal: ${q(ikeProp)}`,
     `  esp_proposal: ${q(espProp)}`,
     `  ike_lifetime_seconds: ${Number(f.ike_lifetime) || 86400}`,
@@ -347,6 +349,7 @@ function hydrateFormFromProfile(p: any) {
     hub_provider: p.hub?.provider_label || 'VPS',
     hub_location: p.hub?.location_label || '',
     hub_country: p.hub?.country || '',
+    ike_version: p.security?.ike_version === 1 ? 1 : 2,
     ike_enc: 'aes256',
     ike_hash: 'sha256',
     ike_dh: 'modp2048',
@@ -437,6 +440,7 @@ function initBlankForm() {
     hub_provider: 'VPS',
     hub_location: '',
     hub_country: '',
+    ike_version: 2,
     ike_enc: 'aes256',
     ike_hash: 'sha256',
     ike_dh: 'modp2048',
@@ -478,6 +482,7 @@ function loadExampleTemplate() {
     hub_provider: 'VPS-Primary',
     hub_location: 'Hong-Kong',
     hub_country: 'CN-HK',
+    ike_version: 2,
     ike_enc: 'aes256',
     ike_hash: 'sha256',
     ike_dh: 'modp2048',
@@ -1194,14 +1199,25 @@ onBeforeUnmount(() => {
 
         <div class="card">
           <h3>{{ t('secParamsTitle') }}</h3>
+          <div class="field" style="margin-bottom: 12px;">
+            <label>{{ t('ikeVersionLabel') }}</label>
+            <select
+              v-model.number="form.ike_version"
+              class="select"
+              @change="() => { if (form.ike_version === 1 && form.ike_enc.endsWith('gcm16')) form.ike_enc = 'aes256' }"
+            >
+              <option :value="2">{{ t('ikeVer2Opt') }}</option>
+              <option :value="1">{{ t('ikeVer1Opt') }}</option>
+            </select>
+          </div>
           <div class="grid-3">
             <div class="field">
               <label>{{ t('ikeEncAlg') }}</label>
               <select v-model="form.ike_enc" class="select">
                 <option value="aes256">AES-256-CBC</option>
                 <option value="aes128">AES-128-CBC</option>
-                <option value="aes256gcm16">AES-256-GCM</option>
-                <option value="aes128gcm16">AES-128-GCM</option>
+                <option v-if="form.ike_version !== 1" value="aes256gcm16">AES-256-GCM</option>
+                <option v-if="form.ike_version !== 1" value="aes128gcm16">AES-128-GCM</option>
               </select>
             </div>
             <div class="field">

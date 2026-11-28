@@ -142,8 +142,9 @@ func VerifyInitiateConfig(sess *vici.Session, m *manifest.DeploymentManifest) er
 					authKeys[k] = true
 				}
 			}
-			if len(authKeys) != 2 || !authKeys["local-1"] || !authKeys["remote-1"] || fmt.Sprint(row["version"]) != "IKEv2" {
-				return secureio.Stop("The loaded authentication profile is not the expected IKEv2 PSK.")
+			wantVer := fmt.Sprintf("IKEv%d", link.EffectiveIKEVersion())
+			if len(authKeys) != 2 || !authKeys["local-1"] || !authKeys["remote-1"] || fmt.Sprint(row["version"]) != wantVer {
+				return secureio.Stop("The loaded authentication profile is not the expected " + wantVer + " PSK.")
 			}
 			for _, pair := range [][2]string{{"local-1", link.LocalID}, {"remote-1", link.RemoteID}} {
 				sec, _ := row[pair[0]].(map[string]any)

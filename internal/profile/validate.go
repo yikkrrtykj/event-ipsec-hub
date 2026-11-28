@@ -360,9 +360,11 @@ func ValidateRaw(raw map[string]any) (*Profile, error) {
 
 var integerOnlyPaths = map[string]bool{
 	"site_links.*.if_id":                     true,
+	"site_links.*.ike_version":               true,
 	"site_links.*.route_priority":            true,
 	"site_links.*.outer_path.route_table":    true,
 	"site_links.*.outer_path.policy_priority": true,
+	"security.ike_version":                   true,
 	"security.ike_lifetime_seconds":          true,
 	"security.child_lifetime_seconds":        true,
 	"security.child_lifetime_kb":             true,
@@ -578,6 +580,20 @@ func validateTopology(p *Profile) error {
 
 	var tunnelPrefixes []netip.Prefix
 	for _, l := range p.SiteLinks {
+		ver := 2
+		if p.Security != nil && p.Security.IKEVersion != nil {
+			ver = *p.Security.IKEVersion
+		}
+		if l.IKEVersion != nil {
+			ver = *l.IKEVersion
+		}
+		ikeProp := l.IKEProposal
+		if ikeProp == "" && p.Security != nil {
+			ikeProp = p.Security.IKEProposal
+		}
+		if ver == 1 && strings.Contains(ikeProp, "gcm") {
+			return profileErr("IKEv1 Phase 1 requires CBC encryption (e.g. AES-256-CBC), not GCM.")
+		}
 		if l.TunnelLocalCIDR == "" {
 			continue
 		}

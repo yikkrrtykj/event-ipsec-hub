@@ -69,8 +69,9 @@ type SiteLink struct {
 	SiteID        string    `json:"site_id"`
 	UplinkID      string    `json:"uplink_id,omitempty"`
 	SecretRef     string    `json:"secret_ref"`
-	IfID          uint32    `json:"if_id"`
-	IKEProposal   string    `json:"ike_proposal,omitempty"`
+	IfID            uint32    `json:"if_id"`
+	IKEVersion      *int      `json:"ike_version,omitempty"`
+	IKEProposal     string    `json:"ike_proposal,omitempty"`
 	ESPProposal   string    `json:"esp_proposal,omitempty"`
 	SelectorMode  string    `json:"selector_mode,omitempty"`
 	StartAction   string    `json:"start_action,omitempty"`
@@ -98,6 +99,7 @@ type OuterPath struct {
 }
 
 type Security struct {
+	IKEVersion           *int   `json:"ike_version,omitempty"`
 	IKEProposal          string `json:"ike_proposal,omitempty"`
 	ESPProposal          string `json:"esp_proposal,omitempty"`
 	IKELifetimeSeconds   *int   `json:"ike_lifetime_seconds,omitempty"`

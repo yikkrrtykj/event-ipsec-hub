@@ -210,6 +210,7 @@
         "uplink_id": {"$ref": "#/$defs/id"},
         "secret_ref": {"$ref": "#/$defs/file_ref"},
         "if_id": {"type": "integer", "minimum": 1, "maximum": 4294967295},
+        "ike_version": {"type": "integer", "enum": [1, 2]},
         "ike_proposal": {"$ref": "#/$defs/ike"},
         "esp_proposal": {"$ref": "#/$defs/esp"},
         "selector_mode": {"enum": ["exact", "route_based", "per_pair"]},
@@ -251,6 +252,7 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "ike_version": {"type": "integer", "enum": [1, 2]},
         "ike_proposal": {"$ref": "#/$defs/ike"},
         "esp_proposal": {"$ref": "#/$defs/esp"},
         "ike_lifetime_seconds": {"type": "integer", "minimum": 1},

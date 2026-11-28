@@ -92,7 +92,9 @@ func MatchProposal(row map[string]any, expected string, isIKE bool) bool {
 		}
 		prfBits := strings.TrimPrefix(parts[0], "prfsha")
 		parts = parts[1:]
-		wanted["prf-alg"] = "PRF_HMAC_SHA2_" + prfBits
+		if strVal(row["version"]) != "1" || strVal(row["prf-alg"]) != "" {
+			wanted["prf-alg"] = "PRF_HMAC_SHA2_" + prfBits
+		}
 	}
 	if _, hasDH := row["dh-group"]; isIKE || hasDH {
 		if len(parts) == 0 {
@@ -274,7 +276,7 @@ func sameStringSet(a, b []string) bool {
 }
 
 func parseIKE(name string, row map[string]any, link manifest.Link) (Ike, error) {
-	if strVal(row["version"]) != "2" || strVal(row["local-host"]) != link.Source || strVal(row["remote-host"]) != link.Peer {
+	if strVal(row["version"]) != strconv.Itoa(link.EffectiveIKEVersion()) || strVal(row["local-host"]) != link.Source || strVal(row["remote-host"]) != link.Peer {
 		return Ike{}, unowned("IKE identity, endpoint or proposal differs from the active manifest.")
 	}
 	if strVal(row["state"]) != "ESTABLISHED" {

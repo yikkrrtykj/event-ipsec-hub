@@ -70,9 +70,10 @@ type Link struct {
 	Peer           string   `json:"peer"`
 	LocalID        string   `json:"local_id"`
 	RemoteID       string   `json:"remote_id"`
-	LocalTS        []string `json:"local_ts"`
-	RemoteTS       []string `json:"remote_ts"`
-	IKEProposal    string   `json:"ike_proposal"`
+	LocalTS         []string `json:"local_ts"`
+	RemoteTS        []string `json:"remote_ts"`
+	IKEVersion      int      `json:"ike_version,omitempty"`
+	IKEProposal     string   `json:"ike_proposal"`
 	ESPProposal    string   `json:"esp_proposal"`
 	IKELifetime     int      `json:"ike_lifetime"`
 	ChildLifetime   int      `json:"child_lifetime"`
@@ -88,6 +89,28 @@ type Link struct {
 	LinkID          string   `json:"link_id"`
 	ISPLabel        string   `json:"isp_label"`
 	TunnelLocalCIDR string   `json:"tunnel_local_cidr,omitempty"`
+}
+
+func (l Link) EffectiveIKEVersion() int {
+	if l.IKEVersion == 1 {
+		return 1
+	}
+	return 2
+}
+
+func (l Link) SwanctlIKEProposal() string {
+	if l.EffectiveIKEVersion() != 1 {
+		return l.IKEProposal
+	}
+	parts := strings.Split(l.IKEProposal, "-")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if strings.HasPrefix(p, "prf") {
+			continue
+		}
+		out = append(out, p)
+	}
+	return strings.Join(out, "-")
 }
 
 func (l Link) TunnelLocalIP() string {
@@ -258,9 +281,10 @@ func (m *DeploymentManifest) Resources() map[string]any {
 			"peer":            l.Peer,
 			"local_id":        l.LocalID,
 			"remote_id":       l.RemoteID,
-			"local_ts":        l.LocalTS,
-			"remote_ts":       l.RemoteTS,
-			"ike_proposal":    l.IKEProposal,
+			"local_ts":          l.LocalTS,
+			"remote_ts":         l.RemoteTS,
+			"ike_version":       l.EffectiveIKEVersion(),
+			"ike_proposal":      l.IKEProposal,
 			"esp_proposal":    l.ESPProposal,
 			"ike_lifetime":      l.IKELifetime,
 			"child_lifetime":    l.ChildLifetime,
@@ -360,6 +384,7 @@ func BuildManifest(p *profile.Profile) (*DeploymentManifest, error) {
 	authLANs := profile.AuthorizedLANs(p)
 	hubID := p.Hub.EffectiveIKEIdentity()
 
+	sharedIKEVer := 2
 	sharedIKE := DefaultIKEProp
 	sharedESP := DefaultESPProp
 	sharedIKELife := 28800
@@ -370,6 +395,9 @@ func BuildManifest(p *profile.Profile) (*DeploymentManifest, error) {
 	sharedDPD := HubDPDAction
 	sharedClose := "none"
 	if p.Security != nil {
+		if p.Security.IKEVersion != nil {
+			sharedIKEVer = *p.Security.IKEVersion
+		}
 		if p.Security.IKEProposal != "" {
 			sharedIKE = p.Security.IKEProposal
 		}
@@ -439,6 +467,10 @@ func BuildManifest(p *profile.Profile) (*DeploymentManifest, error) {
 		if selectorMode == "" {
 			selectorMode = "exact"
 		}
+		ikeVer := sharedIKEVer
+		if sl.IKEVersion != nil {
+			ikeVer = *sl.IKEVersion
+		}
 		ikeProp := sl.IKEProposal
 		if ikeProp == "" {
 			ikeProp = sharedIKE
@@ -481,9 +513,10 @@ func BuildManifest(p *profile.Profile) (*DeploymentManifest, error) {
 			Peer:           peerAddr,
 			LocalID:        hubID,
 			RemoteID:       peerIKEID,
-			LocalTS:        localTS,
-			RemoteTS:       slices.Clone(authLANs[site.ID]),
-			IKEProposal:    ikeProp,
+			LocalTS:         localTS,
+			RemoteTS:        slices.Clone(authLANs[site.ID]),
+			IKEVersion:      ikeVer,
+			IKEProposal:     ikeProp,
 			ESPProposal:    espProp,
 			IKELifetime:     sharedIKELife,
 			ChildLifetime:   sharedChildLife,
@@ -564,20 +597,28 @@ func ConnectionSettings(l Link) map[string]any {
 		}
 		children[spec.Name] = ch
 	}
-	return map[string]any{
-		"version":      "2",
+	ver := l.EffectiveIKEVersion()
+	conn := map[string]any{
+		"version":      fmt.Sprintf("%d", ver),
 		"local_addrs":  []string{l.Source},
 		"remote_addrs": []string{l.Peer},
-		"proposals":    []string{l.IKEProposal},
-		"reauth_time":  "0",
-		"rekey_time":   fmt.Sprintf("%ds", l.IKELifetime),
+		"proposals":    []string{l.SwanctlIKEProposal()},
 		"dpd_delay":    fmt.Sprintf("%ds", l.DPDDelay),
 		"mobike":       "no",
-		"encap":        "yes",
 		"local":        map[string]any{"auth": "psk", "id": l.LocalID},
 		"remote":       map[string]any{"auth": "psk", "id": l.RemoteID},
 		"children":     children,
 	}
+	if ver == 1 {
+		conn["aggressive"] = "no"
+		conn["reauth_time"] = fmt.Sprintf("%ds", l.IKELifetime)
+		conn["encap"] = "no"
+	} else {
+		conn["reauth_time"] = "0"
+		conn["rekey_time"] = fmt.Sprintf("%ds", l.IKELifetime)
+		conn["encap"] = "yes"
+	}
+	return conn
 }
 
 // SwanctlConfig renders deterministic swanctl.conf syntax matching the VICI connection settings.
@@ -586,16 +627,25 @@ func SwanctlConfig(m *DeploymentManifest, keys map[string][]byte) string {
 	b.WriteString("connections {\n")
 	if m != nil {
 		for _, l := range m.Links {
+			ver := l.EffectiveIKEVersion()
 			fmt.Fprintf(&b, "    %s {\n", l.Name())
-			fmt.Fprintf(&b, "        version = 2\n")
+			fmt.Fprintf(&b, "        version = %d\n", ver)
 			fmt.Fprintf(&b, "        local_addrs = %s\n", l.Source)
 			fmt.Fprintf(&b, "        remote_addrs = %s\n", l.Peer)
-			fmt.Fprintf(&b, "        proposals = %s\n", l.IKEProposal)
-			fmt.Fprintf(&b, "        reauth_time = 0\n")
-			fmt.Fprintf(&b, "        rekey_time = %ds\n", l.IKELifetime)
-			fmt.Fprintf(&b, "        dpd_delay = %ds\n", l.DPDDelay)
-			fmt.Fprintf(&b, "        mobike = no\n")
-			fmt.Fprintf(&b, "        encap = yes\n")
+			fmt.Fprintf(&b, "        proposals = %s\n", l.SwanctlIKEProposal())
+			if ver == 1 {
+				fmt.Fprintf(&b, "        aggressive = no\n")
+				fmt.Fprintf(&b, "        reauth_time = %ds\n", l.IKELifetime)
+				fmt.Fprintf(&b, "        dpd_delay = %ds\n", l.DPDDelay)
+				fmt.Fprintf(&b, "        mobike = no\n")
+				fmt.Fprintf(&b, "        encap = no\n")
+			} else {
+				fmt.Fprintf(&b, "        reauth_time = 0\n")
+				fmt.Fprintf(&b, "        rekey_time = %ds\n", l.IKELifetime)
+				fmt.Fprintf(&b, "        dpd_delay = %ds\n", l.DPDDelay)
+				fmt.Fprintf(&b, "        mobike = no\n")
+				fmt.Fprintf(&b, "        encap = yes\n")
+			}
 			fmt.Fprintf(&b, "        local {\n            auth = psk\n            id = %s\n        }\n", l.LocalID)
 			fmt.Fprintf(&b, "        remote {\n            auth = psk\n            id = %s\n        }\n", l.RemoteID)
 			b.WriteString("        children {\n")
