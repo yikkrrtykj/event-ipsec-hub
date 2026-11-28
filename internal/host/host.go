@@ -890,6 +890,39 @@ func checkForeignRuleSafe(fam, tbl, chn string, row map[string]any, rulesByChain
 			if safeExpr[k] {
 				continue
 			}
+			if k == "xt" {
+				if xm, ok := v.(map[string]any); ok {
+					xtype, _ := xm["type"].(string)
+					xname := strings.ToUpper(fmt.Sprint(xm["name"]))
+					if xtype == "match" || xtype == "watcher" {
+						continue
+					}
+					if xtype == "target" {
+						switch xname {
+						case "MASQUERADE":
+							unsafeKeys = append(unsafeKeys, "masquerade")
+							continue
+						case "DNAT":
+							unsafeKeys = append(unsafeKeys, "dnat")
+							continue
+						case "DROP":
+							unsafeKeys = append(unsafeKeys, "drop")
+							continue
+						case "REJECT":
+							unsafeKeys = append(unsafeKeys, "reject")
+							continue
+						case "RETURN":
+							if isDockerChainName(chn) {
+								continue
+							}
+						case "ACCEPT":
+							continue
+						}
+						unsafeKeys = append(unsafeKeys, "xt:"+xname)
+						continue
+					}
+				}
+			}
 			if k == "jump" {
 				if jm, ok := v.(map[string]any); ok {
 					if tgt, ok := jm["target"].(string); ok && isDockerChainName(tgt) {

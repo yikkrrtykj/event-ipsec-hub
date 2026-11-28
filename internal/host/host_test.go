@@ -183,4 +183,61 @@ func TestCheckFirewallDockerCoexistence(t *testing.T) {
 	if err := CheckFirewallObjects(unsafeDNAT); err == nil {
 		t.Fatal("expected Docker DNAT on UDP 4500 to be rejected")
 	}
+
+	// Real Ubuntu 24.04 iptables-nft JSON uses {"xt":{"type":"match"/"target","name":...}} expressions.
+	xtDockerObjs := []map[string]any{
+		{"chain": map[string]any{"family": "ip", "table": "nat", "name": "DOCKER"}},
+		{"chain": map[string]any{"family": "ip", "table": "nat", "name": "PREROUTING", "hook": "prerouting", "policy": "accept"}},
+		{"chain": map[string]any{"family": "ip", "table": "nat", "name": "POSTROUTING", "hook": "postrouting", "policy": "accept"}},
+		{"rule": map[string]any{
+			"family": "ip", "table": "nat", "chain": "PREROUTING",
+			"expr": []any{
+				map[string]any{"xt": map[string]any{"type": "match", "name": "addrtype"}},
+				map[string]any{"counter": map[string]any{}},
+				map[string]any{"jump": map[string]any{"target": "DOCKER"}},
+			},
+		}},
+		{"rule": map[string]any{
+			"family": "ip", "table": "nat", "chain": "POSTROUTING",
+			"expr": []any{
+				map[string]any{"match": map[string]any{"op": "==", "left": map[string]any{"payload": map[string]any{"protocol": "ip", "field": "saddr"}}, "right": map[string]any{"prefix": map[string]any{"addr": "172.17.0.0", "len": 16}}}},
+				map[string]any{"match": map[string]any{"op": "!=", "left": map[string]any{"meta": map[string]any{"key": "oifname"}}, "right": "docker0"}},
+				map[string]any{"counter": map[string]any{}},
+				map[string]any{"xt": map[string]any{"type": "target", "name": "MASQUERADE"}},
+			},
+		}},
+		{"chain": map[string]any{"family": "ip", "table": "filter", "name": "FORWARD", "hook": "forward", "policy": "accept"}},
+		{"chain": map[string]any{"family": "ip", "table": "filter", "name": "DOCKER-CT"}},
+		{"rule": map[string]any{
+			"family": "ip", "table": "filter", "chain": "FORWARD",
+			"expr": []any{
+				map[string]any{"counter": map[string]any{}},
+				map[string]any{"jump": map[string]any{"target": "DOCKER-CT"}},
+			},
+		}},
+		{"rule": map[string]any{
+			"family": "ip", "table": "filter", "chain": "DOCKER-CT",
+			"expr": []any{
+				map[string]any{"match": map[string]any{"op": "==", "left": map[string]any{"meta": map[string]any{"key": "oifname"}}, "right": "docker0"}},
+				map[string]any{"xt": map[string]any{"type": "match", "name": "conntrack"}},
+				map[string]any{"counter": map[string]any{}},
+				map[string]any{"accept": nil},
+			},
+		}},
+	}
+	if err := CheckFirewallObjects(xtDockerObjs); err != nil {
+		t.Fatalf("expected iptables-nft xt Docker rules to coexist cleanly, got: %v", err)
+	}
+
+	// Unsafe xt target (e.g. REDIRECT) must STILL be rejected.
+	unsafeXT := []map[string]any{
+		{"chain": map[string]any{"family": "ip", "table": "nat", "name": "PREROUTING", "hook": "prerouting", "policy": "accept"}},
+		{"rule": map[string]any{
+			"family": "ip", "table": "nat", "chain": "PREROUTING",
+			"expr": []any{map[string]any{"xt": map[string]any{"type": "target", "name": "REDIRECT"}}},
+		}},
+	}
+	if err := CheckFirewallObjects(unsafeXT); err == nil {
+		t.Fatal("expected xt REDIRECT target to be rejected")
+	}
 }
