@@ -88,7 +88,7 @@ function renderCharts() {
     hovered.value = null
   }
 
-  const baseGrid = { left: 60, right: 54, top: 38, bottom: 26 }
+  const baseGrid = { left: 60, right: 54, top: 52, bottom: 26 }
   const axisLabel = { color: axisColor, fontSize: 11 }
   const splitLine = { lineStyle: { color: splitColor } }
   const axisLine = { lineStyle: { color: axisLineColor } }
@@ -310,16 +310,16 @@ onBeforeUnmount(() => {
 
     <div v-show="samples.length > 0">
       <div class="card" style="padding: 12px 10px;">
-        <div ref="c1" style="width: 100%; height: 165px;"></div>
+        <div ref="c1" style="width: 100%; height: 180px;"></div>
       </div>
       <div class="card" style="padding: 12px 10px;">
-        <div ref="c2" style="width: 100%; height: 145px;"></div>
+        <div ref="c2" style="width: 100%; height: 155px;"></div>
       </div>
       <div class="card" style="padding: 12px 10px;">
-        <div ref="c3" style="width: 100%; height: 170px;"></div>
+        <div ref="c3" style="width: 100%; height: 185px;"></div>
       </div>
       <div class="card" style="padding: 12px 10px;">
-        <div ref="c4" style="width: 100%; height: 170px;"></div>
+        <div ref="c4" style="width: 100%; height: 185px;"></div>
       </div>
     </div>
     <div v-if="!samples.length" class="card muted" style="padding: 32px 20px; text-align: center;">

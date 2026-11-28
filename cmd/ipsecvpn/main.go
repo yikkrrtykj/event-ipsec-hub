@@ -32,7 +32,7 @@ import (
 	webassets "github.com/yikkrrtykj/event-ipsec-hub/web"
 )
 
-var Version = "4.2.7"
+var Version = "4.2.8"
 
 const (
 	DefaultProfiles = "/etc/ipsecvpn/profiles"

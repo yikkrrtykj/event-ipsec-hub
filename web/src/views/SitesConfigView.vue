@@ -886,7 +886,7 @@ async function saveAndApply(confirmed: boolean) {
     if (!pid) return
     const res = await api(`/api/v1/profiles/${encodeURIComponent(pid)}/apply`, {
       method: 'POST',
-      body: JSON.stringify({ confirmed, maintenance: false })
+      body: JSON.stringify({ confirmed, maintenance: true })
     })
     output.value = JSON.stringify(res, null, 2)
     if (confirmed) {
@@ -930,7 +930,7 @@ async function applyProfile(confirmed: boolean) {
   try {
     const res = await api(`/api/v1/profiles/${encodeURIComponent(selectedId.value)}/apply`, {
       method: 'POST',
-      body: JSON.stringify({ confirmed, maintenance: false })
+      body: JSON.stringify({ confirmed, maintenance: true })
     })
     output.value = JSON.stringify(res, null, 2)
     if (confirmed) {
