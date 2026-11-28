@@ -531,6 +531,13 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request, _ sessio
 		return siteCards[i]["sample"].(storage.MetricSample).SiteID < siteCards[j]["sample"].(storage.MetricSample).SiteID
 	})
 
+	latestSamples := make([]storage.MetricSample, 0, len(siteCards))
+	for _, card := range siteCards {
+		if sm, ok := card["sample"].(storage.MetricSample); ok {
+			latestSamples = append(latestSamples, sm)
+		}
+	}
+
 	foState, _ := failover.LoadState(s.cfg.FailoverStateFile)
 	agentOK := false
 	if s.agent != nil {
@@ -547,7 +554,7 @@ func (s *Server) handleOverview(w http.ResponseWriter, r *http.Request, _ sessio
 		"demo_mode":      s.cfg.DemoMode,
 		"sites":          siteCards,
 		"recent_events":  events,
-		"overall":        telemetry.SummarizeWindow(samples, events),
+		"overall":        telemetry.SummarizeWindow(latestSamples, events),
 	})
 }
 

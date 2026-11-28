@@ -224,17 +224,11 @@ onBeforeUnmount(() => {
         </div>
       </div>
 
-      <!-- Overall Diagnosis Notice (only shown prominently when warning/critical or informative) -->
+      <!-- Overall Diagnosis Notice (shown prominently only for active warning/critical faults) -->
       <div
-        v-if="overview.overall.severity !== 'ok' && siteRows.length > 0"
+        v-if="(overview.overall.severity === 'warning' || overview.overall.severity === 'critical') && siteRows.length > 0"
         class="alert-banner"
-        :class="
-          overview.overall.severity === 'warning'
-            ? 'alert-warn'
-            : overview.overall.severity === 'critical'
-              ? 'alert-critical'
-              : 'alert-unknown'
-        "
+        :class="overview.overall.severity === 'warning' ? 'alert-warn' : 'alert-critical'"
       >
         <div class="row">
           <StatusDot :state="dotState(overview.overall.severity)" :label="causeLabel(overview.overall.code)" />
