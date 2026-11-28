@@ -682,10 +682,22 @@ function openEditSiteDrawer(idx: number) {
   editingSiteIdx.value = idx
 }
 
+let drawerBackdropDown = false
+
 function closeDrawers() {
+  drawerBackdropDown = false
   editingSiteIdx.value = null
   gatewayDrawerOpen.value = false
   syncPairsWithSites()
+}
+
+function onDrawerBackdropMouseDown() {
+  drawerBackdropDown = true
+}
+
+function onDrawerBackdropClick() {
+  if (drawerBackdropDown) closeDrawers()
+  drawerBackdropDown = false
 }
 
 function onKeyDown(ev: KeyboardEvent) {
@@ -1014,13 +1026,17 @@ onBeforeUnmount(() => {
           <option value="backup">{{ t('rolePrefixBackup') }}</option>
         </select>
         <button class="btn btn-secondary" @click="loadExampleTemplate">{{ t('loadExample') }}</button>
-        <button v-if="subTab === 'tunnels'" class="btn btn-secondary" :disabled="applyingBusy || !sites.length" @click="saveAndApply(false)">
-          {{ t('btnDryRun') }}
-        </button>
-        <button v-if="subTab === 'tunnels'" class="btn" @click="openNewSiteDrawer">
-          <Plus :size="14" />
-          <span>{{ t('newTunnelBtn').replace(/^\+\s*/, '') }}</span>
-        </button>
+        <template v-if="subTab === 'tunnels'">
+          <button class="btn btn-secondary" :disabled="applyingBusy || !sites.length" @click="saveProfile(true)">
+            {{ t('btnSaveDraft') }}
+          </button>
+          <button class="btn btn-secondary" :disabled="applyingBusy || !sites.length" @click="saveAndApply(false)">
+            {{ t('btnDryRun') }}
+          </button>
+          <button class="btn btn-ok" :disabled="applyingBusy || !sites.length" @click="saveAndApply(true)">
+            {{ t('btnSaveAndApply') }}
+          </button>
+        </template>
       </div>
     </div>
 
@@ -1033,11 +1049,7 @@ onBeforeUnmount(() => {
     <div v-if="errMsg" class="alert-banner alert-critical">{{ errMsg }}</div>
     <div v-if="infoMsg" class="alert-banner alert-ok">{{ infoMsg }}</div>
     <div v-if="isFormDirty && subTab === 'tunnels'" class="alert-banner alert-warn">
-      <div class="row">
-        <span>{{ t('unsavedChangesBanner') }}</span>
-        <div class="spacer"></div>
-        <button class="btn btn-ok btn-sm" :disabled="applyingBusy" @click="saveAndApply(true)">{{ t('btnSaveAndApply') }}</button>
-      </div>
+      <span>{{ t('unsavedChangesBanner') }}</span>
     </div>
 
     <!-- Saved profile switcher bar -->
@@ -1198,11 +1210,11 @@ onBeforeUnmount(() => {
             <div class="field">
               <label>{{ t('ikeDhGroup') }}</label>
               <select v-model="form.ike_dh" class="select">
-                <option value="modp2048">GROUP14 (modp2048)</option>
-                <option value="modp3072">GROUP15 (modp3072)</option>
-                <option value="modp4096">GROUP16 (modp4096)</option>
-                <option value="ecp256">GROUP19 (ecp256)</option>
-                <option value="ecp384">GROUP20 (ecp384)</option>
+                <option value="modp2048">Group 14 (2048)</option>
+                <option value="modp3072">Group 15 (3072)</option>
+                <option value="modp4096">Group 16 (4096)</option>
+                <option value="ecp256">Group 19 (P-256)</option>
+                <option value="ecp384">Group 20 (P-384)</option>
               </select>
             </div>
             <div class="field">
@@ -1226,11 +1238,11 @@ onBeforeUnmount(() => {
             <div class="field">
               <label>{{ t('espPfsGroup') }}</label>
               <select v-model="form.esp_dh" class="select">
-                <option value="modp2048">GROUP14 (modp2048)</option>
-                <option value="modp3072">GROUP15 (modp3072)</option>
-                <option value="modp4096">GROUP16 (modp4096)</option>
-                <option value="ecp256">GROUP19 (ecp256)</option>
-                <option value="ecp384">GROUP20 (ecp384)</option>
+                <option value="modp2048">Group 14 (2048)</option>
+                <option value="modp3072">Group 15 (3072)</option>
+                <option value="modp4096">Group 16 (4096)</option>
+                <option value="ecp256">Group 19 (P-256)</option>
+                <option value="ecp384">Group 20 (P-384)</option>
               </select>
             </div>
           </div>
@@ -1274,15 +1286,14 @@ onBeforeUnmount(() => {
         </div>
       </div>
 
-      <!-- Save & Apply Action Bar -->
-      <div class="card">
-        <div class="row">
-          <input v-model="note" class="input" style="flex: 1;" :placeholder="t('changeNotePh')" />
-          <button class="btn btn-secondary" :disabled="applyingBusy" @click="saveProfile(true)">{{ t('btnSaveDraft') }}</button>
-          <button class="btn btn-secondary" :disabled="applyingBusy" @click="saveAndApply(false)">{{ t('btnDryRun') }}</button>
-          <button class="btn btn-ok" :disabled="applyingBusy" @click="saveAndApply(true)">{{ t('btnSaveAndApply') }}</button>
+      <!-- Execution / Dry-Run Output (shown only when present) -->
+      <div v-if="output" class="card">
+        <div class="row" style="margin-bottom: 8px;">
+          <strong style="font-size: 13px;">{{ t('execOutputTitle') }}</strong>
+          <div class="spacer"></div>
+          <button class="btn btn-ghost btn-sm" @click="output = ''">{{ t('btnClear') }}</button>
         </div>
-        <div v-if="output" class="code-block" style="margin-top: 12px; max-height: 240px;">{{ output }}</div>
+        <div class="code-block" style="max-height: 240px;">{{ output }}</div>
       </div>
     </template>
 
@@ -1433,8 +1444,8 @@ onBeforeUnmount(() => {
     </template>
 
     <!-- Slide-Over Drawer: Edit/Create Tunnel -->
-    <div v-if="editingSite" class="drawer-backdrop" @click.self="closeDrawers">
-      <div class="drawer-panel">
+    <div v-if="editingSite" class="drawer-backdrop" @mousedown.self="onDrawerBackdropMouseDown" @click.self="onDrawerBackdropClick">
+      <div class="drawer-panel" @mousedown="drawerBackdropDown = false">
         <div class="drawer-header">
           <h3>{{ isNewSite ? t('drawerNewTunnel') : `${t('drawerEditTunnel')} · ${editingSite.id}` }}</h3>
           <button class="btn btn-secondary btn-icon" @click="closeDrawers"><X :size="15" /></button>
@@ -1633,8 +1644,8 @@ onBeforeUnmount(() => {
     </div>
 
     <!-- Slide-Over Drawer: Edit Gateway Basics -->
-    <div v-if="gatewayDrawerOpen" class="drawer-backdrop" @click.self="closeDrawers">
-      <div class="drawer-panel">
+    <div v-if="gatewayDrawerOpen" class="drawer-backdrop" @mousedown.self="onDrawerBackdropMouseDown" @click.self="onDrawerBackdropClick">
+      <div class="drawer-panel" @mousedown="drawerBackdropDown = false">
         <div class="drawer-header">
           <h3>{{ t('drawerEditGateway') }}</h3>
           <button class="btn btn-secondary btn-icon" @click="closeDrawers"><X :size="15" /></button>

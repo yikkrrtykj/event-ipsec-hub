@@ -117,10 +117,22 @@ async function refreshDiagnostics() {
   }
 }
 
+let diagBackdropDown = false
+
 function closeDiagnostics() {
+  diagBackdropDown = false
   diagSiteId.value = ''
   diagData.value = null
   diagErr.value = ''
+}
+
+function onDiagBackdropMouseDown() {
+  diagBackdropDown = true
+}
+
+function onDiagBackdropClick() {
+  if (diagBackdropDown) closeDiagnostics()
+  diagBackdropDown = false
 }
 
 async function copyDiagLogs() {
@@ -360,8 +372,8 @@ onBeforeUnmount(() => {
     </template>
 
     <!-- Slide-Over Drawer: Live Tunnel Diagnostics & strongSwan Logs -->
-    <div v-if="diagSiteId" class="drawer-backdrop" @click.self="closeDiagnostics">
-      <div class="drawer-panel" style="width: min(740px, 95vw);">
+    <div v-if="diagSiteId" class="drawer-backdrop" @mousedown.self="onDiagBackdropMouseDown" @click.self="onDiagBackdropClick">
+      <div class="drawer-panel" style="width: min(740px, 95vw);" @mousedown="diagBackdropDown = false">
         <div class="drawer-header">
           <div class="row" style="gap: 8px;">
             <Terminal :size="16" />

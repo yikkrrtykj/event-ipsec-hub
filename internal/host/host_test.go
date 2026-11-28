@@ -58,3 +58,129 @@ func TestParseVICIConnectionsAndNFTSeparation(t *testing.T) {
 		t.Fatalf("expected drop base chain to fail, got %v", err)
 	}
 }
+
+func TestCheckFirewallDockerCoexistence(t *testing.T) {
+	// Standard Ubuntu 24.04 Docker iptables-nft layout (FORWARD policy accept, bridge-scoped rules).
+	dockerObjs := []map[string]any{
+		{"chain": map[string]any{"family": "ip", "table": "nat", "name": "DOCKER"}},
+		{"chain": map[string]any{"family": "ip", "table": "nat", "name": "PREROUTING", "hook": "prerouting", "policy": "accept"}},
+		{"chain": map[string]any{"family": "ip", "table": "nat", "name": "OUTPUT", "hook": "output", "policy": "accept"}},
+		{"chain": map[string]any{"family": "ip", "table": "nat", "name": "POSTROUTING", "hook": "postrouting", "policy": "accept"}},
+		{"rule": map[string]any{
+			"family": "ip", "table": "nat", "chain": "PREROUTING",
+			"expr": []any{
+				map[string]any{"match": map[string]any{"op": "==", "left": map[string]any{"fib": map[string]any{"result": "type"}}, "right": "local"}},
+				map[string]any{"counter": map[string]any{}},
+				map[string]any{"jump": map[string]any{"target": "DOCKER"}},
+			},
+		}},
+		{"rule": map[string]any{
+			"family": "ip", "table": "nat", "chain": "POSTROUTING",
+			"expr": []any{
+				map[string]any{"match": map[string]any{"op": "==", "left": map[string]any{"payload": map[string]any{"protocol": "ip", "field": "saddr"}}, "right": map[string]any{"prefix": map[string]any{"addr": "172.17.0.0", "len": 16}}}},
+				map[string]any{"match": map[string]any{"op": "!=", "left": map[string]any{"meta": map[string]any{"key": "oifname"}}, "right": "docker0"}},
+				map[string]any{"counter": map[string]any{}},
+				map[string]any{"masquerade": nil},
+			},
+		}},
+		{"rule": map[string]any{
+			"family": "ip", "table": "nat", "chain": "DOCKER",
+			"expr": []any{
+				map[string]any{"match": map[string]any{"op": "!=", "left": map[string]any{"meta": map[string]any{"key": "iifname"}}, "right": "docker0"}},
+				map[string]any{"match": map[string]any{"op": "==", "left": map[string]any{"payload": map[string]any{"protocol": "tcp", "field": "dport"}}, "right": float64(8080)}},
+				map[string]any{"dnat": map[string]any{"addr": "172.17.0.2", "port": float64(80)}},
+			},
+		}},
+		{"chain": map[string]any{"family": "ip", "table": "filter", "name": "FORWARD", "hook": "forward", "policy": "accept"}},
+		{"chain": map[string]any{"family": "ip", "table": "filter", "name": "DOCKER-USER"}},
+		{"chain": map[string]any{"family": "ip", "table": "filter", "name": "DOCKER-FORWARD"}},
+		{"chain": map[string]any{"family": "ip", "table": "filter", "name": "DOCKER-BRIDGE"}},
+		{"chain": map[string]any{"family": "ip", "table": "filter", "name": "DOCKER"}},
+		{"rule": map[string]any{
+			"family": "ip", "table": "filter", "chain": "FORWARD",
+			"expr": []any{
+				map[string]any{"counter": map[string]any{}},
+				map[string]any{"jump": map[string]any{"target": "DOCKER-USER"}},
+			},
+		}},
+		{"rule": map[string]any{
+			"family": "ip", "table": "filter", "chain": "FORWARD",
+			"expr": []any{
+				map[string]any{"counter": map[string]any{}},
+				map[string]any{"jump": map[string]any{"target": "DOCKER-FORWARD"}},
+			},
+		}},
+		{"rule": map[string]any{
+			"family": "ip", "table": "filter", "chain": "DOCKER-FORWARD",
+			"expr": []any{
+				map[string]any{"counter": map[string]any{}},
+				map[string]any{"jump": map[string]any{"target": "DOCKER-BRIDGE"}},
+			},
+		}},
+		{"rule": map[string]any{
+			"family": "ip", "table": "filter", "chain": "DOCKER-BRIDGE",
+			"expr": []any{
+				map[string]any{"match": map[string]any{"op": "==", "left": map[string]any{"meta": map[string]any{"key": "oifname"}}, "right": "docker0"}},
+				map[string]any{"jump": map[string]any{"target": "DOCKER"}},
+			},
+		}},
+		{"rule": map[string]any{
+			"family": "ip", "table": "filter", "chain": "DOCKER",
+			"expr": []any{
+				map[string]any{"match": map[string]any{"op": "!=", "left": map[string]any{"meta": map[string]any{"key": "iifname"}}, "right": "docker0"}},
+				map[string]any{"match": map[string]any{"op": "==", "left": map[string]any{"meta": map[string]any{"key": "oifname"}}, "right": "docker0"}},
+				map[string]any{"counter": map[string]any{}},
+				map[string]any{"drop": nil},
+			},
+		}},
+	}
+	if err := CheckFirewallObjects(dockerObjs); err != nil {
+		t.Fatalf("expected standard Docker bridge-scoped rules to coexist cleanly, got: %v", err)
+	}
+
+	// Blanket drop in DOCKER-USER must STILL be rejected.
+	unsafeDrop := append(append([]map[string]any{}, dockerObjs...), map[string]any{
+		"rule": map[string]any{
+			"family": "ip", "table": "filter", "chain": "DOCKER-USER",
+			"expr": []any{map[string]any{"drop": nil}},
+		},
+	})
+	if err := CheckFirewallObjects(unsafeDrop); err == nil {
+		t.Fatal("expected blanket drop in DOCKER-USER to be rejected")
+	}
+
+	// Blanket WAN masquerade must STILL be rejected.
+	unsafeMasq := []map[string]any{
+		{"chain": map[string]any{"family": "ip", "table": "nat", "name": "POSTROUTING", "hook": "postrouting", "policy": "accept"}},
+		{"rule": map[string]any{
+			"family": "ip", "table": "nat", "chain": "POSTROUTING",
+			"expr": []any{
+				map[string]any{"match": map[string]any{"op": "==", "left": map[string]any{"meta": map[string]any{"key": "oifname"}}, "right": "eth0"}},
+				map[string]any{"masquerade": nil},
+			},
+		}},
+	}
+	if err := CheckFirewallObjects(unsafeMasq); err == nil {
+		t.Fatal("expected blanket WAN masquerade to be rejected")
+	}
+
+	// Docker DNAT hijacking UDP 4500 must STILL be rejected.
+	unsafeDNAT := []map[string]any{
+		{"chain": map[string]any{"family": "ip", "table": "nat", "name": "PREROUTING", "hook": "prerouting", "policy": "accept"}},
+		{"chain": map[string]any{"family": "ip", "table": "nat", "name": "DOCKER"}},
+		{"rule": map[string]any{
+			"family": "ip", "table": "nat", "chain": "PREROUTING",
+			"expr": []any{map[string]any{"jump": map[string]any{"target": "DOCKER"}}},
+		}},
+		{"rule": map[string]any{
+			"family": "ip", "table": "nat", "chain": "DOCKER",
+			"expr": []any{
+				map[string]any{"match": map[string]any{"op": "==", "left": map[string]any{"payload": map[string]any{"protocol": "udp", "field": "dport"}}, "right": float64(4500)}},
+				map[string]any{"dnat": map[string]any{"addr": "172.17.0.2", "port": float64(4500)}},
+			},
+		}},
+	}
+	if err := CheckFirewallObjects(unsafeDNAT); err == nil {
+		t.Fatal("expected Docker DNAT on UDP 4500 to be rejected")
+	}
+}

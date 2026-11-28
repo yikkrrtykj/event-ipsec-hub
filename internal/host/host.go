@@ -737,49 +737,217 @@ func CheckFirewallObjects(objects []map[string]any) error {
 		return secureio.Stop("An IPv4 legacy iptables table prevents proof of safe coexistence.")
 	}
 	sensitive := make(map[[3]string]bool)
+	rulesByChain := make(map[[3]string][]map[string]any)
 	for _, obj := range objects {
-		row, ok := obj["chain"].(map[string]any)
-		if !ok {
+		if row, ok := obj["chain"].(map[string]any); ok {
+			fam, _ := row["family"].(string)
+			if fam != "ip" && fam != "inet" && fam != "netdev" && fam != "bridge" {
+				continue
+			}
+			if row["hook"] == nil {
+				continue
+			}
+			policy, _ := row["policy"].(string)
+			tbl, _ := row["table"].(string)
+			name, _ := row["name"].(string)
+			if policy != "" && policy != "accept" {
+				return secureio.Stop(fmt.Sprintf("A foreign firewall base chain can override the project's allow rules (%s %s %s, policy %s).", fam, tbl, name, policy))
+			}
+			sensitive[[3]string{fam, tbl, name}] = true
 			continue
 		}
-		fam, _ := row["family"].(string)
-		if fam != "ip" && fam != "inet" && fam != "netdev" && fam != "bridge" {
-			continue
+		if row, ok := obj["rule"].(map[string]any); ok {
+			fam, _ := row["family"].(string)
+			tbl, _ := row["table"].(string)
+			chn, _ := row["chain"].(string)
+			key := [3]string{fam, tbl, chn}
+			rulesByChain[key] = append(rulesByChain[key], row)
 		}
-		if row["hook"] == nil {
-			continue
-		}
-		policy, _ := row["policy"].(string)
-		if policy != "" && policy != "accept" {
-			return secureio.Stop("A foreign firewall base chain can override the project's allow rules.")
-		}
-		tbl, _ := row["table"].(string)
-		name, _ := row["name"].(string)
-		sensitive[[3]string{fam, tbl, name}] = true
 	}
-	safeExpr := map[string]bool{"match": true, "counter": true, "accept": true, "log": true}
-	for _, obj := range objects {
-		row, ok := obj["rule"].(map[string]any)
-		if !ok {
-			continue
-		}
-		fam, _ := row["family"].(string)
-		tbl, _ := row["table"].(string)
-		chn, _ := row["chain"].(string)
-		if !sensitive[[3]string{fam, tbl, chn}] {
-			continue
-		}
-		exprs, _ := row["expr"].([]any)
-		for _, e := range exprs {
-			em, _ := e.(map[string]any)
-			for k := range em {
-				if !safeExpr[k] {
-					return secureio.Stop("A foreign firewall rule may drop, redirect or rewrite project traffic.")
-				}
+	for key := range sensitive {
+		for _, row := range rulesByChain[key] {
+			if err := checkForeignRuleSafe(key[0], key[1], key[2], row, rulesByChain, map[[3]string]bool{key: true}); err != nil {
+				return err
 			}
 		}
 	}
 	return nil
+}
+
+func isDockerInterfaceName(name string) bool {
+	return name == "docker0" || strings.HasPrefix(name, "docker") || strings.HasPrefix(name, "br-") || strings.HasPrefix(name, "veth")
+}
+
+func isDockerChainName(name string) bool {
+	return name == "DOCKER" || strings.HasPrefix(name, "DOCKER-")
+}
+
+func matchTargetsDockerIface(expr map[string]any, requireEq bool) bool {
+	m, ok := expr["match"].(map[string]any)
+	if !ok {
+		return false
+	}
+	op, _ := m["op"].(string)
+	if requireEq && op != "==" {
+		return false
+	}
+	if op != "==" && op != "!=" {
+		return false
+	}
+	left, _ := m["left"].(map[string]any)
+	meta, _ := left["meta"].(map[string]any)
+	key, _ := meta["key"].(string)
+	if key != "iifname" && key != "oifname" {
+		return false
+	}
+	if s, ok := m["right"].(string); ok {
+		return isDockerInterfaceName(s)
+	}
+	return false
+}
+
+func matchHasIPField(expr map[string]any, field string) bool {
+	m, ok := expr["match"].(map[string]any)
+	if !ok {
+		return false
+	}
+	left, _ := m["left"].(map[string]any)
+	payload, _ := left["payload"].(map[string]any)
+	return payload["protocol"] == "ip" && payload["field"] == field
+}
+
+func matchTouchesIPsecPorts(expr map[string]any) bool {
+	m, ok := expr["match"].(map[string]any)
+	if !ok {
+		return false
+	}
+	left, _ := m["left"].(map[string]any)
+	payload, _ := left["payload"].(map[string]any)
+	if payload == nil {
+		return false
+	}
+	proto, _ := payload["protocol"].(string)
+	field, _ := payload["field"].(string)
+	if proto == "ip" && field == "protocol" {
+		if s, ok := m["right"].(string); ok && (s == "esp" || s == "ah") {
+			return true
+		}
+		if n, ok := m["right"].(float64); ok && (int(n) == 50 || int(n) == 51) {
+			return true
+		}
+	}
+	if proto == "udp" && field == "dport" {
+		if n, ok := m["right"].(float64); ok && (int(n) == 500 || int(n) == 4500) {
+			return true
+		}
+	}
+	return false
+}
+
+func checkForeignRuleSafe(fam, tbl, chn string, row map[string]any, rulesByChain map[[3]string][]map[string]any, visited map[[3]string]bool) error {
+	exprs, _ := row["expr"].([]any)
+	safeExpr := map[string]bool{"match": true, "counter": true, "accept": true, "log": true}
+	if isDockerChainName(chn) {
+		safeExpr["return"] = true
+	}
+
+	var unsafeKeys []string
+	var jumpTargets []string
+	hasDockerEqIface := false
+	hasDockerAnyIface := false
+	hasIPSaddr := false
+	hasIPDaddr := false
+	hasL4Port := false
+	touchesIPsec := false
+
+	for _, e := range exprs {
+		em, _ := e.(map[string]any)
+		if matchTargetsDockerIface(em, true) {
+			hasDockerEqIface = true
+		}
+		if matchTargetsDockerIface(em, false) {
+			hasDockerAnyIface = true
+		}
+		if matchHasIPField(em, "saddr") {
+			hasIPSaddr = true
+		}
+		if matchHasIPField(em, "daddr") {
+			hasIPDaddr = true
+		}
+		if m, ok := em["match"].(map[string]any); ok {
+			if left, ok := m["left"].(map[string]any); ok {
+				if pl, ok := left["payload"].(map[string]any); ok {
+					if (pl["protocol"] == "tcp" || pl["protocol"] == "udp") && pl["field"] == "dport" {
+						hasL4Port = true
+					}
+				}
+			}
+		}
+		if matchTouchesIPsecPorts(em) {
+			touchesIPsec = true
+		}
+		for k, v := range em {
+			if safeExpr[k] {
+				continue
+			}
+			if k == "jump" {
+				if jm, ok := v.(map[string]any); ok {
+					if tgt, ok := jm["target"].(string); ok && isDockerChainName(tgt) {
+						jumpTargets = append(jumpTargets, tgt)
+						continue
+					}
+				}
+			}
+			unsafeKeys = append(unsafeKeys, k)
+		}
+	}
+
+	// Verify any jumped Docker sub-chains recursively.
+	for _, tgt := range jumpTargets {
+		subKey := [3]string{fam, tbl, tgt}
+		if visited[subKey] {
+			continue
+		}
+		nextVisited := make(map[[3]string]bool, len(visited)+1)
+		for k, v := range visited {
+			nextVisited[k] = v
+		}
+		nextVisited[subKey] = true
+		for _, subRow := range rulesByChain[subKey] {
+			if err := checkForeignRuleSafe(fam, tbl, tgt, subRow, rulesByChain, nextVisited); err != nil {
+				return err
+			}
+		}
+	}
+
+	if len(unsafeKeys) == 0 {
+		return nil
+	}
+
+	// Allow standard Docker-only masquerade rules in ip nat POSTROUTING:
+	// 1) Bridge subnet SNAT: ip saddr <bridge_cidr> oifname != "docker0"/"br-*" masquerade
+	// 2) Container hairpin SNAT: ip saddr <c> ip daddr <c> tcp/udp dport <p!=500/4500> masquerade
+	if fam == "ip" && tbl == "nat" && chn == "POSTROUTING" && len(unsafeKeys) == 1 && unsafeKeys[0] == "masquerade" {
+		if (hasIPSaddr && hasDockerAnyIface) || (hasIPSaddr && hasIPDaddr && hasL4Port && !touchesIPsec) {
+			return nil
+		}
+	}
+
+	// Allow Docker-bridge-only drop/reject inside DOCKER* filter chains (e.g. oifname == "docker0" drop).
+	if fam == "ip" && tbl == "filter" && isDockerChainName(chn) && len(unsafeKeys) == 1 && (unsafeKeys[0] == "drop" || unsafeKeys[0] == "reject") {
+		if hasDockerEqIface {
+			return nil
+		}
+	}
+
+	// Allow Docker container port-publish DNAT inside ip nat DOCKER* chains when not touching UDP 500/4500 or ESP.
+	if fam == "ip" && tbl == "nat" && isDockerChainName(chn) && len(unsafeKeys) == 1 && unsafeKeys[0] == "dnat" {
+		if hasL4Port && !touchesIPsec {
+			return nil
+		}
+	}
+
+	return secureio.Stop(fmt.Sprintf("A foreign firewall rule may drop, redirect or rewrite project traffic (%s %s %s: %s).", fam, tbl, chn, unsafeKeys[0]))
 }
 
 func (h *OSHost) CheckFirewall(objects []map[string]any) error {
