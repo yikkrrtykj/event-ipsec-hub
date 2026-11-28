@@ -85,7 +85,8 @@ const form = ref({
   dpd_action: 'restart',
   close_action: 'start',
   ike_lifetime: 86400,
-  child_lifetime: 14400
+  child_lifetime: 14400,
+  child_lifetime_kb: 4096000
 })
 
 const hostNet = ref<{ public_ip: string; default_interface: string; default_ip: string; interfaces: { name: string; ip: string }[] }>({
@@ -262,6 +263,7 @@ function buildYAMLFromForm(): string {
     `  esp_proposal: ${q(espProp)}`,
     `  ike_lifetime_seconds: ${Number(f.ike_lifetime) || 86400}`,
     `  child_lifetime_seconds: ${Number(f.child_lifetime) || 14400}`,
+    `  child_lifetime_kb: ${Math.max(0, Number(f.child_lifetime_kb) || 0)}`,
     `  dpd_delay_seconds: ${Number(f.dpd_delay) || 30}`,
     `  start_action: ${q(f.start_action || 'start')}`,
     `  dpd_action: ${q(f.dpd_action || 'restart')}`,
@@ -356,7 +358,8 @@ function hydrateFormFromProfile(p: any) {
     dpd_action: p.security?.dpd_action || 'restart',
     close_action: p.security?.close_action || 'start',
     ike_lifetime: p.security?.ike_lifetime_seconds ?? 86400,
-    child_lifetime: p.security?.child_lifetime_seconds ?? 14400
+    child_lifetime: p.security?.child_lifetime_seconds ?? 14400,
+    child_lifetime_kb: p.security?.child_lifetime_kb ?? 4096000
   }
   parseProposalIntoForm(p.security?.ike_proposal, p.security?.esp_proposal)
 
@@ -445,7 +448,8 @@ function initBlankForm() {
     dpd_action: 'restart',
     close_action: 'start',
     ike_lifetime: 86400,
-    child_lifetime: 14400
+    child_lifetime: 14400,
+    child_lifetime_kb: 4096000
   }
   sites.value = []
   pairs.value = []
@@ -485,7 +489,8 @@ function loadExampleTemplate() {
     dpd_action: 'restart',
     close_action: 'start',
     ike_lifetime: 86400,
-    child_lifetime: 14400
+    child_lifetime: 14400,
+    child_lifetime_kb: 4096000
   }
   sites.value = [
     {
@@ -1247,7 +1252,7 @@ onBeforeUnmount(() => {
             </div>
           </div>
 
-          <div class="grid-3" style="margin-top: 6px; padding-top: 10px; border-top: 1px solid var(--border);">
+          <div class="grid-4" style="margin-top: 6px; padding-top: 10px; border-top: 1px solid var(--border);">
             <div class="field">
               <label>{{ t('ikeLifetime') }}</label>
               <input v-model.number="form.ike_lifetime" type="number" class="input" />
@@ -1257,9 +1262,16 @@ onBeforeUnmount(() => {
               <input v-model.number="form.child_lifetime" type="number" class="input" />
             </div>
             <div class="field">
+              <label>{{ t('ipsecLifetimeKb') }}</label>
+              <input v-model.number="form.child_lifetime_kb" type="number" min="0" class="input" placeholder="4096000" />
+            </div>
+            <div class="field">
               <label>{{ t('dpdInterval') }}</label>
               <input v-model.number="form.dpd_delay" type="number" class="input" />
             </div>
+          </div>
+
+          <div class="grid-3">
             <div class="field">
               <label>{{ t('startAction') }}</label>
               <select v-model="form.start_action" class="select">

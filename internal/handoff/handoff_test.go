@@ -68,6 +68,21 @@ func TestTencentJSONAndVendorDrafts(t *testing.T) {
 	if !strings.Contains(md, "route_based") || !strings.Contains(md, "0.0.0.0/0") {
 		t.Fatalf("expected route_based guidance in markdown:\n%s", md)
 	}
+
+	// Clean 4-block standard JSON export
+	std, err := RenderStandardJSON(p, "ob-venue-1", "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+	if err != nil {
+		t.Fatalf("RenderStandardJSON: %v", err)
+	}
+	if std.IKEOptionsSpecification.LocalAddress != "198.51.100.10" || std.IKEOptionsSpecification.RemoteAddress != "203.0.113.21" {
+		t.Fatalf("unexpected standard JSON addresses: %+v", std.IKEOptionsSpecification)
+	}
+	if std.IPSECOptionsSpecification.IPSECSaLifetimeTraffic != 4096000 {
+		t.Fatalf("expected default 4096000 KB SA traffic lifetime, got %d", std.IPSECOptionsSpecification.IPSECSaLifetimeTraffic)
+	}
+	if std.PreShareKey != "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" {
+		t.Fatalf("unexpected PSK: %s", std.PreShareKey)
+	}
 }
 
 func TestBuildPlanAndIncompleteBackupSkip(t *testing.T) {

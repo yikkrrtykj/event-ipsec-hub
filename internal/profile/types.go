@@ -102,6 +102,7 @@ type Security struct {
 	ESPProposal          string `json:"esp_proposal,omitempty"`
 	IKELifetimeSeconds   *int   `json:"ike_lifetime_seconds,omitempty"`
 	ChildLifetimeSeconds *int   `json:"child_lifetime_seconds,omitempty"`
+	ChildLifetimeKB      *int   `json:"child_lifetime_kb,omitempty"`
 	DPDDelaySeconds      *int   `json:"dpd_delay_seconds,omitempty"`
 	StartAction          string `json:"start_action,omitempty"`
 	DPDAction            string `json:"dpd_action,omitempty"`

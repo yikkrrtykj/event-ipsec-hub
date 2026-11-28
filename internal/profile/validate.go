@@ -365,6 +365,7 @@ var integerOnlyPaths = map[string]bool{
 	"site_links.*.outer_path.policy_priority": true,
 	"security.ike_lifetime_seconds":          true,
 	"security.child_lifetime_seconds":        true,
+	"security.child_lifetime_kb":             true,
 	"security.dpd_delay_seconds":             true,
 	"backup.links.*.route_priority":          true,
 	"monitoring.exporter.port":               true,

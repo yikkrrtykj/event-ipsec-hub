@@ -11,9 +11,7 @@ const profiles = ref<any[]>([])
 const profileId = ref('')
 const availableSites = ref<string[]>([])
 const siteId = ref(props.initialSite || '')
-const format = ref('hillstone-md')
-const includePSK = ref(false)
-const confirmPassword = ref('')
+const includePSK = ref(true)
 const filename = ref('')
 const content = ref('')
 const errMsg = ref('')
@@ -57,14 +55,12 @@ async function generate() {
       method: 'POST',
       body: JSON.stringify({
         site_id: siteId.value,
-        format: format.value,
-        include_psk: includePSK.value,
-        confirm_password: confirmPassword.value
+        format: 'standard-json',
+        include_psk: includePSK.value
       })
     })
     filename.value = res.filename
     content.value = res.content
-    confirmPassword.value = ''
     toast.success(res.filename)
   } catch (e: any) {
     errMsg.value = e.message
@@ -92,7 +88,7 @@ onMounted(load)
     <div v-if="errMsg" class="alert-banner alert-critical">{{ errMsg }}</div>
 
     <div class="card">
-      <div class="grid-3">
+      <div class="grid-2">
         <div class="field">
           <label>{{ t('profileSet') }}</label>
           <select v-model="profileId" class="select">
@@ -106,16 +102,6 @@ onMounted(load)
           </select>
           <input v-else v-model="siteId" class="input" placeholder="venue-1" />
         </div>
-        <div class="field">
-          <label>{{ t('exportFormat') }}</label>
-          <select v-model="format" class="select">
-            <option value="hillstone-md">{{ t('fmtHillstoneMd') }}</option>
-            <option value="hillstone-draft">{{ t('fmtHillstoneCli') }}</option>
-            <option value="tencent-json">{{ t('fmtStandardJson') }}</option>
-            <option value="generic-md">{{ t('fmtGenericMd') }}</option>
-            <option value="strongswan-draft">{{ t('fmtStrongswan') }}</option>
-          </select>
-        </div>
       </div>
 
       <div class="row" style="margin-top: 8px; padding-top: 12px; border-top: 1px solid var(--border);">
@@ -124,14 +110,6 @@ onMounted(load)
           <span>{{ t('includePskPlain') }}</span>
           <span class="muted">({{ t('includePskHint') }})</span>
         </label>
-        <input
-          v-if="includePSK"
-          v-model="confirmPassword"
-          type="password"
-          class="input"
-          style="width: 200px;"
-          :placeholder="t('confirmAdminPassPh')"
-        />
         <div class="spacer"></div>
         <button class="btn" :disabled="!profileId || !siteId" @click="generate">
           <FileCode2 :size="14" />

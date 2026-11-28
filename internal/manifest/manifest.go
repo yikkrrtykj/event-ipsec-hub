@@ -74,9 +74,10 @@ type Link struct {
 	RemoteTS       []string `json:"remote_ts"`
 	IKEProposal    string   `json:"ike_proposal"`
 	ESPProposal    string   `json:"esp_proposal"`
-	IKELifetime    int      `json:"ike_lifetime"`
-	ChildLifetime  int      `json:"child_lifetime"`
-	DPDDelay       int      `json:"dpd_delay"`
+	IKELifetime     int      `json:"ike_lifetime"`
+	ChildLifetime   int      `json:"child_lifetime"`
+	ChildLifetimeKB int      `json:"child_lifetime_kb,omitempty"`
+	DPDDelay        int      `json:"dpd_delay"`
 	RoutePriority  int      `json:"route_priority"`
 	SelectorMode   string   `json:"selector_mode"`
 	StartAction    string   `json:"start_action"`
@@ -261,9 +262,10 @@ func (m *DeploymentManifest) Resources() map[string]any {
 			"remote_ts":       l.RemoteTS,
 			"ike_proposal":    l.IKEProposal,
 			"esp_proposal":    l.ESPProposal,
-			"ike_lifetime":    l.IKELifetime,
-			"child_lifetime":  l.ChildLifetime,
-			"dpd_delay":       l.DPDDelay,
+			"ike_lifetime":      l.IKELifetime,
+			"child_lifetime":    l.ChildLifetime,
+			"child_lifetime_kb": l.ChildLifetimeKB,
+			"dpd_delay":         l.DPDDelay,
 			"route_priority":  l.RoutePriority,
 			"selector_mode":   l.SelectorMode,
 			"start_action":    l.StartAction,
@@ -362,6 +364,7 @@ func BuildManifest(p *profile.Profile) (*DeploymentManifest, error) {
 	sharedESP := DefaultESPProp
 	sharedIKELife := 28800
 	sharedChildLife := 3600
+	sharedChildKB := 4096000
 	sharedDPDDelay := 30
 	sharedStart := HubStartAction
 	sharedDPD := HubDPDAction
@@ -378,6 +381,9 @@ func BuildManifest(p *profile.Profile) (*DeploymentManifest, error) {
 		}
 		if p.Security.ChildLifetimeSeconds != nil {
 			sharedChildLife = *p.Security.ChildLifetimeSeconds
+		}
+		if p.Security.ChildLifetimeKB != nil {
+			sharedChildKB = *p.Security.ChildLifetimeKB
 		}
 		if p.Security.DPDDelaySeconds != nil {
 			sharedDPDDelay = *p.Security.DPDDelaySeconds
@@ -479,9 +485,10 @@ func BuildManifest(p *profile.Profile) (*DeploymentManifest, error) {
 			RemoteTS:       slices.Clone(authLANs[site.ID]),
 			IKEProposal:    ikeProp,
 			ESPProposal:    espProp,
-			IKELifetime:    sharedIKELife,
-			ChildLifetime:  sharedChildLife,
-			DPDDelay:       sharedDPDDelay,
+			IKELifetime:     sharedIKELife,
+			ChildLifetime:   sharedChildLife,
+			ChildLifetimeKB: sharedChildKB,
+			DPDDelay:        sharedDPDDelay,
 			RoutePriority:  routePrio,
 			SelectorMode:   selectorMode,
 			StartAction:    startAction,
@@ -533,7 +540,7 @@ func BuildManifest(p *profile.Profile) (*DeploymentManifest, error) {
 func ConnectionSettings(l Link) map[string]any {
 	children := make(map[string]any)
 	for _, spec := range l.ChildSpecs() {
-		children[spec.Name] = map[string]any{
+		ch := map[string]any{
 			"mode":          "tunnel",
 			"local_ts":      spec.LocalTS,
 			"remote_ts":     spec.RemoteTS,
@@ -546,6 +553,16 @@ func ConnectionSettings(l Link) map[string]any {
 			"dpd_action":    l.DPDAction,
 			"close_action":  l.CloseAction,
 		}
+		if l.ChildLifetimeKB > 0 {
+			lifeBytes := uint64(l.ChildLifetimeKB) * 1024
+			rekeyBytes := lifeBytes * 9 / 10
+			if rekeyBytes < 1 {
+				rekeyBytes = 1
+			}
+			ch["life_bytes"] = fmt.Sprintf("%d", lifeBytes)
+			ch["rekey_bytes"] = fmt.Sprintf("%d", rekeyBytes)
+		}
+		children[spec.Name] = ch
 	}
 	return map[string]any{
 		"version":      "2",
@@ -592,6 +609,15 @@ func SwanctlConfig(m *DeploymentManifest, keys map[string][]byte) string {
 				fmt.Fprintf(&b, "                if_id_out = %d\n", l.IfID)
 				fmt.Fprintf(&b, "                life_time = %ds\n", l.ChildLifetime)
 				fmt.Fprintf(&b, "                rekey_time = %ds\n", ChildRekeySeconds(l.ChildLifetime))
+				if l.ChildLifetimeKB > 0 {
+					lifeBytes := uint64(l.ChildLifetimeKB) * 1024
+					rekeyBytes := lifeBytes * 9 / 10
+					if rekeyBytes < 1 {
+						rekeyBytes = 1
+					}
+					fmt.Fprintf(&b, "                life_bytes = %d\n", lifeBytes)
+					fmt.Fprintf(&b, "                rekey_bytes = %d\n", rekeyBytes)
+				}
 				fmt.Fprintf(&b, "                start_action = %s\n", l.StartAction)
 				fmt.Fprintf(&b, "                dpd_action = %s\n", l.DPDAction)
 				fmt.Fprintf(&b, "                close_action = %s\n", l.CloseAction)

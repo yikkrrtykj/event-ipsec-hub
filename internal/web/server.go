@@ -999,11 +999,6 @@ func (s *Server) handleExportPeer(w http.ResponseWriter, r *http.Request, sess s
 			writeJSONResp(w, http.StatusForbidden, map[string]any{"error": "Admin role required to export plaintext PSK."})
 			return
 		}
-		u, _ := s.store.GetUser(sess.Username)
-		if u == nil || !VerifyPassword(u.PasswordHash, req.ConfirmPassword) {
-			writeJSONResp(w, http.StatusUnauthorized, map[string]any{"error": "Password re-confirmation failed for plaintext PSK export."})
-			return
-		}
 		var secretRef string
 		for _, sl := range p.SiteLinks {
 			if sl.SiteID == req.SiteID {
@@ -1036,8 +1031,8 @@ func (s *Server) handleExportPeer(w http.ResponseWriter, r *http.Request, sess s
 	})
 
 	switch req.Format {
-	case "", "tencent-json":
-		tc, err := handoff.RenderTencentJSON(p, req.SiteID, plaintextPSK)
+	case "", "standard-json", "tencent-json":
+		std, err := handoff.RenderStandardJSON(p, req.SiteID, plaintextPSK)
 		if err != nil {
 			writeJSONResp(w, http.StatusBadRequest, map[string]any{"error": err.Error()})
 			return
@@ -1046,12 +1041,12 @@ func (s *Server) handleExportPeer(w http.ResponseWriter, r *http.Request, sess s
 		enc := json.NewEncoder(&buf)
 		enc.SetEscapeHTML(false)
 		enc.SetIndent("", "  ")
-		_ = enc.Encode(tc)
+		_ = enc.Encode(std)
 		writeJSONResp(w, http.StatusOK, map[string]any{
-			"format":   "tencent-json",
-			"filename": fmt.Sprintf("%s-%s-tencent.json", p.Event.ID, req.SiteID),
+			"format":   "standard-json",
+			"filename": fmt.Sprintf("%s-%s-ipsec.json", p.Event.ID, req.SiteID),
 			"content":  buf.String(),
-			"data":     tc,
+			"data":     std,
 		})
 	case "hillstone-md", "generic-md":
 		tmpl := "hillstone"

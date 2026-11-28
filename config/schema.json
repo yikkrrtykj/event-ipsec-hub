@@ -255,6 +255,7 @@
         "esp_proposal": {"$ref": "#/$defs/esp"},
         "ike_lifetime_seconds": {"type": "integer", "minimum": 1},
         "child_lifetime_seconds": {"type": "integer", "minimum": 1},
+        "child_lifetime_kb": {"type": "integer", "minimum": 0},
         "dpd_delay_seconds": {"type": "integer", "minimum": 1},
         "start_action": {"enum": ["none", "start", "trap"]},
         "dpd_action": {"enum": ["clear", "restart"]},

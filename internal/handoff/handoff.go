@@ -139,6 +139,7 @@ func buildConnections(p *profile.Profile) []map[string]any {
 				"group":             espAlg.Group,
 				"pfs":               true,
 				"lifetime_seconds":  l.ChildLifetime,
+				"lifetime_kb":       l.ChildLifetimeKB,
 				"hub_rekey_seconds": manifest.ChildRekeySeconds(l.ChildLifetime),
 			},
 		})
@@ -641,6 +642,117 @@ func tencentIdentityType(w wireIdentity) string {
 	}
 }
 
+type StandardIKESpec struct {
+	PropoAuthenAlgorithm string `json:"PropoAuthenAlgorithm"`
+	PropoEncryAlgorithm  string `json:"PropoEncryAlgorithm"`
+	IKEVersion           string `json:"IKEVersion"`
+	IKESaLifetimeSeconds int    `json:"IKESaLifetimeSeconds"`
+	DhGroupName          string `json:"DhGroupName"`
+	LocalIdentity        string `json:"LocalIdentity"`
+	LocalFqdnName        string `json:"LocalFqdnName,omitempty"`
+	RemoteIdentity       string `json:"RemoteIdentity"`
+	RemoteFqdnName       string `json:"RemoteFqdnName,omitempty"`
+	LocalAddress         string `json:"LocalAddress"`
+	RemoteAddress        string `json:"RemoteAddress"`
+}
+
+type StandardIPSECSpec struct {
+	PfsDhGroup             string `json:"PfsDhGroup"`
+	EncryptAlgorithm       string `json:"EncryptAlgorithm"`
+	IntegrityAlgorithm     string `json:"IntegrityAlgorithm"`
+	IPSECSaLifetimeSeconds int    `json:"IPSECSaLifetimeSeconds"`
+	IPSECSaLifetimeTraffic int    `json:"IPSECSaLifetimeTraffic,omitempty"`
+}
+
+type StandardSPDEntry struct {
+	LocalCidrBlock  string   `json:"LocalCidrBlock"`
+	RemoteCidrBlock []string `json:"RemoteCidrBlock"`
+}
+
+type StandardPeerConfig struct {
+	IKEOptionsSpecification   StandardIKESpec    `json:"IKEOptionsSpecification"`
+	IPSECOptionsSpecification StandardIPSECSpec  `json:"IPSECOptionsSpecification"`
+	SecurityPolicyDatabaseSet []StandardSPDEntry `json:"SecurityPolicyDatabaseSet"`
+	PreShareKey               string             `json:"PreShareKey"`
+}
+
+// RenderStandardJSON generates a clean, compact 4-block standard IPsec JSON handoff
+// with deterministic field ordering (gateway perspective: LocalAddress = Hub, RemoteAddress = Peer).
+func RenderStandardJSON(p *profile.Profile, siteID string, plaintextPSK string) (*StandardPeerConfig, error) {
+	params, err := PeerParameters(p, siteID, "auto")
+	if err != nil {
+		return nil, err
+	}
+	if params["status"] == "SKIP" {
+		return nil, &profile.ProfileError{Detail: "Handoff withheld until backup parameters are complete."}
+	}
+
+	peerSide := params["local"].(map[string]any)
+	hubSide := params["remote"].(map[string]any)
+	ike := params["ike"].(map[string]any)
+	child := params["child"].(map[string]any)
+	hubWire := hubSide["id_on_wire"].(wireIdentity)
+	peerWire := peerSide["id_on_wire"].(wireIdentity)
+
+	ikeAlg := parseProposal(ike["proposal"].(string), true)
+	espAlg := parseProposal(child["proposal"].(string), false)
+
+	hubTS := params["remote_ts"].([]string)
+	peerTS := params["local_ts"].([]string)
+	spd := make([]StandardSPDEntry, 0, len(hubTS))
+	for _, hc := range hubTS {
+		spd = append(spd, StandardSPDEntry{
+			LocalCidrBlock:  hc,
+			RemoteCidrBlock: slices.Clone(peerTS),
+		})
+	}
+
+	pskOut := PSKPlaceholder
+	if plaintextPSK != "" {
+		pskOut = plaintextPSK
+	}
+
+	ikeLife, _ := ike["lifetime_seconds"].(int)
+	childLife, _ := child["lifetime_seconds"].(int)
+	childTrafficKB, _ := child["lifetime_kb"].(int)
+
+	localIDType := tencentIdentityType(hubWire)
+	remoteIDType := tencentIdentityType(peerWire)
+	localFQDN := ""
+	if localIDType != "ADDRESS" {
+		localFQDN = hubWire.Value
+	}
+	remoteFQDN := ""
+	if remoteIDType != "ADDRESS" {
+		remoteFQDN = peerWire.Value
+	}
+
+	return &StandardPeerConfig{
+		IKEOptionsSpecification: StandardIKESpec{
+			PropoAuthenAlgorithm: tencentHashName(ikeAlg.Integrity),
+			PropoEncryAlgorithm:  tencentEncryName(ikeAlg.Encryption),
+			IKEVersion:           "IKEV2",
+			IKESaLifetimeSeconds: ikeLife,
+			DhGroupName:          tencentDHGroup(ikeAlg.Group),
+			LocalIdentity:        localIDType,
+			LocalFqdnName:        localFQDN,
+			RemoteIdentity:       remoteIDType,
+			RemoteFqdnName:       remoteFQDN,
+			LocalAddress:         fmt.Sprint(hubSide["public_endpoint"]),
+			RemoteAddress:        fmt.Sprint(peerSide["public_endpoint"]),
+		},
+		IPSECOptionsSpecification: StandardIPSECSpec{
+			PfsDhGroup:             tencentDHGroup(espAlg.Group),
+			EncryptAlgorithm:       tencentEncryName(espAlg.Encryption),
+			IntegrityAlgorithm:     tencentHashName(espAlg.Integrity),
+			IPSECSaLifetimeSeconds: childLife,
+			IPSECSaLifetimeTraffic: childTrafficKB,
+		},
+		SecurityPolicyDatabaseSet: spd,
+		PreShareKey:               pskOut,
+	}, nil
+}
+
 // RenderTencentJSON generates a concise Tencent-Cloud-VPN-Gateway-style JSON handoff
 // for external firewall engineers. Pass plaintextPSK="" for the safe redacted default.
 func RenderTencentJSON(p *profile.Profile, siteID string, plaintextPSK string) (map[string]any, error) {
@@ -715,6 +827,7 @@ func RenderTencentJSON(p *profile.Profile, siteID string, plaintextPSK string) (
 			"IntegrityAlgorithm":     tencentHashName(espAlg.Integrity),
 			"PfsDhGroup":             tencentDHGroup(espAlg.Group),
 			"IPSECSaLifetimeSeconds": child["lifetime_seconds"],
+			"IPSECSaLifetimeTraffic": child["lifetime_kb"],
 		},
 		"SecurityPolicyDatabaseSet": spd,
 		"AuthorizedTrafficAndRouting": map[string]any{
